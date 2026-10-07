@@ -32,3 +32,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 unwrap_or_default = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
+
+# Line numbers in crash reports' backtraces (on Windows, from minecraft.pdb
+# next to the program).
+[profile.release]
+debug = "line-tables-only"

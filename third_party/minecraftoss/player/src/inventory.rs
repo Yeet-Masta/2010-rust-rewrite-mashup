@@ -87,6 +87,21 @@ pub struct Inventory {
     pending_stats: Vec<(String, String, i32)>,
 }
 
+/// Where a shift-clicked crafting result goes (`InventoryMenu` and
+/// `CraftingMenu.quickMoveStack`): the hotbar from the right, then the main
+/// inventory from the bottom.
+const RESULT_TO_INVENTORY: [usize; 36] = [
+    8, 7, 6, 5, 4, 3, 2, 1, 0, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19,
+    18, 17, 16, 15, 14, 13, 12, 11, 10, 9,
+];
+
+/// Where a shift-clicked grid slot goes: the main inventory, then the
+/// hotbar.
+const GRID_TO_INVENTORY: [usize; 36] = [
+    9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+    33, 34, 35, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+];
+
 fn armor_slot_name(index: usize) -> Option<&'static str> {
     match index {
         39 => Some("head"),
@@ -498,7 +513,7 @@ impl Inventory {
         }
         if shift {
             if let Some(stack) = self.crafting[index].take() {
-                self.crafting[index] = self.add_item(stack, 0);
+                self.crafting[index] = self.move_to_slots(stack, &GRID_TO_INVENTORY);
             }
         } else {
             click_stack(&mut self.crafting[index], &mut self.cursor, right);
@@ -515,10 +530,10 @@ impl Inventory {
             };
             if shift {
                 let mut trial = self.clone();
-                if trial.add_item(output.clone(), 0).is_some() {
+                if trial.move_to_slots(output.clone(), &RESULT_TO_INVENTORY).is_some() {
                     break;
                 }
-                let _ = self.add_item(output.clone(), 0);
+                let _ = self.move_to_slots(output.clone(), &RESULT_TO_INVENTORY);
             } else {
                 match self.cursor.as_mut() {
                     None => self.cursor = Some(output.clone()),
@@ -557,7 +572,7 @@ impl Inventory {
         }
         if shift {
             if let Some(stack) = self.workbench[index].take() {
-                self.workbench[index] = self.add_item(stack, 0);
+                self.workbench[index] = self.move_to_slots(stack, &GRID_TO_INVENTORY);
             }
         } else {
             click_stack(&mut self.workbench[index], &mut self.cursor, right);
@@ -574,10 +589,10 @@ impl Inventory {
             };
             if shift {
                 let mut trial = self.clone();
-                if trial.add_item(output.clone(), 0).is_some() {
+                if trial.move_to_slots(output.clone(), &RESULT_TO_INVENTORY).is_some() {
                     break;
                 }
-                let _ = self.add_item(output.clone(), 0);
+                let _ = self.move_to_slots(output.clone(), &RESULT_TO_INVENTORY);
             } else {
                 match self.cursor.as_mut() {
                     None => self.cursor = Some(output.clone()),
@@ -848,16 +863,21 @@ impl Inventory {
             } else {
                 &mut external[index - self.slots.len()]
             };
+            let (count, max) = slot.as_ref().map_or((0, carried.max), |s| (s.count, s.max));
+            let capacity = if armor_slot_name(index).is_some() {
+                1
+            } else {
+                max
+            };
+            let moved = each.min(capacity.saturating_sub(count)).min(carried.count);
+            // More slots than items share nothing out: no empty stacks.
+            if moved == 0 {
+                continue;
+            }
             let target = slot.get_or_insert_with(|| ItemStack {
                 count: 0,
                 ..carried.clone()
             });
-            let capacity = if armor_slot_name(index).is_some() {
-                1
-            } else {
-                target.max
-            };
-            let moved = each.min(capacity - target.count).min(carried.count);
             target.count += moved;
             carried.count -= moved;
             if moved > 0 && index < self.slots.len() {
@@ -944,6 +964,81 @@ impl Inventory {
         }
     }
     /// Insert an item entity's stack, returning what did not fit.
+    /// `CraftingMenu.quickMoveStack` for a player slot (0..36): into the
+    /// crafting table's grid, then across between the hotbar and the main
+    /// inventory. Armour is not worn from here.
+    pub fn quick_move_to_workbench(&mut self, index: usize) {
+        if index >= 36 {
+            return;
+        }
+        let Some(mut stack) = self.slots[index].take() else {
+            return;
+        };
+        if stack.max > 1 {
+            for cell in self.workbench.iter_mut().flatten() {
+                if cell.same_item(&stack) && cell.count < cell.max {
+                    let moved = (cell.max - cell.count).min(stack.count);
+                    cell.count += moved;
+                    stack.count -= moved;
+                }
+            }
+        }
+        if stack.count > 0 {
+            if let Some(cell) = self.workbench.iter_mut().find(|cell| cell.is_none()) {
+                *cell = Some(stack.clone());
+                stack.count = 0;
+            }
+        }
+        self.slots[index] = if stack.count == 0 {
+            None
+        } else if index < 9 {
+            self.move_to_slots(stack, &GRID_TO_INVENTORY[..27])
+        } else {
+            self.move_to_slots(stack, &GRID_TO_INVENTORY[27..])
+        };
+    }
+
+    /// `AbstractContainerMenu.moveItemStackTo` over player slots in
+    /// `order`: onto matching stacks with room, then into empty slots.
+    /// Returns what did not fit.
+    fn move_to_slots(&mut self, mut stack: ItemStack, order: &[usize]) -> Option<ItemStack> {
+        if stack.components.is_none() {
+            stack.max = stack.max.min(self.recipes.max_stack(&stack.id));
+        }
+        if stack.max > 1 {
+            for &index in order {
+                let before = self.slots[index].clone();
+                let Some(target) = self.slots[index].as_mut() else {
+                    continue;
+                };
+                if target.same_item(&stack) && target.count < target.max {
+                    let moved = (target.max - target.count).min(stack.count);
+                    target.count += moved;
+                    stack.count -= moved;
+                    self.notice_slot_after_change(index, before);
+                }
+                if stack.count == 0 {
+                    return None;
+                }
+            }
+        }
+        for &index in order {
+            if self.slots[index].is_none() {
+                let moved = stack.count.min(stack.max);
+                self.slots[index] = Some(ItemStack {
+                    count: moved,
+                    ..stack.clone()
+                });
+                stack.count -= moved;
+                self.notice_slot_after_change(index, None);
+                if stack.count == 0 {
+                    return None;
+                }
+            }
+        }
+        Some(stack)
+    }
+
     pub fn add_item(&mut self, mut stack: ItemStack, selected: usize) -> Option<ItemStack> {
         let changed_item = stack.clone();
         let original_count = stack.count;

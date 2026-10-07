@@ -47,10 +47,15 @@ or run the built `minecraft` (`minecraft.exe` on Windows).
 
 The first time, it downloads Minecraft 26.3's own files (textures, sounds,
 world data) from Mojang's official servers, as the launcher does: about
-125 MB, into `minecraft-data/minecraft-26.3` next to where you run it. That
-needs an internet connection and `curl`, which comes with Windows 10 and 11,
-macOS and most Linux distributions. After that it plays offline. Nothing
-from Minecraft is included in this repository.
+125 MB, into `minecraft-data/minecraft-26.3`. That needs an internet
+connection and `curl`, which comes with Windows 10 and 11, macOS and most
+Linux distributions. After that it plays offline. Nothing from Minecraft is
+included in this repository.
+
+`minecraft-data` is the folder of that name where you run the game, if
+there is one, and otherwise the one next to the program. It also holds the
+saves, screenshots, `logs/latest.log` (and the session before it,
+`logs/previous.log`), and a report for each crash in `crash-reports`.
 
 | Option | |
 | --- | --- |
@@ -60,11 +65,11 @@ from Minecraft is included in this repository.
 | `--view-distance N` | Chunks to render around you (default 8) |
 | `--time TICKS` | Time of day to start at: 1000 morning, 6000 noon, 13000 dusk, 18000 midnight |
 | `--temporary` | A fresh world that isn't saved |
-| `--data DIR` | Where Minecraft's files and the saves live (default `minecraft-data`) |
+| `--data DIR` | Where Minecraft's files and the saves live (default `minecraft-data`, as above) |
 
 A saved world keeps its seed and game mode; `--creative` turns a survival
-world creative. The game saves when you quit through the menu or close the
-window, and every five minutes.
+world creative. The game saves when you quit through the menu, close the
+window or close its console, and every five minutes.
 
 ## Controls
 

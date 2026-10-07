@@ -62,6 +62,10 @@ pub struct Events {
     pub hits: Vec<PlayerHit>,
     /// Experience points of orbs the player took.
     pub experience: u32,
+    /// A use on a mob that the mob took (the arm swings), and one it passed
+    /// on (the held item is used instead).
+    pub use_taken: bool,
+    pub use_passed: bool,
 }
 
 pub struct Entities {
@@ -138,7 +142,13 @@ impl Entities {
             ticks: 0,
             inventory,
             selected: 0,
-            world_items: WorldItems::default(),
+            world_items: {
+                // Clear of the server's entity ids, which count up from 1:
+                // a drop the server has not taken yet is one with a high id.
+                let mut items = WorldItems::default();
+                items.number_from(1 << 31);
+                items
+            },
             server_item_ids: HashSet::new(),
             server_handed: HashMap::new(),
             server_picked: Vec::new(),
@@ -190,8 +200,14 @@ impl Entities {
     /// does for a server-simulated world: client drops go to the server,
     /// stacks the server offered go into the inventory, and the server's
     /// items are mirrored for drawing.
-    fn server_items_tick(&mut self, feet: DVec3) {
-        let entities = std::mem::take(&mut self.world_items.entities);
+    /// Items dropped here that the server has not been given, sent to it,
+    /// as before the game ends so they save with the world.
+    pub fn hand_over_drops(&mut self) {
+        let entities = self.world_items.entities.clone();
+        self.hand_over(&entities);
+    }
+
+    fn hand_over(&mut self, entities: &[ItemEntity]) {
         let to_hand: Vec<ItemEntity> = entities
             .iter()
             .filter(|e| {
@@ -214,6 +230,11 @@ impl Entities {
             self.server_handed
                 .insert(entity.entity_id, (self.server.sent(), entity.clone()));
         }
+    }
+
+    fn server_items_tick(&mut self, feet: DVec3) {
+        let entities = std::mem::take(&mut self.world_items.entities);
+        self.hand_over(&entities);
         let previous: HashMap<u32, ItemEntity> =
             entities.into_iter().map(|e| (e.entity_id, e)).collect();
         let target = feet + DVec3::Y * 0.81;
@@ -410,10 +431,24 @@ impl Entities {
         bright_outside: bool,
         player: &mut PlayerView,
     ) -> Events {
+        if !self.server.running() {
+            // Mobs, items and saving all stop with it: end the game, with
+            // the server's own crash report beside the log.
+            panic!("the integrated server stopped");
+        }
         self.clock += dt;
-        let ticked = self.clock >= TICK_SECONDS;
-        if ticked {
-            self.clock = (self.clock - TICK_SECONDS).min(TICK_SECONDS);
+        // The server keeps vanilla's 20 ticks a second at any frame rate,
+        // catching up after a slow frame as the game's own ticks do.
+        let mut due = 0;
+        while self.clock >= TICK_SECONDS && due < 10 {
+            self.clock -= TICK_SECONDS;
+            due += 1;
+        }
+        if due == 10 {
+            self.clock = self.clock.min(TICK_SECONDS);
+        }
+        let ticked = due > 0;
+        for _ in 0..due {
             self.ticks += 1;
             // Packets first, then the client level's entity ticks.
             self.client.tick();
@@ -512,6 +547,10 @@ impl Entities {
                 ));
             }
             for result in &output.mob_results {
+                if result.used {
+                    events.use_taken |= result.handled;
+                    events.use_passed |= !result.handled;
+                }
                 for sound in &result.sounds {
                     self.sounds.push((
                         sound.event.clone(),

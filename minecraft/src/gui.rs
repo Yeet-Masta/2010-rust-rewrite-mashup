@@ -97,7 +97,7 @@ pub struct Gui {
     pub mouse: (f32, f32),
 }
 
-const SPRITES: [(&str, &str, f32); 35] = [
+const SPRITES: [(&str, &str, f32); 36] = [
     (
         "creative_items",
         "gui/container/creative_inventory/tab_items",
@@ -138,6 +138,7 @@ const SPRITES: [(&str, &str, f32); 35] = [
         "gui/sprites/widget/button_highlighted",
         3.0,
     ),
+    ("button_disabled", "gui/sprites/widget/button_disabled", 3.0),
     ("tooltip_background", "gui/sprites/tooltip/background", 9.0),
     ("tooltip_frame", "gui/sprites/tooltip/frame", 9.0),
     (
@@ -830,17 +831,39 @@ impl Gui {
         self.text(ui, text, x, y, WHITE, true);
     }
 
-    fn buttons(&self, screen: Screen) -> Vec<(Button, &'static str, f32, f32)> {
-        let x = self.width / 2.0 - 100.0;
+    /// A screen's buttons: what each does (nothing for one shown greyed
+    /// out), its label, and its corner and width.
+    fn buttons(&self, screen: Screen) -> Vec<(Option<Button>, &'static str, f32, f32, f32)> {
+        let x = self.width / 2.0 - 102.0;
         let y = self.height / 4.0;
         match screen {
+            // Vanilla's game menu, with what this game has no screen for
+            // greyed out, so Save and Quit is where it always is.
             Screen::Paused => vec![
-                (Button::Resume, "Back to Game", x, y + 24.0),
-                (Button::SaveAndQuit, "Save and Quit", x, y + 48.0),
+                (Some(Button::Resume), "Back to Game", x, y + 8.0, 204.0),
+                (None, "Advancements", x, y + 32.0, 98.0),
+                (None, "Statistics", x + 106.0, y + 32.0, 98.0),
+                (None, "Give Feedback", x, y + 56.0, 98.0),
+                (None, "Report Bugs", x + 106.0, y + 56.0, 98.0),
+                (None, "Options...", x, y + 80.0, 98.0),
+                (None, "Open to LAN", x + 106.0, y + 80.0, 98.0),
+                (
+                    Some(Button::SaveAndQuit),
+                    "Save and Quit",
+                    x,
+                    y + 104.0,
+                    204.0,
+                ),
             ],
             Screen::Dead => vec![
-                (Button::Respawn, "Respawn", x, y + 72.0),
-                (Button::SaveAndQuit, "Save and Quit", x, y + 96.0),
+                (Some(Button::Respawn), "Respawn", x + 2.0, y + 72.0, 200.0),
+                (
+                    Some(Button::SaveAndQuit),
+                    "Save and Quit",
+                    x + 2.0,
+                    y + 96.0,
+                    200.0,
+                ),
             ],
             _ => Vec::new(),
         }
@@ -851,11 +874,12 @@ impl Gui {
         let (mx, my) = self.mouse;
         self.buttons(screen)
             .into_iter()
-            .find(|&(_, _, x, y)| mx >= x && mx < x + 200.0 && my >= y && my < y + 20.0)
-            .map(|(button, ..)| button)
+            .find(|&(_, _, x, y, w)| mx >= x && mx < x + w && my >= y && my < y + 20.0)
+            .and_then(|(button, ..)| button)
     }
 
     pub fn pause_screen(&self, ui: &mut UiList) {
+        let active = true;
         self.fill(
             ui,
             0.0,
@@ -865,10 +889,11 @@ impl Gui {
             [0.06, 0.06, 0.06, 0.6],
         );
         self.centered(ui, "Game Menu", 40.0, WHITE);
-        self.draw_buttons(ui, Screen::Paused);
+        self.draw_buttons(ui, Screen::Paused, active);
     }
 
-    pub fn death_screen(&self, ui: &mut UiList, score: u32) {
+    /// The death screen; its buttons wake a second after death.
+    pub fn death_screen(&self, ui: &mut UiList, score: u32, active: bool) {
         self.fill(ui, 0.0, 0.0, self.width, self.height, [0.5, 0.0, 0.0, 0.5]);
         let title = "You Died!";
         let big = self.scale * 2.0;
@@ -877,20 +902,28 @@ impl Gui {
             .draw(ui, title, x, 30.0 * self.scale, big, WHITE, true);
         let score = format!("Score: {score}");
         self.centered(ui, &score, 100.0, WHITE);
-        self.draw_buttons(ui, Screen::Dead);
+        self.draw_buttons(ui, Screen::Dead, active);
     }
 
-    fn draw_buttons(&self, ui: &mut UiList, screen: Screen) {
+    fn draw_buttons(&self, ui: &mut UiList, screen: Screen, active: bool) {
         let hovered = self.button_at(screen);
-        for (button, label, x, y) in self.buttons(screen) {
-            let sprite = if hovered == Some(button) {
+        for (button, label, x, y, width) in self.buttons(screen) {
+            let enabled = active && button.is_some();
+            let sprite = if !enabled {
+                "button_disabled"
+            } else if hovered == button {
                 "button_highlighted"
             } else {
                 "button"
             };
-            self.sprite(ui, sprite, x, y, 200.0, 20.0);
-            let tx = x + (200.0 - self.font.width(label)) / 2.0;
-            self.text(ui, label, tx, y + 6.0, WHITE, true);
+            self.sprite(ui, sprite, x, y, width, 20.0);
+            let tx = x + (width - self.font.width(label)) / 2.0;
+            let colour = if enabled {
+                WHITE
+            } else {
+                crate::font::rgb(0xa0a0a0)
+            };
+            self.text(ui, label, tx, y + 6.0, colour, true);
         }
     }
 

@@ -57,6 +57,11 @@ pub struct MobResult {
     pub slots: Vec<(usize, Option<minecraftoss_player::inventory::ItemStack>)>,
     /// A trading screen the action opened (`openTradingScreen`).
     pub merchant: Option<MerchantView>,
+    /// The action was a use, not a hit.
+    pub used: bool,
+    /// The mob took the action; a use it passed on goes on to use the item
+    /// itself (food is eaten).
+    pub handled: bool,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -249,6 +254,7 @@ impl ServerSim {
             entity_loot: self.entity_loot.as_mut(),
             shearing_loot: self.shearing_loot.as_mut(),
         };
+        let used = attack.is_none();
         let outcome = if let Some(attack) = &attack {
             crate::mob_actions::attack(&mut self.mobs, hit, &mut actor, attack)
         } else {
@@ -271,7 +277,7 @@ impl ServerSim {
             .map(|(slot, (now, _))| (slot, now.clone()))
             .collect();
         self.spawn_trade_experience();
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0) }
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0), used, handled: outcome.handled }
     }
 
     /// The player's trading screen as the client shows it.
@@ -954,6 +960,12 @@ impl ServerHandle {
     /// Commands sent so far (compare with `Output::handled`).
     pub fn sent(&self) -> u64 {
         self.sent
+    }
+
+    /// Whether the server thread is still running (it ends only on a panic
+    /// before the handle drops).
+    pub fn running(&self) -> bool {
+        self.thread.as_ref().is_some_and(|thread| !thread.is_finished())
     }
 
     pub fn load_chunk(&mut self, chunk: &Arc<Chunk>) {

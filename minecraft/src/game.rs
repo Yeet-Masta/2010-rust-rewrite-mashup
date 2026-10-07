@@ -128,7 +128,8 @@ pub struct Game {
     pub screenshot: bool,
     hurts: Vec<(Option<u64>, &'static str)>,
     drag: Option<(bool, Vec<Slot>)>,
-    last_click: Option<(Slot, Instant)>,
+    /// The last slot pressed, with which button and when, for double clicks.
+    last_click: Option<(Slot, bool, Instant)>,
     score: u32,
     frames: (u32, f64, u32),
     /// Survival status before this tick, for its hurt sounds.
@@ -138,6 +139,8 @@ pub struct Game {
     creative_scroll: usize,
     jump_taps: u32,
     jump_latched: bool,
+    /// The tick the player died on.
+    died_at: u64,
 }
 
 impl Game {
@@ -178,9 +181,15 @@ impl Game {
             entities.selected = saved.selected;
             for (slot, stack) in entities.inventory.slots.iter_mut().zip(&saved.slots) {
                 *slot = stack.clone().map(|mut stack| {
-                    if stack.components.is_none() {
-                        stack.max = entities.inventory.recipes.max_stack(&stack.id);
-                    }
+                    // The item's own stack size, which worn tools keep.
+                    stack.max = stack
+                        .components
+                        .as_ref()
+                        .and_then(|c| c.get("minecraft:max_stack_size")?.as_u64())
+                        .map_or_else(
+                            || entities.inventory.recipes.max_stack(&stack.id),
+                            |max| max.clamp(1, 99) as u8,
+                        );
                     stack
                 });
             }
@@ -196,7 +205,8 @@ impl Game {
         player.flying = creative && saved.as_ref().is_some_and(|saved| saved.flying);
         let previous = player.pos;
         let health = player.survival.health;
-        Self {
+        let new_world = saved.is_none();
+        let mut game = Self {
             world,
             player,
             creative,
@@ -240,7 +250,13 @@ impl Game {
             creative_scroll: 0,
             jump_taps: 0,
             jump_latched: false,
+            died_at: 0,
+        };
+        // A new world's seed is on disk before any of its chunks.
+        if new_world {
+            game.save();
         }
+        game
     }
 
     fn mode(&self) -> GameMode {
@@ -253,6 +269,14 @@ impl Game {
 
     fn alive(&self) -> bool {
         self.creative || self.player.survival.health > 0.0
+    }
+
+    /// The game menu, as Esc or the window going to the background opens
+    /// it; not over the loading screen, which has to finish first.
+    pub fn pause(&mut self) {
+        if self.screen == Screen::Playing && self.landed {
+            self.screen = Screen::Paused;
+        }
     }
 
     /// Whether the mouse drives the camera: in play, with no screen open.
@@ -291,13 +315,21 @@ impl Game {
         self.swing.start();
     }
 
-    /// Puts away what an open screen holds, and saves.
+    /// Puts away what an open screen holds, and saves: the changed chunks,
+    /// then the player, so the player never runs ahead of the world. The
+    /// rest of the world is written as it drops.
     pub fn shutdown(&mut self) {
         if matches!(
             self.screen,
             Screen::Inventory | Screen::Crafting | Screen::Creative
         ) {
             self.close_container();
+        }
+        // Leftovers that didn't fit are items on the ground: they save
+        // with the server's entities.
+        self.entities.hand_over_drops();
+        if self.save_dir.is_some() {
+            self.world.stream.save_edited();
         }
         self.save();
     }
@@ -436,6 +468,21 @@ impl Game {
         for hit in events.hits {
             self.hurt_by_mob(hit);
         }
+        if events.use_taken {
+            self.start_swing();
+        }
+        // A mob with nothing to do with the held item: it's used in the
+        // air, as food is eaten (`MultiPlayerGameMode.useItem`).
+        if events.use_passed
+            && input.use_item
+            && self.eating.is_none()
+            && self.captures_mouse()
+            && self.alive()
+            && let Some(stack) = self.entities.held().cloned()
+        {
+            let food = &self.player.survival.food;
+            self.eating = FoodUse::start(self.entities.selected, &stack, food, self.mode());
+        }
         for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
             self.play(&event, Some(at), volume, pitch);
         }
@@ -549,13 +596,13 @@ impl Game {
     fn keys(&mut self, input: &mut Input, gui: &Gui) {
         for key in std::mem::take(&mut input.keys) {
             match (key, self.screen) {
-                (Key::Escape, Screen::Playing) => self.screen = Screen::Paused,
+                (Key::Escape, Screen::Playing) => self.pause(),
                 (Key::Escape, Screen::Paused) => self.screen = Screen::Playing,
                 (
                     Key::Escape | Key::Inventory,
                     Screen::Inventory | Screen::Crafting | Screen::Creative,
                 ) => self.close_container(),
-                (Key::Inventory, Screen::Playing) if self.alive() => {
+                (Key::Inventory, Screen::Playing) if self.alive() && self.landed => {
                     self.screen = if self.creative {
                         if self.creative_items.is_empty() {
                             self.creative_items = self.all_items();
@@ -623,7 +670,7 @@ impl Game {
             Screen::Playing => {}
             Screen::Paused | Screen::Dead => {
                 for (_, pressed) in input.clicks.drain(..) {
-                    if !pressed {
+                    if !pressed || self.screen == Screen::Dead && !self.death_buttons_ready() {
                         continue;
                     }
                     match gui.button_at(self.screen) {
@@ -680,10 +727,15 @@ impl Game {
             Screen::Inventory | Screen::Crafting => {
                 let workbench = self.screen == Screen::Crafting;
                 let (slot, outside) = gui.slot_at(workbench);
+                // `AbstractContainerMenu`'s quick craft: a slot joins the drag
+                // if it can take the carried item and there are items left
+                // for it.
                 if let Some((_, slots)) = self.drag.as_mut()
-                    && let Some(Slot::Inventory(_) | Slot::Crafting(_) | Slot::Workbench(_)) = slot
                     && let Some(slot) = slot
                     && !slots.contains(&slot)
+                    && let Some(carried) = self.entities.inventory.cursor.as_ref()
+                    && slots.len() < usize::from(carried.count)
+                    && drag_accepts(&self.entities.inventory, slot, carried)
                 {
                     slots.push(slot);
                 }
@@ -709,13 +761,20 @@ impl Game {
             }
             return;
         };
-        let double = self
-            .last_click
-            .is_some_and(|(last, at)| last == slot && at.elapsed().as_millis() < 250)
-            && !right
+        // A double click gathers into the cursor, from an empty slot (one
+        // the first click picked up), never from a result slot.
+        let double = self.last_click.is_some_and(|(last, last_right, at)| {
+            last == slot && last_right == right && at.elapsed().as_millis() < 250
+        }) && !right
             && !shift;
-        self.last_click = Some((slot, Instant::now()));
-        if double && inventory.cursor.is_some() {
+        self.last_click = Some((slot, right, Instant::now()));
+        let empty = match slot {
+            Slot::Inventory(index) => inventory.slots.get(index).is_some_and(Option::is_none),
+            Slot::Crafting(index) => inventory.crafting.get(index).is_some_and(Option::is_none),
+            Slot::Workbench(index) => inventory.workbench.get(index).is_some_and(Option::is_none),
+            _ => false,
+        };
+        if double && empty && inventory.cursor.is_some() {
             inventory.pickup_all(right);
             return;
         }
@@ -728,6 +787,10 @@ impl Game {
             return;
         }
         match slot {
+            // The crafting table's own shift-click: into its grid.
+            Slot::Inventory(index) if shift && self.screen == Screen::Crafting => {
+                inventory.quick_move_to_workbench(index)
+            }
             Slot::Inventory(index) => {
                 let thrown = inventory.click(Some(index), right, shift);
                 self.throw(thrown.into_iter().collect());
@@ -843,35 +906,44 @@ impl Game {
         let Some(block) = self.world.block(hit.pos) else {
             return;
         };
-        let id = match block.id.path.as_str() {
-            "redstone_wire" => "minecraft:redstone".to_owned(),
-            path if path.contains("wall_torch") => {
-                format!("minecraft:{}", path.replace("wall_torch", "torch"))
-            }
-            _ => block.id.key(),
+        let Some(id) = block_item(block) else {
+            return;
         };
         let inventory = &mut self.entities.inventory;
+        if inventory
+            .recipes
+            .item_catalog()
+            .is_some_and(|catalog| catalog.get(&id).is_none())
+        {
+            return;
+        }
+        let selected = self.entities.selected;
+        // `Inventory.getSuitableHotbarSlot`: the first empty hotbar slot
+        // from the selected one on, else the selected one.
+        let suitable = (0..9)
+            .map(|i| (selected + i) % 9)
+            .find(|&i| inventory.slots[i].is_none())
+            .unwrap_or(selected);
         if let Some(slot) =
             (0..9).find(|&i| inventory.slots[i].as_ref().is_some_and(|s| s.id == id))
         {
             self.entities.selected = slot;
-        } else if self.creative {
-            let stack = self.entities.stack(&id, 1);
-            let selected = self.entities.selected;
-            let slot = if self.entities.inventory.slots[selected].is_none() {
-                selected
-            } else {
-                (0..9)
-                    .find(|&i| self.entities.inventory.slots[i].is_none())
-                    .unwrap_or(selected)
-            };
-            self.entities.inventory.slots[slot] = Some(stack);
-            self.entities.selected = slot;
         } else if let Some(slot) =
             (9..36).find(|&i| inventory.slots[i].as_ref().is_some_and(|s| s.id == id))
         {
-            let selected = self.entities.selected;
-            inventory.number_swap(slot, selected);
+            // `pickSlot`: swapped into the hotbar.
+            inventory.slots.swap(slot, suitable);
+            self.entities.selected = suitable;
+        } else if self.creative {
+            // `addAndPickItem`: what the slot held moves to a free slot.
+            if let Some(displaced) = inventory.slots[suitable].take()
+                && let Some(free) = (0..36).find(|&i| i != suitable && inventory.slots[i].is_none())
+            {
+                inventory.slots[free] = Some(displaced);
+            }
+            let stack = self.entities.stack(&id, 1);
+            self.entities.inventory.slots[suitable] = Some(stack);
+            self.entities.selected = suitable;
         }
     }
 
@@ -1020,11 +1092,14 @@ impl Game {
                         let id = eating.stack.id.clone();
                         self.eating = None;
                         let sounds = &mut self.sounds;
-                        minecraftoss_player::food::apply_consumed_food_effects(
+                        let teleport = minecraftoss_player::food::apply_consumed_food_effects(
                             &id,
                             &mut self.player.survival,
                             || sounds.random(),
                         );
+                        if teleport {
+                            self.teleport_randomly();
+                        }
                         self.throw(overflow.into_iter().collect());
                         let pitch = self.sounds.random() * 0.1 + 0.9;
                         self.play("minecraft:entity.player.burp", None, 0.5, pitch);
@@ -1035,6 +1110,26 @@ impl Game {
         } else if pressed || (input.use_item && self.use_delay == 0) {
             self.use_delay = 4;
             self.use_item(held.as_ref(), target, mob_distance.is_some(), pressed);
+        }
+    }
+
+    /// Chorus fruit's `TeleportRandomlyConsumeEffect`: up to sixteen tries
+    /// within eight blocks each way.
+    fn teleport_randomly(&mut self) {
+        for _ in 0..16 {
+            let mut offset = || (f64::from(self.sounds.random()) - 0.5) * 16.0;
+            let (dx, dy, dz) = (offset(), offset(), offset());
+            let p = self.player.pos;
+            let target = DVec3::new(p.x + dx, (p.y + dy).clamp(-64.0, 319.0), p.z + dz);
+            if self
+                .player
+                .try_random_teleport_target(&self.world.scene, target)
+            {
+                self.previous = self.player.pos;
+                self.player.velocity = DVec3::ZERO;
+                self.play("minecraft:item.chorus_fruit.teleport", None, 1.0, 1.0);
+                return;
+            }
         }
     }
 
@@ -1105,17 +1200,9 @@ impl Game {
         let eye = self.player.eye();
         let look = self.player.look();
         if at_mob {
-            if self
-                .entities
-                .interact(eye, look, self.entity_reach(), self.creative)
-            {
-                self.start_swing();
-            } else if let Some(stack) = held {
-                // A mob with nothing to do with the item: it's used in the
-                // air, as food is eaten.
-                let food = &self.player.survival.food;
-                self.eating = FoodUse::start(self.entities.selected, stack, food, self.mode());
-            }
+            // The server answers whether the mob took it (see `frame`).
+            self.entities
+                .interact(eye, look, self.entity_reach(), self.creative);
             return;
         }
         if let Some(hit) = target.as_ref()
@@ -1508,6 +1595,11 @@ impl Game {
         }
     }
 
+    /// `DeathScreen`'s buttons wait twenty ticks.
+    fn death_buttons_ready(&self) -> bool {
+        self.ticks.saturating_sub(self.died_at) >= 20
+    }
+
     fn check_death(&mut self) {
         if self.creative || self.screen == Screen::Dead || self.player.survival.health > 0.0 {
             return;
@@ -1523,6 +1615,7 @@ impl Game {
         }
         self.eating = None;
         self.drag = None;
+        self.died_at = self.ticks;
         self.screen = Screen::Dead;
     }
 
@@ -1741,7 +1834,7 @@ impl Game {
                 );
             }
             Screen::Paused => gui.pause_screen(&mut ui),
-            Screen::Dead => gui.death_screen(&mut ui, self.score),
+            Screen::Dead => gui.death_screen(&mut ui, self.score, self.death_buttons_ready()),
         }
         ui
     }
@@ -1788,6 +1881,15 @@ impl Game {
     }
 }
 
+impl Drop for Game {
+    /// A crash still saves the player, as its unwinding saves the chunks.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.save();
+        }
+    }
+}
+
 const HORIZONTAL: [(&str, (i32, i32)); 4] = [
     ("south", (0, 1)),
     ("west", (-1, 0)),
@@ -1797,6 +1899,94 @@ const HORIZONTAL: [(&str, (i32, i32)); 4] = [
 
 fn horizontal_facing(yaw: f64) -> (&'static str, (i32, i32)) {
     HORIZONTAL[((yaw / 90.0 + 0.5).floor() as i32).rem_euclid(4) as usize]
+}
+
+/// The item a block is picked as (`Block.getCloneItemStack`): itself for
+/// most blocks, the item that places it for the rest, nothing for fluids,
+/// fire and portals.
+fn block_item(block: &Block) -> Option<String> {
+    let path = block.id.path.as_str();
+    let item = match path {
+        "water" | "lava" | "fire" | "soul_fire" | "bubble_column" | "nether_portal"
+        | "end_portal" | "end_gateway" | "moving_piston" | "frosted_ice" | "air" | "cave_air"
+        | "void_air" => return None,
+        "redstone_wire" => "redstone",
+        "tripwire" => "string",
+        "kelp_plant" => "kelp",
+        "tall_seagrass" => "seagrass",
+        "cave_vines" | "cave_vines_plant" => "glow_berries",
+        "twisting_vines_plant" => "twisting_vines",
+        "weeping_vines_plant" => "weeping_vines",
+        "big_dripleaf_stem" => "big_dripleaf",
+        "bamboo_sapling" => "bamboo",
+        "carrots" => "carrot",
+        "potatoes" => "potato",
+        "beetroots" => "beetroot_seeds",
+        "wheat" => "wheat_seeds",
+        "melon_stem" | "attached_melon_stem" => "melon_seeds",
+        "pumpkin_stem" | "attached_pumpkin_stem" => "pumpkin_seeds",
+        "torchflower_crop" => "torchflower_seeds",
+        "pitcher_crop" => "pitcher_pod",
+        "sweet_berry_bush" => "sweet_berries",
+        "cocoa" => "cocoa_beans",
+        "powder_snow" => "powder_snow_bucket",
+        "piston_head" => {
+            if block.properties.get("type").is_some_and(|t| t == "sticky") {
+                "sticky_piston"
+            } else {
+                "piston"
+            }
+        }
+        "flower_pot" => "flower_pot",
+        _ => {
+            let item = if let Some(plant) = path.strip_prefix("potted_") {
+                plant.to_owned()
+            } else if path.ends_with("_candle_cake") {
+                "cake".to_owned()
+            } else {
+                path.replace("_wall_hanging_sign", "_hanging_sign")
+                    .replace("_wall_sign", "_sign")
+                    .replace("_wall_banner", "_banner")
+                    .replace("_wall_head", "_head")
+                    .replace("_wall_skull", "_skull")
+                    .replace("_wall_fan", "_fan")
+                    .replace("wall_torch", "torch")
+            };
+            return Some(format!("minecraft:{item}"));
+        }
+    };
+    Some(format!("minecraft:{item}"))
+}
+
+/// Whether a drag can share `carried` into a slot: one that is empty or
+/// holds the same item with room, and for armour, a piece that goes there.
+fn drag_accepts(
+    inventory: &minecraftoss_player::inventory::Inventory,
+    slot: Slot,
+    carried: &ItemStack,
+) -> bool {
+    let held = match slot {
+        Slot::Inventory(index) => {
+            let part = match index {
+                39 => Some("head"),
+                38 => Some("chest"),
+                37 => Some("legs"),
+                36 => Some("feet"),
+                _ => None,
+            };
+            if part.is_some_and(|part| inventory.recipes.equipment_slot(carried) != Some(part)) {
+                return false;
+            }
+            inventory.slots.get(index)
+        }
+        Slot::Crafting(index) => inventory.crafting.get(index),
+        Slot::Workbench(index) => inventory.workbench.get(index),
+        _ => None,
+    };
+    held.is_some_and(|held| {
+        held.as_ref()
+            .is_none_or(|stack| stack.same_item(carried) && stack.count < stack.max)
+    })
 }
 
 /// Whole wheel notches scrolled, up positive, keeping the fraction for later.
@@ -1812,4 +2002,78 @@ fn center(pos: BlockPos) -> DVec3 {
         f64::from(pos.1) + 0.5,
         f64::from(pos.2) + 0.5,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minecraftoss_player::inventory::Inventory;
+
+    fn stack(id: &str, count: u8) -> ItemStack {
+        ItemStack::new(id, count)
+    }
+
+    #[test]
+    fn a_drag_over_more_slots_than_items_makes_no_empty_stacks() {
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(stack("minecraft:oak_planks", 1));
+        inventory.distribute_crafting(&[9, 10, 11], false, false);
+        let stacks: Vec<_> = inventory.slots.iter().flatten().collect();
+        assert_eq!(stacks.len(), 1, "{stacks:?}");
+        assert_eq!(stacks[0].count, 1);
+        assert!(inventory.cursor.is_none());
+    }
+
+    #[test]
+    fn a_drag_takes_only_as_many_slots_as_items() {
+        let mut inventory = Inventory::default();
+        let carried = stack("minecraft:oak_planks", 2);
+        assert!(drag_accepts(&inventory, Slot::Inventory(9), &carried));
+        assert!(drag_accepts(&inventory, Slot::Workbench(4), &carried));
+        // Only boots go on the feet.
+        assert!(!drag_accepts(&inventory, Slot::Inventory(36), &carried));
+        inventory.slots[10] = Some(stack("minecraft:stone", 3));
+        assert!(!drag_accepts(&inventory, Slot::Inventory(10), &carried));
+    }
+
+    #[test]
+    fn the_crafting_table_shift_click_fills_its_grid() {
+        let mut inventory = Inventory::default();
+        inventory.slots[12] = Some(stack("minecraft:oak_planks", 5));
+        inventory.quick_move_to_workbench(12);
+        assert!(inventory.slots[12].is_none());
+        assert_eq!(inventory.workbench[0].as_ref().map(|s| s.count), Some(5));
+        // With the grid full, a main slot goes to the hotbar.
+        for cell in &mut inventory.workbench {
+            *cell = Some(stack("minecraft:stone", 64));
+        }
+        inventory.slots[20] = Some(stack("minecraft:dirt", 7));
+        inventory.quick_move_to_workbench(20);
+        assert_eq!(inventory.slots[0].as_ref().map(|s| s.count), Some(7));
+    }
+
+    #[test]
+    fn picked_blocks_name_their_items() {
+        let item = |id: &str| block_item(&Block::new(id));
+        assert_eq!(item("minecraft:stone").as_deref(), Some("minecraft:stone"));
+        assert_eq!(item("minecraft:carrots").as_deref(), Some("minecraft:carrot"));
+        assert_eq!(item("minecraft:oak_wall_sign").as_deref(), Some("minecraft:oak_sign"));
+        assert_eq!(
+            item("minecraft:redstone_wall_torch").as_deref(),
+            Some("minecraft:redstone_torch")
+        );
+        assert_eq!(item("minecraft:potted_poppy").as_deref(), Some("minecraft:poppy"));
+        assert_eq!(item("minecraft:water"), None);
+    }
+
+    #[test]
+    fn wheel_notches_keep_their_fraction() {
+        let mut scroll = 0.6;
+        assert_eq!(take_notches(&mut scroll), 0);
+        scroll += 0.6;
+        assert_eq!(take_notches(&mut scroll), 1);
+        assert!((scroll - 0.2).abs() < 1e-5);
+        scroll = -2.5;
+        assert_eq!(take_notches(&mut scroll), -2);
+    }
 }

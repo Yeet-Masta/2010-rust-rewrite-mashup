@@ -48,8 +48,9 @@ Usage: minecraft [options]
   --time TICKS          the time of day to start at (1000 morning, 6000 noon,
                         13000 dusk, 18000 midnight)
   --temporary           play a fresh world that is not saved
-  --data DIR            where Minecraft's files and saves live
-                        (default: minecraft-data)
+  --data DIR            where Minecraft's files and saves live (default:
+                        minecraft-data where the game is run if it is there,
+                        else next to the program)
   --screenshot FILE     save a screenshot once the world has loaded, and quit
 
 Controls: WASD move, mouse look, Space jump (twice to fly in creative),
@@ -120,6 +121,10 @@ impl App {
             return;
         };
         if grab == self.grabbed {
+            return;
+        }
+        // A window in the background is grabbed once it is in front.
+        if grab && !self.focused {
             return;
         }
         self.grabbed = grab;
@@ -251,6 +256,11 @@ impl App {
                 }
             },
             Some(Phase::Playing(mut game)) => {
+                // Vanilla pauses a game left in the background, including
+                // one that finished loading there.
+                if !self.focused {
+                    game.pause();
+                }
                 let (draw, ui) = game.frame(dt, &mut self.input, renderer, gui);
                 self.input.look = (0.0, 0.0);
                 self.input.middle_click = false;
@@ -326,10 +336,8 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
                 if !focused {
-                    if let Some(Phase::Playing(game)) = self.phase.as_mut()
-                        && game.captures_mouse()
-                    {
-                        game.screen = gui::Screen::Paused;
+                    if let Some(Phase::Playing(game)) = self.phase.as_mut() {
+                        game.pause();
                     }
                     self.input = Input::default();
                 }
@@ -421,7 +429,7 @@ fn main() {
     let mut world_name = "world".to_owned();
     let (mut seed, mut creative, mut view_distance, mut time, mut temporary) =
         (None, false, 8, None, false);
-    let (mut data, mut capture) = (PathBuf::from("minecraft-data"), None);
+    let (mut data, mut capture) = (None, None);
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
@@ -445,7 +453,7 @@ fn main() {
                 )
             }
             "--temporary" => temporary = true,
-            "--data" => data = PathBuf::from(value()),
+            "--data" => data = Some(PathBuf::from(value())),
             "--screenshot" => capture = Some(PathBuf::from(value())),
             "--help" | "-h" => {
                 println!("{USAGE}");
@@ -454,7 +462,10 @@ fn main() {
             other => exit_with(&format!("unknown option {other}")),
         }
     }
+    let data = data.unwrap_or_else(default_data);
+    let data = std::path::absolute(&data).unwrap_or(data);
     log::open(&data);
+    log!("Minecraft's files and the saves are in {}", data.display());
     let root = setup::ensure(&data).unwrap_or_else(|error| {
         exit_with(&format!(
             "Minecraft's files could not be fetched from Mojang: {error}"
@@ -501,8 +512,21 @@ fn main() {
     }
 }
 
+/// `minecraft-data` where the game is run from if it is there, else next to
+/// the program, so the same folder is found however the game is started.
+fn default_data() -> PathBuf {
+    let here = PathBuf::from("minecraft-data");
+    if here.is_dir() {
+        return here;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("minecraft-data")))
+        .unwrap_or(here)
+}
+
 fn exit_with(message: &str) -> ! {
-    log!("minecraft: {message}");
+    log::line_now(&format!("minecraft: {message}"));
     // Started from Explorer, the console would close before it is read.
     #[cfg(windows)]
     {

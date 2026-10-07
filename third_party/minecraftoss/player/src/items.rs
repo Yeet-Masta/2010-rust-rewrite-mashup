@@ -57,6 +57,12 @@ impl Default for WorldItems {
 }
 
 impl WorldItems {
+    /// Numbers the next dropped item from `id`, so drops made here can be
+    /// told from a level's own entities by their ids.
+    pub fn number_from(&mut self, id: u32) {
+        self.next_entity_id = id;
+    }
+
     /// Share the level random stream with dispenser-family block entities.
     pub fn next_world_int(&mut self, bound: u32) -> u32 {
         self.world_random.next_int(bound)
