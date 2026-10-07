@@ -32,7 +32,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
@@ -48,6 +48,8 @@ Usage: minecraft [options]
   --time TICKS          the time of day to start at (1000 morning, 6000 noon,
                         13000 dusk, 18000 midnight)
   --temporary           play a fresh world that is not saved
+  --no-vsync            draw frames without waiting for the display (up to
+                        120 a second), as vanilla's VSync setting turned off
   --data DIR            where Minecraft's files and saves live (default:
                         minecraft-data where the game is run if it is there,
                         else next to the program)
@@ -89,7 +91,7 @@ impl App {
             .with_title("Minecraft")
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         let window = Arc::new(event_loop.create_window(attributes)?);
-        let mut renderer = render::Renderer::new(window.clone())?;
+        let mut renderer = render::Renderer::new(window.clone(), self.options.vsync)?;
         let packs =
             minecraft_terrain::pack::PackStack::open(vec![self.root.join(setup::RESOURCE_PACK)])?;
         self.gui = Some(gui::Gui::load(&packs, &mut renderer)?);
@@ -400,6 +402,14 @@ impl ApplicationHandler for App {
             self.close(event_loop);
             return;
         }
+        // Without vsync, vanilla's default framerate limit.
+        if !self.options.vsync {
+            let next = self.last + std::time::Duration::from_secs_f64(1.0 / 120.0);
+            if Instant::now() < next {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                return;
+            }
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -427,6 +437,7 @@ fn random_seed() -> i64 {
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut world_name = "world".to_owned();
+    let mut vsync = true;
     let (mut seed, mut creative, mut view_distance, mut time, mut temporary) =
         (None, false, 8, None, false);
     let (mut data, mut capture) = (None, None);
@@ -453,6 +464,7 @@ fn main() {
                 )
             }
             "--temporary" => temporary = true,
+            "--no-vsync" => vsync = false,
             "--data" => data = Some(PathBuf::from(value())),
             "--screenshot" => capture = Some(PathBuf::from(value())),
             "--help" | "-h" => {
@@ -484,6 +496,7 @@ fn main() {
         creative,
         save,
         time,
+        vsync,
     };
     let event_loop =
         EventLoop::new().unwrap_or_else(|error| exit_with(&format!("no window system: {error}")));

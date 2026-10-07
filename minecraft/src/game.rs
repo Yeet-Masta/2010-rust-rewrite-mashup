@@ -75,6 +75,9 @@ pub struct Options {
     pub creative: bool,
     pub save: Option<PathBuf>,
     pub time: Option<f64>,
+    /// Vanilla's VSync video setting, on by default; off, the frame rate
+    /// is held to its default maximum of 120.
+    pub vsync: bool,
 }
 
 #[derive(Default)]
@@ -2018,10 +2021,14 @@ mod tests {
         let mut inventory = Inventory::default();
         inventory.cursor = Some(stack("minecraft:oak_planks", 1));
         inventory.distribute_crafting(&[9, 10, 11], false, false);
-        let stacks: Vec<_> = inventory.slots.iter().flatten().collect();
-        assert_eq!(stacks.len(), 1, "{stacks:?}");
-        assert_eq!(stacks[0].count, 1);
-        assert!(inventory.cursor.is_none());
+        // Nothing to share out: the item stays on the cursor.
+        assert!(inventory.slots.iter().all(Option::is_none));
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(1));
+        inventory.cursor = Some(stack("minecraft:oak_planks", 5));
+        inventory.distribute_crafting(&[9, 10], false, false);
+        let counts: Vec<u8> = inventory.slots.iter().flatten().map(|s| s.count).collect();
+        assert_eq!(counts, [2, 2]);
+        assert_eq!(inventory.cursor.as_ref().map(|s| s.count), Some(1));
     }
 
     #[test]
@@ -2056,13 +2063,22 @@ mod tests {
     fn picked_blocks_name_their_items() {
         let item = |id: &str| block_item(&Block::new(id));
         assert_eq!(item("minecraft:stone").as_deref(), Some("minecraft:stone"));
-        assert_eq!(item("minecraft:carrots").as_deref(), Some("minecraft:carrot"));
-        assert_eq!(item("minecraft:oak_wall_sign").as_deref(), Some("minecraft:oak_sign"));
+        assert_eq!(
+            item("minecraft:carrots").as_deref(),
+            Some("minecraft:carrot")
+        );
+        assert_eq!(
+            item("minecraft:oak_wall_sign").as_deref(),
+            Some("minecraft:oak_sign")
+        );
         assert_eq!(
             item("minecraft:redstone_wall_torch").as_deref(),
             Some("minecraft:redstone_torch")
         );
-        assert_eq!(item("minecraft:potted_poppy").as_deref(), Some("minecraft:poppy"));
+        assert_eq!(
+            item("minecraft:potted_poppy").as_deref(),
+            Some("minecraft:poppy")
+        );
         assert_eq!(item("minecraft:water"), None);
     }
 

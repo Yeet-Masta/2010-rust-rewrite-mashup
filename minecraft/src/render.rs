@@ -202,7 +202,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: Arc<winit::window::Window>) -> anyhow::Result<Self> {
+    /// The renderer for a window; `vsync` shows one frame per display
+    /// refresh.
+    pub fn new(window: Arc<winit::window::Window>, vsync: bool) -> anyhow::Result<Self> {
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(window.clone())),
         );
@@ -240,8 +242,11 @@ impl Renderer {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            // Vsync, as vanilla defaults to: one frame per display refresh.
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: if vsync {
+                wgpu::PresentMode::AutoVsync
+            } else {
+                wgpu::PresentMode::AutoNoVsync
+            },
             desired_maximum_frame_latency: 2,
             alpha_mode: caps
                 .alpha_modes

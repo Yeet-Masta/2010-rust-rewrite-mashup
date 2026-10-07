@@ -65,6 +65,7 @@ saves, screenshots, `logs/latest.log` (and the session before it,
 | `--view-distance N` | Chunks to render around you (default 8) |
 | `--time TICKS` | Time of day to start at: 1000 morning, 6000 noon, 13000 dusk, 18000 midnight |
 | `--temporary` | A fresh world that isn't saved |
+| `--no-vsync` | Don't wait for the display between frames (up to 120 a second), as vanilla's VSync setting turned off |
 | `--data DIR` | Where Minecraft's files and the saves live (default `minecraft-data`, as above) |
 
 A saved world keeps its seed and game mode; `--creative` turns a survival
