@@ -367,6 +367,7 @@ impl ServerSim {
         if !fresh {
             return;
         }
+        self.level.schedule_generation_ticks(chunk);
         self.load_pois(chunk);
         let saved = self.storage.as_ref().and_then(|storage| {
             storage.load_entities(chunk.pos).unwrap_or_else(|e| {

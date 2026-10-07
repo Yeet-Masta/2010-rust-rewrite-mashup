@@ -702,6 +702,33 @@ impl<'a> Level<'a> {
         }
     }
 
+    /// `ServerLevel.startTickingChunk`: the ticks generation left in a
+    /// chunk join the level's, as delays from now. Among them are the lakes'
+    /// and aquifers' water beside air, which flows on its first tick.
+    pub fn schedule_generation_ticks(&mut self, chunk: &Chunk) {
+        for tick in &chunk.generation.ticks {
+            let at = self.game_time + i64::from(tick.delay);
+            let kind = if tick.fluid {
+                let fluid = match tick.id.as_str() {
+                    "minecraft:water" => ticks::FluidType::Water,
+                    "minecraft:flowing_water" => ticks::FluidType::FlowingWater,
+                    "minecraft:lava" => ticks::FluidType::Lava,
+                    "minecraft:flowing_lava" => ticks::FluidType::FlowingLava,
+                    _ => continue,
+                };
+                TickType::Fluid(fluid)
+            } else {
+                match self.lib.registries.blocks.block_by_name(&tick.id) {
+                    Some(block) => TickType::Block(block.0),
+                    None => continue,
+                }
+            };
+            let sub = self.next_sub_tick();
+            let queue = if tick.fluid { &mut self.fluid_ticks } else { &mut self.block_ticks };
+            queue.schedule(kind, tick.pos, at, tick.priority, sub);
+        }
+    }
+
     pub fn pending_fluid_ticks(&self) -> usize {
         self.fluid_ticks.len()
     }
