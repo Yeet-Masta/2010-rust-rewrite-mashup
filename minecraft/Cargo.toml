@@ -1,0 +1,34 @@
+[package]
+name = "minecraft"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Minecraft on its own: a MinecraftOSS world, played in a window."
+
+[workspace]
+
+[dependencies]
+minecraft_terrain = { path = "../crates/minecraft_terrain" }
+minecraftoss-core = { path = "../third_party/minecraftoss/core" }
+minecraftoss-entities = { path = "../third_party/minecraftoss/entities" }
+minecraftoss-player = { path = "../third_party/minecraftoss/player" }
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+flate2 = "1"
+glam = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "0.4"
+rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis"] }
+serde_json = "1"
+sha1 = "0.10"
+wgpu = "29"
+winit = "0.30"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints.clippy]
+# The repository's clippy.toml forbids `unwrap_or_default`, which this lint
+# asks for.
+unwrap_or_default = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"

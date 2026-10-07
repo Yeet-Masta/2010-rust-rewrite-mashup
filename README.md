@@ -24,6 +24,13 @@ Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 
 You don't need Minecraft installed. The first time the game starts, it downloads Minecraft 26.3's own files (textures, sounds, world data) straight from Mojang's official servers, the same way the Minecraft launcher does. That's about 125 MB, into `iw4l-artifacts/minecraft-26.3`. After that it plays offline. Nothing from Minecraft is included in this repository.
 
+### Just Minecraft
+
+[`minecraft/`](minecraft/README.md) is the Minecraft world on its own: a standalone
+game built from the same MinecraftOSS crates and `crates/minecraft_terrain`, with
+vanilla survival and creative, its own HUD and screens, and saved worlds. It needs
+neither MW2 nor Skate 3.
+
 ## What you'll need
 
 - **MW2**, only tested with the Steam version.

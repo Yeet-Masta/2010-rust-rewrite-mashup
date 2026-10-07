@@ -1171,6 +1171,12 @@ impl TerrainStream {
         self.server.world_gen().clone()
     }
 
+    /// Saves every chunk in memory, with the edits made to it, to the
+    /// world's region files.
+    pub fn save_all(&mut self) {
+        self.server.save_all();
+    }
+
     /// The storage chunks are saved to, which the level's entities share.
     pub fn storage(&self) -> Option<Arc<minecraftoss_world::storage::ChunkStorage>> {
         self.server.storage()
