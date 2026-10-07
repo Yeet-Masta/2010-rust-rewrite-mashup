@@ -8,7 +8,53 @@ use minecraft_terrain::mesh::{Atlas, SectionVertex};
 use minecraft_terrain::pack::ResourceId;
 
 /// Ticks of a swing (`LivingEntity.getCurrentSwingDuration`).
-pub const SWING_TICKS: f32 = 6.0;
+const SWING_TICKS: i32 = 6;
+
+/// The arm's swing as `LivingEntity` keeps it: `swing`, `updateSwingTime`
+/// and `getAttackAnim`.
+#[derive(Default)]
+pub struct Swing {
+    time: i32,
+    swinging: bool,
+    anim: f32,
+    previous: f32,
+}
+
+impl Swing {
+    /// `swing()`: starts over, unless the last one is under half done, so
+    /// holding the button keeps the arm going in an even rhythm.
+    pub fn start(&mut self) {
+        if !self.swinging || self.time >= SWING_TICKS / 2 || self.time < 0 {
+            self.time = -1;
+            self.swinging = true;
+        }
+    }
+
+    /// `updateSwingTime`, once a tick after the tick's input.
+    pub fn tick(&mut self) {
+        self.previous = self.anim;
+        if self.swinging {
+            self.time += 1;
+            if self.time >= SWING_TICKS {
+                self.time = 0;
+                self.swinging = false;
+            }
+        } else {
+            self.time = 0;
+        }
+        self.anim = self.time as f32 / SWING_TICKS as f32;
+    }
+
+    /// `getAttackAnim`: how far through the swing the arm is, 0 to 1, a
+    /// restart carrying on forward to finish the stroke.
+    pub fn progress(&self, partial: f32) -> f32 {
+        let mut step = self.anim - self.previous;
+        if step < 0.0 {
+            step += 1.0;
+        }
+        self.previous + step * partial
+    }
+}
 
 /// The item's view-space pose (`applyItemArmTransform` then its display).
 pub fn item_pose(display: Mat4, swing: f32, equip: f32) -> Mat4 {

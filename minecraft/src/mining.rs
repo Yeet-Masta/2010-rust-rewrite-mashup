@@ -122,9 +122,11 @@ impl ToolRules {
         if let Some((tier, kind)) = item.rsplit_once('_')
             && let (Some(tier), Some(&mineable)) = (self.tiers.get(tier), self.mineable.get(kind))
         {
-            if has(mineable) && !has(tier.incorrect) {
+            // `Tool.getMiningSpeed` and `isCorrectForDrops`: the tier's speed
+            // on any block of its kind; drops only where the tier is enough.
+            if has(mineable) {
                 speed = tier.speed;
-                correct = true;
+                correct = !has(tier.incorrect);
             }
         } else if item.ends_with("_sword") {
             if path == "cobweb" {
@@ -228,7 +230,8 @@ impl Mining {
     }
 
     /// One tick of the attack button held on `target` (nothing when the
-    /// player looks at no block). Creative players break blocks outright.
+    /// player looks at no block), `pressed` this tick. Creative players
+    /// break blocks outright.
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
@@ -239,7 +242,13 @@ impl Mining {
         on_ground: bool,
         eyes_in_water: bool,
         creative: bool,
+        pressed: bool,
     ) -> Swing {
+        // `startDestroyBlock`, on a press, doesn't wait out the delay that
+        // holding the button does.
+        if pressed {
+            self.delay = 0;
+        }
         if self.delay > 0 {
             self.delay -= 1;
             return Swing::default();

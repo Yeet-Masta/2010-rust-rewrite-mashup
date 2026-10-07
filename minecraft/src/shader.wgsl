@@ -168,8 +168,11 @@ fn stars(ray: vec3<f32>) -> f32 {
 @fragment
 fn sky_fragment(in: SkyOut) -> @location(0) vec4<f32> {
     let environment = view.environment;
-    let far = view.rel_from_clip * vec4<f32>(in.ndc, 0.5, 1.0);
-    let ray = normalize(far.xyz / far.w);
+    // The view direction through this pixel: from the near plane to a point
+    // further along, so the camera's own movement (view bobbing) cancels.
+    let near = view.rel_from_clip * vec4<f32>(in.ndc, 1.0, 1.0);
+    let far = view.rel_from_clip * vec4<f32>(in.ndc, 0.01, 1.0);
+    let ray = normalize(far.xyz / far.w - near.xyz / near.w);
     // SkyRenderer's 16-block-high fan has a 512-block radius. Its fog value
     // interpolates between the center and rim vertex distances.
     var color = environment.fog.rgb;

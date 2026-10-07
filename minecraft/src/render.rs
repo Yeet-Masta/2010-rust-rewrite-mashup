@@ -178,6 +178,8 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// The window has no area (minimised): nothing is drawn.
+    minimized: bool,
     /// The format drawn in: the surface's, without sRGB encoding, since
     /// Minecraft's colours are display values.
     format: wgpu::TextureFormat,
@@ -238,11 +240,8 @@ impl Renderer {
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
-                wgpu::PresentMode::Mailbox
-            } else {
-                wgpu::PresentMode::Fifo
-            },
+            // Vsync, as vanilla defaults to: one frame per display refresh.
+            present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: caps
                 .alpha_modes
@@ -356,6 +355,7 @@ impl Renderer {
             device,
             queue,
             config,
+            minimized: false,
             format,
             depth,
             pipelines,
@@ -380,7 +380,8 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+        self.minimized = width == 0 || height == 0;
+        if self.minimized {
             return;
         }
         self.config.width = width;
@@ -680,6 +681,9 @@ impl Renderer {
         ui: &UiList,
         capture: Option<&std::path::Path>,
     ) {
+        if self.minimized {
+            return;
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,

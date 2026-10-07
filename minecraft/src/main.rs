@@ -8,6 +8,7 @@ macro_rules! log {
     };
 }
 
+mod console;
 mod entities;
 mod font;
 mod game;
@@ -76,6 +77,7 @@ struct App {
     /// Seconds played, for a screenshot once the world has settled.
     played: f64,
     grabbed: bool,
+    focused: bool,
     /// Why the game could not start, once the window loop has ended.
     failed: Option<String>,
 }
@@ -121,7 +123,12 @@ impl App {
             return;
         }
         self.grabbed = grab;
+        let size = window.inner_size();
+        let center = winit::dpi::PhysicalPosition::new(size.width / 2, size.height / 2);
         if grab {
+            // Locked where the platform has it (Windows only confines), with
+            // the hidden cursor in the middle so a click stays in the window.
+            let _ = window.set_cursor_position(center);
             let _ = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
@@ -129,13 +136,24 @@ impl App {
         } else {
             let _ = window.set_cursor_grab(CursorGrabMode::None);
             window.set_cursor_visible(true);
-            let size = window.inner_size();
-            let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                size.width / 2,
-                size.height / 2,
-            ));
-            self.input.mouse = (size.width as f32 / 2.0, size.height as f32 / 2.0);
+            // Vanilla's menus open with the cursor in the middle, but a
+            // window in the background leaves the cursor where it is.
+            if self.focused {
+                let _ = window.set_cursor_position(center);
+                self.input.mouse = (center.x as f32, center.y as f32);
+            }
         }
+    }
+
+    /// Saves and ends the game.
+    fn close(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(Phase::Playing(mut game)) = self.phase.take() {
+            game.shutdown();
+            // The world's chunks and mobs are written as it goes.
+            drop(game);
+        }
+        console::saved();
+        event_loop.exit();
     }
 
     fn key(&mut self, code: KeyCode, pressed: bool, repeat: bool) {
@@ -235,7 +253,6 @@ impl App {
             Some(Phase::Playing(mut game)) => {
                 let (draw, ui) = game.frame(dt, &mut self.input, renderer, gui);
                 self.input.look = (0.0, 0.0);
-                self.input.scroll = 0.0;
                 self.input.middle_click = false;
                 self.played += dt;
                 let screenshot = std::mem::take(&mut game.screenshot).then(|| {
@@ -261,9 +278,8 @@ impl App {
                     game.quit = true;
                 }
                 if game.quit {
-                    game.save();
-                    drop(game);
-                    event_loop.exit();
+                    self.phase = Some(Phase::Playing(game));
+                    self.close(event_loop);
                     return;
                 }
                 let grab = game.captures_mouse();
@@ -297,24 +313,26 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => {
-                if let Some(Phase::Playing(game)) = self.phase.take() {
-                    game.save();
-                }
-                event_loop.exit();
-            }
+            WindowEvent::CloseRequested => self.close(event_loop),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
                 }
-            }
-            WindowEvent::Focused(false) => {
-                if let Some(Phase::Playing(game)) = self.phase.as_mut()
-                    && game.captures_mouse()
-                {
-                    game.screen = gui::Screen::Paused;
+                // The confined area follows the window: grab it again.
+                if self.grabbed {
+                    self.grab(false);
                 }
-                self.input = Input::default();
+            }
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused {
+                    if let Some(Phase::Playing(game)) = self.phase.as_mut()
+                        && game.captures_mouse()
+                    {
+                        game.screen = gui::Screen::Paused;
+                    }
+                    self.input = Input::default();
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -326,13 +344,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == ElementState::Pressed;
+                // Held only from a press in play: the click on a menu's
+                // button that resumes the game doesn't go on to mine.
+                let playing =
+                    matches!(&self.phase, Some(Phase::Playing(game)) if game.captures_mouse());
                 match button {
                     MouseButton::Left => {
-                        self.input.attack = pressed;
+                        self.input.attack = pressed && playing;
                         self.input.clicks.push((false, pressed));
                     }
                     MouseButton::Right => {
-                        self.input.use_item = pressed;
+                        self.input.use_item = pressed && playing;
                         self.input.clicks.push((true, pressed));
                     }
                     MouseButton::Middle if pressed => self.input.middle_click = true,
@@ -359,7 +381,17 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _: ()) {
+        if console::closing() {
+            self.close(event_loop);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if console::closing() {
+            self.close(event_loop);
+            return;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -444,6 +476,7 @@ fn main() {
     };
     let event_loop =
         EventLoop::new().unwrap_or_else(|error| exit_with(&format!("no window system: {error}")));
+    console::watch(event_loop.create_proxy());
     let mut app = App {
         options,
         root,
@@ -457,6 +490,7 @@ fn main() {
         last: Instant::now(),
         played: 0.0,
         grabbed: false,
+        focused: true,
         failed: None,
     };
     if let Err(error) = event_loop.run_app(&mut app) {

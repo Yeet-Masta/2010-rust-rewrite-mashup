@@ -1177,6 +1177,11 @@ impl TerrainStream {
         self.server.save_all();
     }
 
+    /// Saves the chunks changed since they were last saved.
+    pub fn save_edited(&mut self) {
+        self.server.save_edited();
+    }
+
     /// The storage chunks are saved to, which the level's entities share.
     pub fn storage(&self) -> Option<Arc<minecraftoss_world::storage::ChunkStorage>> {
         self.server.storage()

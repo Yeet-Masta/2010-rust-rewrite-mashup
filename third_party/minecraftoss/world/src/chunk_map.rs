@@ -287,6 +287,8 @@ pub struct ChunkMap {
     /// changes would copy it every tick; instead they wait here and are
     /// written in one copy when the chunk is sent again, dropped or saved.
     edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>,
+    /// Chunks changed since they were last saved, for a quick autosave.
+    unsaved: HashSet<ChunkPos>,
 }
 
 /// Generation order: the player ticket level (chessboard distance), then
@@ -541,6 +543,7 @@ impl ChunkMap {
             sender,
             chunks: HashMap::new(),
             edits: HashMap::new(),
+            unsaved: HashSet::new(),
             last_tick_ms: [0.0; 7],
             view_distance: view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
             view: None,
@@ -757,6 +760,7 @@ impl ChunkMap {
             let chunk = pos.chunk();
             if self.chunks.contains_key(&chunk) {
                 self.edits.entry(chunk).or_default().push((pos, state));
+                self.unsaved.insert(chunk);
             }
         }
     }
@@ -783,8 +787,20 @@ impl ChunkMap {
         self.shared.storage.clone()
     }
 
+    /// Saves the chunks changed since they were last saved, which is all an
+    /// autosave needs: the others regenerate as they were.
+    pub fn save_edited(&mut self) {
+        let unsaved: Vec<ChunkPos> = self.unsaved.drain().collect();
+        for &pos in &unsaved {
+            self.write_edits(pos);
+        }
+        let world = self.shared.world.lock().expect("chunk world");
+        save_slots(&self.shared, unsaved.iter().filter_map(|pos| world.slots.get(pos)));
+    }
+
     /// Saves every chunk in memory and writes the region files.
     pub fn save_all(&mut self) {
+        self.unsaved.clear();
         let edited: Vec<ChunkPos> = self.edits.keys().copied().collect();
         for pos in edited {
             self.write_edits(pos);

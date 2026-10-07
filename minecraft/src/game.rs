@@ -106,8 +106,7 @@ pub struct Game {
     ticks: u64,
     /// Whether the player's chunk has arrived, so its physics can run.
     landed: bool,
-    swing: Option<f32>,
-    previous_swing: f32,
+    swing: crate::hand::Swing,
     attack_presses: u32,
     use_presses: u32,
     use_delay: u32,
@@ -213,8 +212,7 @@ impl Game {
             clock: 0.0,
             ticks: 0,
             landed: false,
-            swing: None,
-            previous_swing: 0.0,
+            swing: crate::hand::Swing::default(),
             attack_presses: 0,
             use_presses: 0,
             use_delay: 0,
@@ -290,38 +288,52 @@ impl Game {
     }
 
     fn start_swing(&mut self) {
-        if self
-            .swing
-            .is_none_or(|t| t >= crate::hand::SWING_TICKS / 2.0)
-        {
-            self.swing = Some(0.0);
+        self.swing.start();
+    }
+
+    /// Puts away what an open screen holds, and saves.
+    pub fn shutdown(&mut self) {
+        if matches!(
+            self.screen,
+            Screen::Inventory | Screen::Crafting | Screen::Creative
+        ) {
+            self.close_container();
         }
+        self.save();
     }
 
     /// Writes the player beside the world's region files.
-    pub fn save(&self) {
+    pub fn save(&mut self) {
         let Some(dir) = self.save_dir.as_ref() else {
             return;
+        };
+        // Died and not respawned: the world opens with the player respawned.
+        let dead = !self.creative && self.player.survival.health <= 0.0;
+        let position = if dead {
+            let (x, y, z) = self.world.stream.respawn_position();
+            [x, y, z]
+        } else {
+            self.player.pos.to_array()
         };
         let status = &self.player.survival;
         let saved = crate::save::Saved {
             seed: self.world.seed,
             creative: self.creative,
-            position: self.player.pos.to_array(),
+            position,
             yaw: self.player.yaw,
             pitch: self.player.pitch,
-            health: if status.health > 0.0 {
-                status.health
+            health: if dead { 20.0 } else { status.health },
+            food: if dead { 20 } else { status.food.level },
+            saturation: if dead { 5.0 } else { status.food.saturation },
+            experience: if dead {
+                (0, 0.0, 0)
             } else {
-                20.0
+                (
+                    status.experience_level,
+                    status.experience_progress,
+                    status.total_experience,
+                )
             },
-            food: status.food.level,
-            saturation: status.food.saturation,
-            experience: (
-                status.experience_level,
-                status.experience_progress,
-                status.total_experience,
-            ),
             day_ticks: self.world.day.ticks,
             flying: self.player.flying,
             selected: self.entities.selected,
@@ -348,9 +360,10 @@ impl Game {
         if self.captures_mouse() {
             self.player.yaw += input.look.0 * LOOK;
             self.player.pitch = (self.player.pitch + input.look.1 * LOOK).clamp(-90.0, 90.0);
-            if input.scroll != 0.0 {
-                let step = if input.scroll > 0.0 { 8 } else { 1 };
-                self.entities.selected = (self.entities.selected + step) % 9;
+            let notches = take_notches(&mut input.scroll);
+            if notches != 0 {
+                self.entities.selected =
+                    (self.entities.selected as i32 - notches).rem_euclid(9) as usize;
             }
             for (right, pressed) in input.clicks.drain(..) {
                 if pressed {
@@ -365,9 +378,17 @@ impl Game {
                 self.pick_block();
             }
         }
+        // Notches no screen used are gone; part of one waits for the next.
+        input.scroll = input.scroll.fract();
         input.clicks.clear();
         self.jump_taps = (self.jump_taps + std::mem::take(&mut input.jump_taps)).min(4);
-        self.clock += dt;
+        // The pause menu stops the world, as it does in singleplayer.
+        let world_dt = if self.screen == Screen::Paused {
+            0.0
+        } else {
+            dt
+        };
+        self.clock += world_dt;
         let mut ran = 0;
         while self.clock >= TICK_SECONDS && ran < 10 {
             self.clock -= TICK_SECONDS;
@@ -401,7 +422,7 @@ impl Game {
         let bright = self.world.sky_light_level() > 11.0;
         let events = self
             .entities
-            .tick(dt, self.world.day.ticks as i64, bright, &mut view);
+            .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
         self.world.set_blocks(&events.changes);
         if events.experience > 0 && !self.creative {
@@ -453,7 +474,9 @@ impl Game {
         let visible = update.visible.iter().map(|(pos, _)| *pos).collect();
         renderer.update_sections(update.uploads, update.removed);
         renderer.animate(self.ticks);
-        let environment = self.world.environment(dt, eye.to_array(), forward, aspect);
+        let environment = self
+            .world
+            .environment(world_dt, eye.to_array(), forward, aspect);
         if let Some((vertices, indices)) = self.world.clouds(eye.to_array()) {
             renderer.set_clouds(&vertices, &indices);
         }
@@ -613,11 +636,9 @@ impl Game {
             }
             Screen::Creative => {
                 let rows = self.creative_items.len().div_ceil(9).saturating_sub(5);
-                if input.scroll > 0.0 {
-                    self.creative_scroll = self.creative_scroll.saturating_sub(1);
-                } else if input.scroll < 0.0 {
-                    self.creative_scroll = (self.creative_scroll + 1).min(rows);
-                }
+                let notches = take_notches(&mut input.scroll);
+                self.creative_scroll = (self.creative_scroll as i64 - i64::from(notches))
+                    .clamp(0, rows as i64) as usize;
                 let (slot, outside) = gui.creative_slot_at();
                 for (right, pressed) in input.clicks.drain(..).collect::<Vec<_>>() {
                     if !pressed {
@@ -859,22 +880,15 @@ impl Game {
         self.ticks += 1;
         // `MinecraftServer.autoSave`: every five minutes.
         if self.ticks.is_multiple_of(6000) && self.save_dir.is_some() {
-            self.world.stream.save_all();
+            self.world.stream.save_edited();
             self.save();
         }
         self.previous = self.player.pos;
         self.previous_eye_height = self.eye_height;
-        self.previous_swing = self.swing_progress(0.0);
         self.previous_equip = self.equip;
         self.walk.previous_dist = self.walk.dist;
         self.walk.previous_bob = self.walk.bob;
         self.previous_fov = self.fov;
-        if let Some(ticks) = self.swing.as_mut() {
-            *ticks += 1.0;
-            if *ticks >= crate::hand::SWING_TICKS {
-                self.swing = None;
-            }
-        }
         let held_id = self.entities.held().map(|s| s.id.clone());
         if held_id == self.equipped {
             self.equip = (self.equip + 0.4).min(1.0);
@@ -900,6 +914,7 @@ impl Game {
             self.mining.reset();
             self.eating = None;
         }
+        self.swing.tick();
         if self.landed && self.alive() && self.world.chunk_ready(feet) {
             self.tick_movement(if self.screen == Screen::Playing {
                 Some(input)
@@ -936,15 +951,18 @@ impl Game {
             .mob_on_ray(eye, look, self.entity_reach())
             .filter(|&d| d < block_distance);
         // Attacks: a click hits the mob in reach, or starts on a block.
-        if std::mem::take(&mut self.attack_presses) > 0 && self.eating.is_none() {
-            self.swing = Some(0.0);
+        let attacked = std::mem::take(&mut self.attack_presses) > 0 && self.eating.is_none();
+        if attacked {
+            self.start_swing();
             if mob_distance.is_some() {
                 self.attack(held.as_ref(), eye, look);
             } else if let Some(hit) = target.as_ref() {
                 self.entities.attack_block(&self.world.scene, hit.pos);
             }
         }
-        if input.attack && mob_distance.is_none() && self.eating.is_none() {
+        // A click too quick for the button to be down at the tick still
+        // starts on the block, which breaks one that breaks instantly.
+        if (input.attack || attacked) && mob_distance.is_none() && self.eating.is_none() {
             let on_ground = self.player.on_ground || self.player.flying;
             let water = self.eyes_in_water();
             let swing = self.mining.tick(
@@ -955,6 +973,7 @@ impl Game {
                 on_ground,
                 water,
                 self.creative,
+                attacked,
             );
             if target.is_some() {
                 self.start_swing();
@@ -1000,14 +1019,11 @@ impl Game {
                     FoodUseTick::Finished { overflow } => {
                         let id = eating.stack.id.clone();
                         self.eating = None;
-                        let mut random = 0.5f32;
+                        let sounds = &mut self.sounds;
                         minecraftoss_player::food::apply_consumed_food_effects(
                             &id,
                             &mut self.player.survival,
-                            || {
-                                random = (random * 7.13 + 0.37).fract();
-                                random
-                            },
+                            || sounds.random(),
                         );
                         self.throw(overflow.into_iter().collect());
                         let pitch = self.sounds.random() * 0.1 + 0.9;
@@ -1094,6 +1110,11 @@ impl Game {
                 .interact(eye, look, self.entity_reach(), self.creative)
             {
                 self.start_swing();
+            } else if let Some(stack) = held {
+                // A mob with nothing to do with the item: it's used in the
+                // air, as food is eaten.
+                let food = &self.player.survival.food;
+                self.eating = FoodUse::start(self.entities.selected, stack, food, self.mode());
             }
             return;
         }
@@ -1145,6 +1166,7 @@ impl Game {
         }
         if let Some(kind) = stack.id.strip_suffix("_spawn_egg")
             && let Some(hit) = target.as_ref()
+            && let Some(kind) = kind.strip_prefix("minecraft:").or(Some(kind))
         {
             let (dx, dy, dz) = hit.face.offset();
             let at = [
@@ -1237,7 +1259,7 @@ impl Game {
                 }
             }
         }
-        self.swing = Some(0.0);
+        self.start_swing();
         true
     }
 
@@ -1342,6 +1364,11 @@ impl Game {
             }
             let fed = self.creative || self.player.survival.food.level > 6;
             movement.sprint = (input.sprint || self.tap_sprint) && fed && self.eating.is_none();
+            // `LocalPlayer.aiStep`: too hungry to keep running.
+            if !fed {
+                self.player.sprinting = false;
+                self.tap_sprint = false;
+            }
             if self.eating.is_some() {
                 // Eating slows the player to a fifth.
                 movement.forward *= 0.2;
@@ -1511,13 +1538,6 @@ impl Game {
         self.screen = Screen::Playing;
     }
 
-    /// How far through its swing the hand is, 0 to 1.
-    fn swing_progress(&self, partial: f32) -> f32 {
-        self.swing.map_or(0.0, |t| {
-            ((t + partial) / crate::hand::SWING_TICKS).clamp(0.0, 1.0)
-        })
-    }
-
     /// Vanilla's `bobHurt` and `bobView`, in view space.
     fn bob_matrix(&self, partial: f32) -> Mat4 {
         let mut matrix = Mat4::IDENTITY;
@@ -1552,9 +1572,7 @@ impl Game {
         if !self.alive() {
             return Default::default();
         }
-        let swing =
-            self.previous_swing + (self.swing_progress(partial) - self.previous_swing).max(0.0);
-        let swing = if self.swing.is_none() { 0.0 } else { swing };
+        let swing = self.swing.progress(partial);
         let equip = 1.0 - (self.previous_equip + (self.equip - self.previous_equip) * partial);
         let eye_block = (
             eye.x.floor() as i32,
@@ -1779,6 +1797,13 @@ const HORIZONTAL: [(&str, (i32, i32)); 4] = [
 
 fn horizontal_facing(yaw: f64) -> (&'static str, (i32, i32)) {
     HORIZONTAL[((yaw / 90.0 + 0.5).floor() as i32).rem_euclid(4) as usize]
+}
+
+/// Whole wheel notches scrolled, up positive, keeping the fraction for later.
+fn take_notches(scroll: &mut f32) -> i32 {
+    let notches = scroll.trunc();
+    *scroll -= notches;
+    notches as i32
 }
 
 fn center(pos: BlockPos) -> DVec3 {
