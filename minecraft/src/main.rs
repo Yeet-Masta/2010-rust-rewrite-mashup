@@ -8,6 +8,7 @@ macro_rules! log {
     };
 }
 
+mod ambient;
 mod console;
 mod entities;
 mod font;

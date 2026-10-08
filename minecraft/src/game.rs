@@ -18,7 +18,7 @@ use minecraftoss_player::{GameMode, HitFrom, IncomingHit, Player};
 use crate::entities::{Entities, PlayerView};
 use crate::gui::{Button, Gui, Hud, Screen, Slot};
 use crate::mining::Mining;
-use crate::particles::{Options as Emit, Particles, Type};
+use crate::particles::Particles;
 use crate::render::{Renderer, UiList, WorldDraw};
 use crate::sounds::Sounds;
 use crate::world::World;
@@ -103,6 +103,7 @@ pub struct Game {
     sounds: Sounds,
     mining: Mining,
     pub particles: Particles,
+    ambient: crate::ambient::Ambient,
     save_dir: Option<PathBuf>,
     previous: DVec3,
     eye_height: f64,
@@ -163,7 +164,7 @@ impl Game {
                 .map_err(|e| log!("Block loot unavailable: {e:#}"))
                 .ok()
         });
-        let mining = Mining::new(&world.registries, &world.packs, loot, world.seed);
+        let mining = Mining::new(&world.registries, loot, world.seed);
         let sounds = Sounds::load(&world.packs);
         let particles = Particles::new(&world.packs, &world.atlas, world.seed as u64);
         let (x, y, z) = world.stream.player_spawn;
@@ -222,6 +223,7 @@ impl Game {
             sounds,
             mining,
             particles,
+            ambient: crate::ambient::Ambient::default(),
             save_dir: options.save.clone(),
             previous,
             eye_height: 1.62,
@@ -475,6 +477,13 @@ impl Game {
         for hit in events.hits {
             self.hurt_by_mob(hit);
         }
+        for pos in events.bone_meal_used {
+            let mut sounds = Vec::new();
+            crate::ambient::bone_meal(&mut self.particles, &self.world, pos, &mut sounds);
+            for (event, at, volume, pitch) in sounds {
+                self.play(event, Some(at), volume, pitch);
+            }
+        }
         if events.use_taken {
             self.start_swing();
         }
@@ -546,12 +555,13 @@ impl Game {
             eye,
             sky_darken,
         );
-        let (mut particles, mut particle_indices) =
-            self.mining
-                .particle_mesh(&self.world.atlas, forward, partial, &self.world.light);
-        let base = particles.len() as u32;
-        particles.extend(meshes.items.vertices.iter().map(SectionVertex::from_vertex));
-        particle_indices.extend(meshes.items.indices.iter().map(|i| i + base));
+        let particles: Vec<SectionVertex> = meshes
+            .items
+            .vertices
+            .iter()
+            .map(SectionVertex::from_vertex)
+            .collect();
+        let particle_indices = std::mem::take(&mut meshes.items.indices);
         let outline = if self.captures_mouse() && self.alive() && !self.hide_hud {
             self.outline()
         } else {
@@ -1013,12 +1023,22 @@ impl Game {
                 None
             });
         }
-        self.mining.tick_particles(&self.world.scene);
         self.entities.tick_scene(&self.world.scene);
+        // `ClientLevel.animateTick`, then `ParticleEngine.tick`.
+        let mut sounds = Vec::new();
+        if self.landed {
+            let eye = self.player.eye().floor();
+            let around = (eye.x as i32, eye.y as i32, eye.z as i32);
+            self.ambient
+                .tick(&self.world, &mut self.particles, around, &mut sounds);
+        }
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
         self.particles.tick(&self.world);
-        for (event, at, volume, pitch) in std::mem::take(&mut self.particles.sounds) {
-            self.play(event, Some(at), volume, pitch);
+        sounds.append(&mut self.particles.sounds);
+        for (event, at, volume, pitch) in sounds {
+            // A sound played to the player has no position.
+            let at = (!at.x.is_nan()).then_some(at);
+            self.play(event, at, volume, pitch);
         }
         if let Some((_, since)) = self.highlight.as_mut() {
             *since += TICK_SECONDS;
@@ -1083,6 +1103,12 @@ impl Game {
                     (kind.volume + 1.0) / 8.0,
                     kind.pitch * 0.5,
                 );
+            }
+            if let Some(block) = swing.cracked
+                && let Some(hit) = target.as_ref()
+            {
+                self.particles
+                    .crack(&self.world, hit.pos, hit.face.offset(), &block);
             }
             if let Some(broken) = swing.broken {
                 self.broke(broken);
@@ -1241,6 +1267,24 @@ impl Game {
             }
             let (facing, _) = horizontal_facing(self.player.yaw);
             if self.entities.use_block(&self.world.scene, hit.pos, facing) {
+                // `LeverBlock.useWithoutItem` on the client: a speck as it
+                // turns on.
+                if block.id.path == "lever"
+                    && block
+                        .properties
+                        .get("powered")
+                        .is_some_and(|p| p == "false")
+                {
+                    let mut on = block.clone();
+                    on.properties.insert("powered".into(), "true".into());
+                    crate::ambient::lever_particle_at(
+                        &mut self.particles,
+                        &self.world,
+                        hit.pos,
+                        &on,
+                        1.0,
+                    );
+                }
                 self.start_swing();
                 return;
             }
@@ -1286,6 +1330,24 @@ impl Game {
                 f64::from(hit.pos.2 + dz) + 0.5,
             ];
             self.entities.summon(kind, at);
+            self.start_swing();
+            if !self.creative {
+                let selected = self.entities.selected;
+                if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                    held.count -= 1;
+                    if held.count == 0 {
+                        self.entities.inventory.slots[selected] = None;
+                    }
+                }
+            }
+            return;
+        }
+        if stack.id == "minecraft:bone_meal"
+            && let Some(hit) = target.as_ref()
+        {
+            // `BoneMealItem.useOn`: the level grows the block; the item and
+            // sparkles follow when it took (`bone_meal_used`).
+            self.entities.bone_meal(hit.pos, face_name(hit.face));
             self.start_swing();
             if !self.creative {
                 let selected = self.entities.selected;
@@ -1390,13 +1452,8 @@ impl Game {
 
     fn broke(&mut self, broken: crate::mining::Broken) {
         let pos = broken.pos;
-        self.mining.burst(
-            &self.world.packs,
-            &self.world.scene,
-            pos,
-            &broken.block,
-            &self.world.atlas,
-        );
+        // Level event 2001.
+        self.particles.destroy(&self.world, pos, &broken.block);
         // The other half of a door, bed or tall plant goes with it.
         let mut gone = vec![(pos, None)];
         let props = &broken.block.properties;
@@ -1920,6 +1977,18 @@ const HORIZONTAL: [(&str, (i32, i32)); 4] = [
     ("north", (0, -1)),
     ("east", (1, 0)),
 ];
+
+fn face_name(face: minecraftoss_player::Face) -> &'static str {
+    use minecraftoss_player::Face;
+    match face {
+        Face::Down => "down",
+        Face::Up => "up",
+        Face::North => "north",
+        Face::South => "south",
+        Face::West => "west",
+        Face::East => "east",
+    }
+}
 
 fn horizontal_facing(yaw: f64) -> (&'static str, (i32, i32)) {
     HORIZONTAL[((yaw / 90.0 + 0.5).floor() as i32).rem_euclid(4) as usize]

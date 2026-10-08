@@ -94,8 +94,9 @@ fn hit_block(
     })
 }
 
-/// The boxes the ray is tested against, in block-local units.
-fn shape(world: &World, pos: BlockPos, block: &Block) -> Vec<[f64; 6]> {
+/// The boxes the ray is tested against, in block-local units: the
+/// block's outline (`getShape`).
+pub fn shape(world: &World, pos: BlockPos, block: &Block) -> Vec<[f64; 6]> {
     let path = block.id.path.as_str();
     if matches!(
         path,

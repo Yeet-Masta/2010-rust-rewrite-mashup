@@ -66,6 +66,8 @@ pub struct Events {
     /// on (the held item is used instead).
     pub use_taken: bool,
     pub use_passed: bool,
+    /// Where bone meal took (level event 1505).
+    pub bone_meal_used: Vec<(i32, i32, i32)>,
 }
 
 pub struct Entities {
@@ -417,6 +419,12 @@ impl Entities {
         self.server.use_block(scene, pos, facing)
     }
 
+    /// `BoneMealItem.useOn` on a clicked face; whether it took arrives with
+    /// the server's output.
+    pub fn bone_meal(&mut self, pos: (i32, i32, i32), face: &'static str) {
+        self.server.bone_meal(pos, face);
+    }
+
     /// A left click on a block the level acts on (a note block plays).
     pub fn attack_block(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32)) {
         self.server.attack_block(scene, pos);
@@ -528,6 +536,7 @@ impl Entities {
             }
             self.server_picked.extend(output.picked);
             events.changes.extend(output.changes);
+            events.bone_meal_used.extend(output.bone_meal_used);
             for summoned in &output.summoned {
                 if let Err(error) = summoned {
                     log!("Could not summon: {error}");

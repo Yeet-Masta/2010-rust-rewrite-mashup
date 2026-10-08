@@ -550,7 +550,99 @@ impl Particles {
     /// `ParticleEngine.createParticle`: the kind's provider makes it, and it
     /// joins at the next tick.
     pub fn spawn(&mut self, world: &World, options: &Options, pos: DVec3, motion: DVec3) {
-        if let Some(particle) = kinds::create(self, world, options, pos, motion) {
+        if let Some(particle) = self.make(world, options, pos, motion) {
+            self.add(particle);
+        }
+    }
+
+    /// The particle a provider makes, to adjust before adding it.
+    pub fn make(
+        &mut self,
+        world: &World,
+        options: &Options,
+        pos: DVec3,
+        motion: DVec3,
+    ) -> Option<Particle> {
+        kinds::create(self, world, options, pos, motion)
+    }
+
+    /// `ParticleEngine.destroy` (level event 2001): a grid of fragments
+    /// over each box of the block's shape, flying out from its middle.
+    pub fn destroy(
+        &mut self,
+        world: &World,
+        pos: (i32, i32, i32),
+        block: &minecraft_terrain::scene::Block,
+    ) {
+        let options = Options::Block(Type::Block, block.clone());
+        let base = DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+        for b in crate::target::shape(world, pos, block) {
+            let size = DVec3::new(
+                (b[3] - b[0]).min(1.0),
+                (b[4] - b[1]).min(1.0),
+                (b[5] - b[2]).min(1.0),
+            );
+            let count = |w: f64| ((w / 0.25).ceil() as i32).max(2);
+            let (nx, ny, nz) = (count(size.x), count(size.y), count(size.z));
+            for i in 0..nx {
+                for j in 0..ny {
+                    for k in 0..nz {
+                        let rel = DVec3::new(
+                            (f64::from(i) + 0.5) / f64::from(nx),
+                            (f64::from(j) + 0.5) / f64::from(ny),
+                            (f64::from(k) + 0.5) / f64::from(nz),
+                        );
+                        let at = base + rel * size + DVec3::new(b[0], b[1], b[2]);
+                        if let Some(particle) =
+                            self.make(world, &options, at, rel - DVec3::splat(0.5))
+                        {
+                            self.add(particle);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `ParticleEngine.crack`: one fragment off the face being mined.
+    pub fn crack(
+        &mut self,
+        world: &World,
+        pos: (i32, i32, i32),
+        face: (i32, i32, i32),
+        block: &minecraft_terrain::scene::Block,
+    ) {
+        let boxes = crate::target::shape(world, pos, block);
+        if boxes.is_empty() {
+            return;
+        }
+        let min = |i: usize| boxes.iter().map(|b| b[i]).fold(f64::INFINITY, f64::min);
+        let max = |i: usize| {
+            boxes
+                .iter()
+                .map(|b| b[i + 3])
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let base = DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+        let mut at = DVec3::ZERO;
+        for axis in 0..3 {
+            at[axis] = base[axis]
+                + self.random.next_double() * (max(axis) - min(axis) - 0.2)
+                + 0.1
+                + min(axis);
+        }
+        let step = [face.0, face.1, face.2];
+        for axis in 0..3 {
+            match step[axis] {
+                -1 => at[axis] = base[axis] + min(axis) - 0.1,
+                1 => at[axis] = base[axis] + max(axis) + 0.1,
+                _ => {}
+            }
+        }
+        let options = Options::Block(Type::Block, block.clone());
+        if let Some(mut particle) = self.make(world, &options, at, DVec3::ZERO) {
+            particle.set_power(0.2);
+            particle.scale(0.6);
             self.add(particle);
         }
     }

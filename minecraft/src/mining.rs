@@ -6,9 +6,6 @@
 //! `mineable/*` and `incorrect_for_*_tool` tags.
 use std::collections::HashMap;
 
-use minecraft_terrain::block_particles::BlockParticles;
-use minecraft_terrain::mesh::{Atlas, ChunkMesh, SectionVertex};
-use minecraft_terrain::pack::PackStack;
 use minecraft_terrain::scene::{Block, BlockPos, HandcraftedScene, Scene};
 use minecraftoss_core::registries::Registries;
 use minecraftoss_core::tags::TagId;
@@ -187,6 +184,9 @@ pub struct Swing {
     pub broken: Option<Broken>,
     /// A block being mined sounded its hit.
     pub hit: Option<(BlockPos, Block)>,
+    /// The block took a tick of mining (`continueDestroyBlock` went on):
+    /// it cracks a fragment off.
+    pub cracked: Option<Block>,
 }
 
 pub struct Mining {
@@ -199,16 +199,10 @@ pub struct Mining {
     ticks: u32,
     progress: f32,
     delay: u32,
-    particles: Option<BlockParticles>,
 }
 
 impl Mining {
-    pub fn new(
-        registries: &Registries,
-        packs: &PackStack,
-        loot: Option<LootBook>,
-        seed: i64,
-    ) -> Self {
+    pub fn new(registries: &Registries, loot: Option<LootBook>, seed: i64) -> Self {
         Self {
             rules: ToolRules::new(registries),
             loot,
@@ -219,7 +213,6 @@ impl Mining {
             ticks: 0,
             progress: 0.0,
             delay: 0,
-            particles: BlockParticles::new(packs).ok(),
         }
     }
 
@@ -289,6 +282,7 @@ impl Mining {
                     drops: Vec::new(),
                 }),
                 hit: None,
+                cracked: None,
             };
         }
         let mut speed = dig.speed;
@@ -309,7 +303,11 @@ impl Mining {
             // `MultiPlayerGameMode.continueDestroyBlock`: a hit sound every
             // four ticks.
             let hit = (self.ticks % 4 == 1).then(|| (pos, block.clone()));
-            return Swing { broken: None, hit };
+            return Swing {
+                broken: None,
+                hit,
+                cracked: Some(block),
+            };
         }
         let instant = self.ticks == 1;
         self.reset();
@@ -329,6 +327,7 @@ impl Mining {
                 drops,
             }),
             hit: None,
+            cracked: None,
         }
     }
 
@@ -348,47 +347,6 @@ impl Mining {
     pub fn stage(&self) -> Option<(BlockPos, u32)> {
         let (pos, _) = self.target.as_ref()?;
         (self.progress > 0.0).then(|| (*pos, ((self.progress * 10.0) as u32).min(9)))
-    }
-
-    pub fn burst(
-        &mut self,
-        packs: &PackStack,
-        scene: &HandcraftedScene,
-        pos: BlockPos,
-        block: &Block,
-        atlas: &Atlas,
-    ) {
-        if let Some(particles) = self.particles.as_mut() {
-            let _ = particles.spawn(packs, scene, pos, block, atlas);
-        }
-    }
-
-    pub fn tick_particles(&mut self, scene: &HandcraftedScene) {
-        if let Some(particles) = self.particles.as_mut() {
-            particles.tick(scene);
-        }
-    }
-
-    /// The break particles as section vertices, facing `forward`.
-    pub fn particle_mesh(
-        &self,
-        atlas: &Atlas,
-        forward: glam::Vec3,
-        partial: f32,
-        light: &minecraft_terrain::lighting::SkyLight,
-    ) -> (Vec<SectionVertex>, Vec<u32>) {
-        let Some(particles) = self.particles.as_ref() else {
-            return (Vec::new(), Vec::new());
-        };
-        let mut mesh = ChunkMesh::default();
-        particles.append_mesh(&mut mesh, atlas, forward, partial, light);
-        (
-            mesh.vertices
-                .iter()
-                .map(SectionVertex::from_vertex)
-                .collect(),
-            mesh.indices,
-        )
     }
 
     /// A cube a hair larger than the block being mined, textured with its
