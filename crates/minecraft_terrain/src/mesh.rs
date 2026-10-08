@@ -310,14 +310,7 @@ pub fn build_item_model(packs: &PackStack, item: &ResourceId) -> Result<Option<B
     for element in &model.elements {
         for face in &element.faces {
             let corners = element_corners(element, &face.direction)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face_uvs(element, face, atlas.region(&face.texture));
             let tint = face
                 .tint_index
                 .and_then(|index| tints.get(index))
@@ -830,14 +823,7 @@ impl ItemVisuals {
                             continue;
                         }
                         let corners = element_corners(element, &face.direction)?;
-                        let [u0, v0, u1, v1] = atlas.region(&face.texture);
-                        let [a, b, c, d] = face.uv;
-                        let uv = [
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                            [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                            [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                        ];
+                        let uv = face_uvs(element, face, atlas.region(&face.texture));
                         let tint = face
                             .tint_index
                             .and_then(|index| visual.tints.get(index))
@@ -845,8 +831,7 @@ impl ItemVisuals {
                             .unwrap_or([1.0; 3]);
                         let normal = face_normal(&face.direction)?;
                         let rotated_normal =
-                            Mat4::from_rotation_y((element.rotation_y as f32).to_radians())
-                                .transform_vector3(normal);
+                            Vec3::from_array(element.orientation.turn(normal.to_array()));
                         let shade = level_item_shade(
                             normal_pose.transform_vector3(rotated_normal).normalize(),
                         );
@@ -978,14 +963,7 @@ impl ItemVisuals {
                     continue;
                 }
                 let corners = element_corners(element, &face.direction)?;
-                let [u0, v0, u1, v1] = atlas.region(&face.texture);
-                let [a, b, c, d] = face.uv;
-                let uv = [
-                    [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                    [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                    [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                    [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                ];
+                let uv = face_uvs(element, face, atlas.region(&face.texture));
                 let normal = pose.transform_vector3(face_normal(&face.direction)?).normalize_or_zero();
                 let light = shade(normal);
                 let tint = face.tint_index.and_then(|index| tints.get(index)).copied().unwrap_or([1.0; 3]);
@@ -1039,14 +1017,7 @@ impl ItemVisuals {
                         continue;
                     }
                     let corners = element_corners(element, &face.direction)?;
-                    let [u0, v0, u1, v1] = atlas.region(&face.texture);
-                    let [a, b, c, d] = face.uv;
-                    let uv = [
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                        [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                        [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-                    ];
+                    let uv = face_uvs(element, face, atlas.region(&face.texture));
                     let normal = pose.transform_vector3(face_normal(&face.direction)?).normalize();
                     let shade = level_item_shade(normal) * if white { 4.0 } else { 1.0 };
                     let tint = tints.zip(face.tint_index).and_then(|(tints, index)| tints.get(index)).copied().unwrap_or([1.0; 3]);
@@ -1249,29 +1220,10 @@ fn variant_index(variants: &[(ResolvedModel, u32)], (x, y, z): BlockPos) -> usiz
 /// A face's corners as `FaceBakery.bakeVertex` places them: the element's
 /// own rotation about its origin, then the blockstate's.
 fn element_corners(element: &crate::model::Element, face: &str) -> Result<[[f32; 3]; 4]> {
-    let mut quad = corners(face, element.from, element.to)?;
-    // An unrotated sheet with no thickness (leaf litter, ladders, vines) has
-    // its two opposite faces in one plane, textured differently. The terrain is drawn without back-face
-    // culling, so both would fight for the same pixels; each is pushed a
-    // hair out along its own normal so the one facing the viewer wins.
-    let (axis, sign) = match face {
-        "down" => (1, -1.0),
-        "up" => (1, 1.0),
-        "north" => (2, -1.0),
-        "south" => (2, 1.0),
-        "west" => (0, -1.0),
-        _ => (0, 1.0),
-    };
-    if element.rotation.is_none() && element.from[axis] == element.to[axis] {
-        for corner in &mut quad {
-            corner[axis] += sign * SHEET_FACE_OFFSET;
-        }
-    }
-    Ok(quad.map(|corner| rotate_y(element.rotation.map_or(corner, |r| r.apply(corner)), element.rotation_y)))
+    let quad = corners(face, element.from, element.to)?;
+    Ok(quad.map(|corner| element.orientation.apply(element.rotation.map_or(corner, |r| r.apply(corner)))))
 }
 
-/// Blocks; well under a pixel of a block, well over depth precision.
-const SHEET_FACE_OFFSET: f32 = 0.002;
 
 /// The baked quad's direction (`FaceBakery.calculateFacing`): the face's
 /// own, turned with the blockstate, or for a rotated element the direction
@@ -1279,7 +1231,7 @@ const SHEET_FACE_OFFSET: f32 = 0.002;
 /// corners; the first of equals in `Direction` order).
 fn quad_direction(element: &crate::model::Element, face: &str, corners: &[[f32; 3]; 4]) -> Result<&'static str> {
     if element.rotation.is_none() {
-        let dir = rotated_direction(face, element.rotation_y)?;
+        let dir = element.orientation.direction(face);
         return Ok(["down", "up", "north", "south", "west", "east"].into_iter().find(|d| *d == dir).unwrap_or("up"));
     }
     let [v0, v1, v2, _] = *corners;
@@ -1320,25 +1272,18 @@ fn face_cubic(dir: &str, corners: &[[f32; 3]; 4]) -> bool {
     min == max && if matches!(dir, "down" | "north" | "west") { min < 1.0e-4 } else { max > 0.9999 }
 }
 
-fn rotate_y([x, y, z]: [f32; 3], degrees: u16) -> [f32; 3] {
-    match degrees {
-        90 => [1.0 - z, y, x],
-        180 => [1.0 - x, y, 1.0 - z],
-        270 => [z, y, 1.0 - x],
-        _ => [x, y, z],
-    }
+/// A face's atlas UVs at its four corners: its `uv` rectangle's corners
+/// shifted by the face's `rotation` (`CuboidFace.getU`, `getV`), then held
+/// to the world under a blockstate's `uvlock` (`FaceBakery.bakeVertex`).
+fn face_uvs(element: &crate::model::Element, face: &crate::model::Face, [u0, v0, u1, v1]: [f32; 4]) -> [[f32; 2]; 4] {
+    let [a, b, c, d] = face.uv;
+    let corners = [[a, b], [a, d], [c, d], [c, b]];
+    std::array::from_fn(|i| {
+        let [u, v] = element.orientation.lock_uv(&face.direction, corners[(i + face.rotation as usize) % 4]);
+        [u0 + (u1 - u0) * u, v0 + (v1 - v0) * v]
+    })
 }
-fn rotated_direction(dir: &str, degrees: u16) -> Result<&str> {
-    let i = match dir {
-        "north" => 0,
-        "east" => 1,
-        "south" => 2,
-        "west" => 3,
-        "up" | "down" => return Ok(dir),
-        _ => return Err(anyhow!("unsupported face direction {dir}")),
-    };
-    Ok(["north", "east", "south", "west"][(i + degrees as usize / 90) % 4])
-}
+
 /// Sprite mip levels below the first (`Options.mipmapLevels`' default of 4).
 pub const MIP_LEVELS: usize = 4;
 
@@ -1732,19 +1677,12 @@ pub(crate) fn bake_quads(block: &Block, model: &ResolvedModel, atlas: &Atlas) ->
     let mut quads = Vec::new();
     for element in &model.elements {
         for face in &element.faces {
-            let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
+            let cull_dir = element.orientation.direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()));
             let cull_delta = direction(cull_dir)?;
             let corners = element_corners(element, &face.direction)?;
             let dir = quad_direction(element, &face.direction, &corners)?;
             let delta = direction(dir)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face_uvs(element, face, atlas.region(&face.texture));
             let shade = match element.shade_direction_override.as_deref().unwrap_or(dir) {
                 "up" => 1.0,
                 "down" => 0.5,
@@ -1904,7 +1842,7 @@ pub(crate) fn append_block<'m, S: Scene>(
         for face in &element.faces {
             // Culled quads go with their cullface (turned with the
             // blockstate), and take their light from that neighbour.
-            let cull_dir = rotated_direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()), element.rotation_y)?;
+            let cull_dir = element.orientation.direction(face.cullface.as_deref().unwrap_or(face.direction.as_str()));
             let cull_delta = direction(cull_dir)?;
             if face.cull && hidden_by((x + cull_delta.0, y + cull_delta.1, z + cull_delta.2)) {
                 continue;
@@ -1912,14 +1850,7 @@ pub(crate) fn append_block<'m, S: Scene>(
             let corners = element_corners(element, &face.direction)?;
             let dir = quad_direction(element, &face.direction, &corners)?;
             let delta = direction(dir)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face_uvs(element, face, atlas.region(&face.texture));
             let shade = match element.shade_direction_override.as_deref().unwrap_or(dir) {
                 "up" => 1.0,
                 "down" => 0.5,
@@ -2312,7 +2243,7 @@ pub fn block_preview<S: Scene>(
             if !atlas.contains(&face.texture) {
                 return Err(anyhow!("atlas missing {}", face.texture.key()));
             }
-            let dir = rotated_direction(face.direction.as_str(), element.rotation_y)?;
+            let dir = element.orientation.direction(face.direction.as_str());
             let delta = direction(dir)?;
             let neighbor_pos = (pos.0 + delta.0, pos.1 + delta.1, pos.2 + delta.2);
             if face.cull {
@@ -2342,14 +2273,7 @@ pub fn block_preview<S: Scene>(
                 }
             }
             let corners = element_corners(element, &face.direction)?;
-            let [u0, v0, u1, v1] = atlas.region(&face.texture);
-            let [a, b, c, d] = face.uv;
-            let uv = [
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
-                [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
-                [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
-            ];
+            let uv = face_uvs(element, face, atlas.region(&face.texture));
             let shade = if block.id.path == "chest" {
                 level_item_shade(face_normal(dir)?)
             } else {
@@ -2515,7 +2439,7 @@ mod tests {
             from: [0.8 / 16.0, 0.0, 0.5],
             to: [15.2 / 16.0, 1.0, 0.5],
             faces: Vec::new(),
-            rotation_y: 0,
+            orientation: crate::model::Orientation::default(),
             rotation: crate::model::ElementRotation::parse(&raw).unwrap(),
             shade_direction_override: None,
         };
@@ -2527,10 +2451,10 @@ mod tests {
         assert_eq!(quad_direction(&element, "north", &corners).unwrap(), "north");
         assert_eq!(quad_direction(&element, "south", &element_corners(&element, "south").unwrap()).unwrap(), "south");
         assert!(!face_cubic("north", &corners), "a diagonal plane is lit from its own cell");
-        let cube = crate::model::Element { from: [0.0; 3], to: [1.0; 3], faces: Vec::new(), rotation_y: 0, rotation: None, shade_direction_override: None };
+        let cube = crate::model::Element { from: [0.0; 3], to: [1.0; 3], faces: Vec::new(), orientation: crate::model::Orientation::default(), rotation: None, shade_direction_override: None };
         let top = element_corners(&cube, "up").unwrap();
         assert!(face_cubic("up", &top), "a cube's top lies on its side");
-        let slab = crate::model::Element { from: [0.0; 3], to: [1.0, 0.5, 1.0], faces: Vec::new(), rotation_y: 0, rotation: None, shade_direction_override: None };
+        let slab = crate::model::Element { from: [0.0; 3], to: [1.0, 0.5, 1.0], faces: Vec::new(), orientation: crate::model::Orientation::default(), rotation: None, shade_direction_override: None };
         assert!(!face_cubic("up", &element_corners(&slab, "up").unwrap()), "a slab's top is inside the block");
         // A 22.5° torch tilt about z: no rescale.
         let raw: serde_json::Value = serde_json::from_str(r#"{"rotation":{"origin":[0,3.5,8],"axis":"z","angle":-22.5}}"#).unwrap();
@@ -2689,6 +2613,7 @@ mod tests {
             tint: tint_index.is_some(),
             tint_index,
             force_translucent: false,
+            rotation: 0,
         };
         let mut visuals = ItemVisuals::default();
         visuals.models.insert(
@@ -2699,7 +2624,7 @@ mod tests {
                         from: [0.0; 3],
                         to: [1.0; 3],
                         faces: vec![face("up", Some(0)), face("north", None)],
-                        rotation_y: 0,
+                        orientation: crate::model::Orientation::default(),
                         rotation: None,
                         shade_direction_override: None,
                     }],
@@ -2820,7 +2745,7 @@ mod tests {
             elements: vec![crate::model::Element {
                 from,
                 to,
-                rotation_y: 0,
+                orientation: crate::model::Orientation::default(),
                 rotation: None,
                 shade_direction_override: None,
                 faces: ["down", "up", "north", "south", "west", "east"]
@@ -2833,6 +2758,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -3052,7 +2978,7 @@ mod tests {
             elements: vec![crate::model::Element {
                 from: [0.0; 3],
                 to: [1.0; 3],
-                rotation_y: 0,
+                orientation: crate::model::Orientation::default(),
                 rotation: None,
                 shade_direction_override: None,
                 faces: ["down", "up", "north", "south", "west", "east"]
@@ -3065,6 +2991,7 @@ mod tests {
                         tint: false,
                         tint_index: None,
                         force_translucent: false,
+                        rotation: 0,
                     })
                     .to_vec(),
             }],
@@ -3168,8 +3095,29 @@ mod tests {
         assert_eq!(variant_index(&variants, (0, 1, 1)), 3);
         assert_eq!(variant_index(&variants, (-1, 1, 0)), 1);
         assert_eq!(variant_index(&variants, (2_000_000_000, 1, 0)), 1);
-        assert_eq!(rotate_y([0.0, 1.0, 0.0], 90), [1.0, 1.0, 0.0]);
-        assert_eq!(rotated_direction("north", 90).unwrap(), "east");
+        let turned = crate::model::Orientation::y(90);
+        assert_eq!(turned.apply([0.0, 1.0, 0.0]), [1.0, 1.0, 0.0]);
+        assert_eq!(turned.direction("north"), "east");
+        // A vertical log laid along X (`axis=x`: x 90, y 90): its ends face
+        // east and west; a mushroom's cap face (x 270) faces up.
+        let log = crate::model::Orientation { x: 90, y: 90, ..Default::default() };
+        assert_eq!((log.direction("up"), log.direction("down")), ("east", "west"));
+        let cap = crate::model::Orientation { x: 270, uvlock: true, ..Default::default() };
+        assert_eq!(cap.direction("north"), "up");
+        assert_eq!(crate::model::Orientation { x: 90, ..Default::default() }.direction("north"), "down");
+        // The single face a mushroom block's sides are made of, turned to
+        // the top: it lies on the block's top, facing up.
+        let face = crate::model::Element {
+            from: [0.0; 3],
+            to: [1.0, 1.0, 0.0],
+            faces: Vec::new(),
+            orientation: cap,
+            rotation: None,
+            shade_direction_override: None,
+        };
+        let top = element_corners(&face, "north").unwrap();
+        assert!(top.iter().all(|corner| (corner[1] - 1.0).abs() < 1e-6), "{top:?}");
+        assert_eq!(quad_direction(&face, "north", &top).unwrap(), "up");
     }
 }
 

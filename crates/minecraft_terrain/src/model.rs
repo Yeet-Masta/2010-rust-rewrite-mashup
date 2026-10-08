@@ -18,13 +18,135 @@ pub struct Face {
     pub tint: bool,
     pub tint_index: Option<usize>,
     pub force_translucent: bool,
+    /// `CuboidFace.rotation`: quarter turns of the UV rectangle's corners.
+    pub rotation: u8,
 }
+/// A blockstate variant's quarter turns about `x`, `y` and `z` and its
+/// `uvlock` (`Variant.SimpleModelState`): the model turned about the
+/// block's middle, X first, then Y, then Z (`Quadrant.fromXYZAngles`,
+/// `BlockModelRotation`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Orientation {
+    pub x: u16,
+    pub y: u16,
+    pub z: u16,
+    pub uvlock: bool,
+}
+
+type Matrix = [[i32; 3]; 3];
+
+const IDENTITY: Matrix = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+fn multiply(a: &Matrix, b: &Matrix) -> Matrix {
+    std::array::from_fn(|r| std::array::from_fn(|c| (0..3).map(|k| a[r][k] * b[k][c]).sum()))
+}
+
+fn transpose(m: &Matrix) -> Matrix {
+    std::array::from_fn(|r| std::array::from_fn(|c| m[c][r]))
+}
+
+fn transform(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| (0..3).map(|k| m[r][k] as f32 * v[k]).sum())
+}
+
+/// `base` turned `degrees / 90` times.
+fn power(base: &Matrix, degrees: u16) -> Matrix {
+    (0..degrees / 90 % 4).fold(IDENTITY, |m, _| multiply(base, &m))
+}
+
+/// The unit normal of a direction's name.
+fn normal(direction: &str) -> [i32; 3] {
+    match direction {
+        "down" => [0, -1, 0],
+        "up" => [0, 1, 0],
+        "north" => [0, 0, -1],
+        "south" => [0, 0, 1],
+        "west" => [-1, 0, 0],
+        _ => [1, 0, 0],
+    }
+}
+
+/// The direction nearest a vector (`Direction.getApproximateNearest`).
+fn nearest(v: [f32; 3]) -> &'static str {
+    ["down", "up", "north", "south", "west", "east"]
+        .into_iter()
+        .max_by(|a, b| {
+            let dot = |d: &str| {
+                let n = normal(d);
+                (0..3).map(|i| n[i] as f32 * v[i]).sum::<f32>()
+            };
+            dot(a).total_cmp(&dot(b))
+        })
+        .unwrap_or("up")
+}
+
+/// `BlockMath`'s turn from a south-facing face's frame to each side's.
+fn local_to_global(side: &str) -> Matrix {
+    match side {
+        "east" => [[0, 0, 1], [0, 1, 0], [-1, 0, 0]],
+        "west" => [[0, 0, -1], [0, 1, 0], [1, 0, 0]],
+        "north" => [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
+        "up" => [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+        "down" => [[1, 0, 0], [0, 0, -1], [0, 1, 0]],
+        _ => IDENTITY,
+    }
+}
+
+impl Orientation {
+    pub fn y(y: u16) -> Self {
+        Self { y, ..Self::default() }
+    }
+
+    /// `OctahedralGroup`'s matrix: `BLOCK_ROT_Z`, `_Y` and `_X` composed.
+    fn matrix(&self) -> Matrix {
+        let x = power(&[[1, 0, 0], [0, 0, 1], [0, -1, 0]], self.x);
+        let y = power(&[[0, 0, -1], [0, 1, 0], [1, 0, 0]], self.y);
+        let z = power(&[[0, 1, 0], [-1, 0, 0], [0, 0, 1]], self.z);
+        multiply(&z, &multiply(&y, &x))
+    }
+
+    /// A point of the model turned about the block's middle.
+    pub fn apply(&self, point: [f32; 3]) -> [f32; 3] {
+        if (self.x, self.y, self.z) == (0, 0, 0) {
+            return point;
+        }
+        let turned = transform(&self.matrix(), point.map(|c| c - 0.5));
+        turned.map(|c| c + 0.5)
+    }
+
+    /// A vector of the model turned.
+    pub fn turn(&self, vector: [f32; 3]) -> [f32; 3] {
+        transform(&self.matrix(), vector)
+    }
+
+    /// Where a face's direction points once turned.
+    pub fn direction(&self, direction: &str) -> &'static str {
+        nearest(self.turn(normal(direction).map(|c| c as f32)))
+    }
+
+    /// A UV corner of a face (0 to 1 across the sprite) as `uvlock` keeps
+    /// the texture fixed to the world: turned back by the face's
+    /// transformation (`BlockModelRotation.inverseFaceTransformation`,
+    /// `BlockMath.getFaceTransformation`).
+    pub fn lock_uv(&self, face: &str, [u, v]: [f32; 2]) -> [f32; 2] {
+        if !self.uvlock || (self.x, self.y, self.z) == (0, 0, 0) {
+            return [u, v];
+        }
+        let action = multiply(&self.matrix(), &local_to_global(face));
+        let side = nearest(transform(&action, [0.0, 0.0, 1.0]));
+        let local = multiply(&transpose(&local_to_global(side)), &action);
+        let [u, v, _] = transform(&transpose(&local), [u - 0.5, v - 0.5, 0.0]);
+        [u + 0.5, v + 0.5]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Element {
     pub from: [f32; 3],
     pub to: [f32; 3],
     pub faces: Vec<Face>,
-    pub rotation_y: u16,
+    /// The blockstate variant's turn, applied after the element's own.
+    pub orientation: Orientation,
     /// `CuboidModelElement.rotation`, applied before the blockstate's.
     pub rotation: Option<ElementRotation>,
     /// CuboidModelElement.shadeDirectionOverride affects directional brightness.
@@ -240,11 +362,12 @@ fn generated_item_model(pack: &PackStack, id: &ResourceId, model: &Value) -> Res
             tint: true,
             tint_index: Some(layer),
             force_translucent: false,
+            rotation: 0,
         };
         elements.push(Element {
             from: [0.0, 0.0, 7.5 / 16.0],
             to: [1.0, 1.0, 8.5 / 16.0],
-            rotation_y: 0,
+            orientation: Orientation::default(),
             rotation: None,
             shade_direction_override: None,
             faces: vec![
@@ -276,7 +399,7 @@ fn generated_item_model(pack: &PackStack, id: &ResourceId, model: &Value) -> Res
                     elements.push(Element {
                         from,
                         to,
-                        rotation_y: 0,
+                        orientation: Orientation::default(),
                         rotation: None,
                         shade_direction_override: None,
                         faces: vec![face(direction, uv)],
@@ -439,7 +562,7 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
         Element {
             from,
             to,
-            rotation_y,
+            orientation: Orientation::y(rotation_y),
             rotation: None,
             shade_direction_override: None,
             faces: [
@@ -504,6 +627,7 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
                     tint: false,
                     tint_index: None,
                     force_translucent: false,
+                    rotation: 0,
                 }
             })
             .collect(),
@@ -536,10 +660,19 @@ fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
 fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Result<ResolvedModel> {
     let mut elements = Vec::new();
     for &choice in choices {
-        let rotation_y = choice.get("y").and_then(Value::as_u64).unwrap_or(0);
-        if rotation_y > 270 || rotation_y % 90 != 0 {
-            bail!("unsupported model Y rotation {rotation_y}");
-        }
+        let quarter = |axis: &str| -> Result<u16> {
+            let degrees = choice.get(axis).and_then(Value::as_i64).unwrap_or(0).rem_euclid(360);
+            if degrees % 90 != 0 {
+                bail!("invalid rotation {degrees} found, only 0/90/180/270 allowed");
+            }
+            Ok(degrees as u16)
+        };
+        let orientation = Orientation {
+            x: quarter("x")?,
+            y: quarter("y")?,
+            z: quarter("z")?,
+            uvlock: choice.get("uvlock").and_then(Value::as_bool).unwrap_or(false),
+        };
         let raw_id = choice
             .get("model")
             .and_then(Value::as_str)
@@ -600,13 +733,14 @@ fn resolve_choices(pack: &PackStack, block: &Block, choices: &[&Value]) -> Resul
                         .and_then(Value::as_u64)
                         .map(|index| index as usize),
                     force_translucent,
+                    rotation: data.get("rotation").and_then(Value::as_i64).map_or(0, |r| (r.rem_euclid(360) / 90) as u8),
                 });
             }
             elements.push(Element {
                 from,
                 to,
                 faces: resolved,
-                rotation_y: rotation_y as u16,
+                orientation,
                 rotation: ElementRotation::parse(raw)?,
                 shade_direction_override: raw
                     .get("shade_direction_override")
@@ -830,7 +964,7 @@ fn fallback_fluid(texture: ResourceId) -> Vec<Element> {
     vec![Element {
         from: [0.0; 3],
         to: [1.0, 8.0 / 9.0, 1.0],
-        rotation_y: 0,
+        orientation: Orientation::default(),
         rotation: None,
         shade_direction_override: None,
         faces: ["down", "up", "north", "south", "west", "east"]
@@ -844,6 +978,7 @@ fn fallback_fluid(texture: ResourceId) -> Vec<Element> {
                 tint: false,
                 tint_index: None,
                 force_translucent: false,
+                rotation: 0,
             })
             .collect(),
     }]
@@ -1011,7 +1146,7 @@ mod tests {
         assert_eq!(
             variants
                 .iter()
-                .map(|(model, weight)| (model.elements[0].rotation_y, *weight))
+                .map(|(model, weight)| (model.elements[0].orientation.y, *weight))
                 .collect::<Vec<_>>(),
             vec![(0, 1), (90, 2), (180, 1), (270, 1)]
         );
