@@ -2151,21 +2151,22 @@ fn append_fluid<S: Scene>(
         } else {
             &still
         };
-        fluid_quad(
-            mesh,
-            transparent,
-            [
-                [x, y + nw - 0.001, z],
-                [x, y + sw - 0.001, z + 1.0],
-                [x + 1.0, y + se - 0.001, z + 1.0],
-                [x + 1.0, y + ne - 0.001, z],
-            ],
-            uv(texture, coords),
-            color(1.0),
-            sky,
-            light.get_block(pos) as f32,
-            water,
-        );
+        let top = [
+            [x, y + nw - 0.001, z],
+            [x, y + sw - 0.001, z + 1.0],
+            [x + 1.0, y + se - 0.001, z + 1.0],
+            [x + 1.0, y + ne - 0.001, z],
+        ];
+        let top_uv = uv(texture, coords);
+        fluid_quad(mesh, transparent, top, top_uv, color(1.0), sky, light.get_block(pos) as f32, water);
+        // `FluidState.shouldRenderBackwardUpFace`: the surface seen from
+        // below. Water's pass draws both sides; lava's culls, so it gets the
+        // face turned round.
+        if !water {
+            let [a, b, c, d] = top;
+            let [ua, ub, uc, ud] = top_uv;
+            fluid_quad(mesh, transparent, [a, d, c, b], [ua, ud, uc, ub], color(1.0), sky, light.get_block(pos) as f32, water);
+        }
     }
     if bottom {
         fluid_quad(

@@ -1535,13 +1535,16 @@ impl Pipelines {
                 None,
                 None,
             ),
+            // The chunk layers cull back faces, as vanilla's terrain
+            // pipelines do: a plant's cross model is two coplanar quads back
+            // to back, which drawn together would fight for every pixel.
             opaque: world(
                 "vertex",
                 "opaque",
                 &section,
                 Some((true, GreaterEqual)),
                 None,
-                None,
+                Some(wgpu::Face::Back),
             ),
             translucent: world(
                 "vertex",
