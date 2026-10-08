@@ -303,8 +303,187 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
                 }
             }
         }
+        "minecraft:copper_golem_statue" => {
+            // The texture is named by its file: `textures/<path>.png`.
+            let texture = model["texture"].as_str().unwrap_or("minecraft:textures/entity/copper_golem/copper_golem.png");
+            let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
+            let path = path.strip_prefix("textures/").unwrap_or(path);
+            let path = path.strip_suffix(".png").unwrap_or(path);
+            vec![copper_golem(model["pose"].as_str().unwrap_or("standing"), &format!("{namespace}:{path}"))]
+        }
         _ => return Ok(None),
     }))
+}
+
+fn grown(mut cube: Cube, grow: f32) -> Cube {
+    cube.grow = grow;
+    cube
+}
+
+/// `CopperGolemModel`'s layer for a statue's pose (`createBodyLayer`,
+/// `createSittingPoseBodyLayer`, `createStarPoseBodyLayer` or
+/// `createRunningPoseBodyLayer`), its root posed by
+/// `CopperGolemStatueModel.setupAnim`.
+fn copper_golem(pose: &str, texture: &str) -> Layer {
+    let z = 0.015;
+    let arm = |offset: [f32; 3], children: Vec<Part>| part(offset, Vec::new()).with(children);
+    let parts = match pose {
+        "sitting" => vec![
+            part(
+                [0.0, -3.0, 2.325],
+                vec![
+                    cube(3.0, 19.0, [-3.0, -4.0, -4.525], [6.0, 1.0, 6.0]),
+                    cube(0.0, 15.0, [-4.0, -3.0, -3.525], [8.0, 6.0, 6.0]),
+                ],
+            )
+            .with(vec![
+                part([0.0, -1.0, -4.325], vec![cube(3.0, 18.0, [-4.0, -3.0, -2.2], [8.0, 6.0, 3.0])])
+                    .rotated([0.0, 0.0, -std::f32::consts::PI]),
+                part(
+                    [0.0, -6.0, -0.2],
+                    vec![
+                        grown(cube(37.0, 8.0, [-1.0, -7.0, -3.3], [2.0, 4.0, 2.0]), -z),
+                        grown(cube(37.0, 0.0, [-2.0, -11.0, -4.3], [4.0, 4.0, 4.0]), -z),
+                        cube(0.0, 0.0, [-4.0, -3.0, -7.325], [8.0, 5.0, 10.0]),
+                        cube(56.0, 0.0, [-1.0, 0.0, -8.325], [2.0, 3.0, 2.0]),
+                    ],
+                ),
+                arm(
+                    [-4.0, -5.6, -1.8],
+                    vec![part(
+                        [0.0, 0.0893, 0.1198],
+                        vec![cube(36.0, 16.0, [-3.075, -0.9733, -1.9966], [3.0, 10.0, 4.0])],
+                    )
+                    .rotated([-std::f32::consts::FRAC_PI_3, 0.0, 0.0])],
+                )
+                .rotated([0.4363, 0.0, 0.0]),
+                arm(
+                    [4.0, -5.6, -1.7],
+                    vec![part(
+                        [0.0, -0.0015, -0.0808],
+                        vec![cube(50.0, 16.0, [0.075, -1.0443, -1.8997], [3.0, 10.0, 4.0])],
+                    )
+                    .rotated([-std::f32::consts::FRAC_PI_3, 0.0, 0.0])],
+                )
+                .rotated([0.4363, 0.0, 0.0]),
+            ]),
+            arm(
+                [-2.1, -2.1, -2.075],
+                vec![part([0.05, -1.9, 1.075], vec![cube(0.0, 27.0, [-2.0, 0.975, 0.0], [4.0, 5.0, 4.0])])
+                    .rotated([-std::f32::consts::FRAC_PI_2, 0.0, 0.0])],
+            ),
+            arm(
+                [2.0, -2.0, -2.075],
+                vec![part([0.05, -2.0, 1.075], vec![cube(16.0, 27.0, [-2.0, 0.975, 0.0], [4.0, 5.0, 4.0])])
+                    .rotated([-std::f32::consts::FRAC_PI_2, 0.0, 0.0])],
+            ),
+        ],
+        "running" => vec![
+            arm(
+                [-1.064, -5.0, 0.0],
+                vec![
+                    part([1.1, 0.1, 0.7], vec![cube(0.0, 15.0, [-4.02, -6.116, -3.5], [8.0, 6.0, 6.0])])
+                        .rotated([0.1204, -0.0064, -0.0779]),
+                    part(
+                        [0.7, -5.6, -1.8],
+                        vec![
+                            cube(0.0, 0.0, [-4.0, -5.1, -5.0], [8.0, 5.0, 10.0]),
+                            cube(56.0, 0.0, [-1.02, -2.1, -6.0], [2.0, 3.0, 2.0]),
+                            grown(cube(37.0, 8.0, [-1.02, -9.1, -1.0], [2.0, 4.0, 2.0]), -z),
+                            grown(cube(37.0, 0.0, [-2.0, -13.1, -2.0], [4.0, 4.0, 4.0]), -z),
+                        ],
+                    ),
+                    arm(
+                        [-4.0, -6.0, 0.0],
+                        vec![part(
+                            [0.7, -0.248, -1.62],
+                            vec![cube(36.0, 16.0, [-3.052, -1.11, -2.036], [3.0, 10.0, 4.0])],
+                        )
+                        .rotated([1.0036, 0.0, 0.0])],
+                    ),
+                    arm(
+                        [4.0, -6.0, 0.0],
+                        vec![part([0.732, 0.0, 0.0], vec![cube(50.0, 16.0, [0.032, -1.1, -2.0], [3.0, 10.0, 4.0])])
+                            .rotated([-0.8715, -0.0535, -0.0449])],
+                    ),
+                ],
+            ),
+            arm(
+                [-3.064, -5.0, 0.0],
+                vec![part([1.048, 0.0, -0.9], vec![cube(0.0, 27.0, [-1.856, -0.1, -1.09], [4.0, 5.0, 4.0])])
+                    .rotated([-0.8727, 0.0, 0.0])],
+            ),
+            arm(
+                [0.936, -5.0, 0.0],
+                vec![part([1.0, 0.0, 0.0], vec![cube(16.0, 27.0, [-2.088, -0.1, -2.0], [4.0, 5.0, 4.0])])
+                    .rotated([std::f32::consts::FRAC_PI_4, 0.0, 0.0])],
+            ),
+        ],
+        _ => {
+            let star = pose == "star";
+            let head = part(
+                [0.0, -6.0, 0.0],
+                vec![
+                    grown(cube(0.0, 0.0, [-4.0, -5.0, -5.0], [8.0, 5.0, 10.0]), if star { 0.0 } else { z }),
+                    cube(56.0, 0.0, [-1.0, -2.0, -6.0], [2.0, 3.0, 2.0]),
+                    grown(cube(37.0, 8.0, [-1.0, -9.0, -1.0], [2.0, 4.0, 2.0]), -z),
+                    grown(cube(37.0, 0.0, [-2.0, -13.0, -2.0], [4.0, 4.0, 4.0]), -z),
+                ],
+            );
+            let right_arm = cube(36.0, 16.0, [-3.0, -1.0, -2.0], [3.0, 10.0, 4.0]);
+            let left_arm = cube(50.0, 16.0, [0.0, -1.0, -2.0], [3.0, 10.0, 4.0]);
+            let right_leg = cube(0.0, 27.0, [-4.0, 0.0, -2.0], [4.0, 5.0, 4.0]);
+            let left_leg = cube(16.0, 27.0, [0.0, 0.0, -2.0], [4.0, 5.0, 4.0]);
+            let (arms, legs) = if star {
+                let spread = 1.9199;
+                let tilt = 0.2618;
+                (
+                    [
+                        arm(
+                            [-4.0, -6.0, 0.0],
+                            vec![part([1.0, 1.0, 0.0], vec![cube(36.0, 16.0, [-1.5, -5.0, -2.0], [3.0, 10.0, 4.0])])
+                                .rotated([0.0, 0.0, spread])],
+                        ),
+                        arm(
+                            [4.0, -6.0, 0.0],
+                            vec![part([-1.0, 1.0, 0.0], vec![cube(50.0, 16.0, [-1.5, -5.0, -2.0], [3.0, 10.0, 4.0])])
+                                .rotated([0.0, 0.0, -spread])],
+                        ),
+                    ],
+                    [
+                        arm(
+                            [-3.0, -5.0, 0.0],
+                            vec![part([0.35, 2.0, 0.01], vec![cube(0.0, 27.0, [-2.0, -2.5, -2.0], [4.0, 5.0, 4.0])])
+                                .rotated([0.0, 0.0, tilt])],
+                        ),
+                        arm(
+                            [1.0, -5.0, 0.0],
+                            vec![part([1.65, 2.0, 0.0], vec![cube(16.0, 27.0, [-2.0, -2.5, -2.0], [4.0, 5.0, 4.0])])
+                                .rotated([0.0, 0.0, -tilt])],
+                        ),
+                    ],
+                )
+            } else {
+                (
+                    [part([-4.0, -6.0, 0.0], vec![right_arm]), part([4.0, -6.0, 0.0], vec![left_arm])],
+                    [part([0.0, -5.0, 0.0], vec![right_leg]), part([0.0, -5.0, 0.0], vec![left_leg])],
+                )
+            };
+            let [right_arm, left_arm] = arms;
+            let [right_leg, left_leg] = legs;
+            vec![
+                part([0.0, -5.0, 0.0], vec![cube(0.0, 15.0, [-4.0, -6.0, -3.0], [8.0, 6.0, 6.0])])
+                    .with(vec![head, right_arm, left_arm]),
+                right_leg,
+                left_leg,
+            ]
+        }
+    };
+    layer(
+        texture,
+        [64.0, 64.0],
+        vec![part([0.0; 3], Vec::new()).rotated([0.0, 0.0, std::f32::consts::PI]).with(parts)],
+    )
 }
 
 /// `SkullModel.createHumanoidHeadLayer`.
@@ -669,6 +848,10 @@ pub const HAND_SHEETS: &[&str] = &[
     "minecraft:entity/shulker/shulker_green",
     "minecraft:entity/shulker/shulker_red",
     "minecraft:entity/shulker/shulker_black",
+    "minecraft:entity/copper_golem/copper_golem",
+    "minecraft:entity/copper_golem/copper_golem_exposed",
+    "minecraft:entity/copper_golem/copper_golem_weathered",
+    "minecraft:entity/copper_golem/copper_golem_oxidized",
 ];
 
 /// An item a special model renderer draws, held in a hand
@@ -859,8 +1042,10 @@ mod tests {
             "chest", "trapped_chest", "ender_chest", "copper_chest", "white_shulker_box", "shulker_box",
             "red_banner", "black_banner", "shield", "conduit", "decorated_pot", "skeleton_skull",
             "wither_skeleton_skull", "zombie_head", "player_head", "creeper_head", "piglin_head", "dragon_head",
+            "copper_golem_statue", "exposed_copper_golem_statue", "weathered_copper_golem_statue",
+            "oxidized_copper_golem_statue",
         ];
-        let size = 64u32;
+        let size: u32 = std::env::var("ICON_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
         let mut out = RgbaImage::from_pixel(size * items.len() as u32, size, image::Rgba([139, 139, 139, 255]));
         for (i, item) in items.iter().enumerate() {
             if let Some(icon) = special_icon(&packs, &format!("minecraft:{item}"), size as usize, None).unwrap() {
