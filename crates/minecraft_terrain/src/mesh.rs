@@ -93,6 +93,7 @@ pub struct Atlas {
     pub animated_tiles: Vec<AnimatedTile>,
 }
 pub struct AnimatedTile {
+    /// The slot's corner; the frames carry their padding.
     pub origin: (u32, u32),
     pub frames: Vec<Vec<RgbaImage>>,
     pub sequence: Vec<(usize, u32)>,
@@ -1341,6 +1342,35 @@ fn rotated_direction(dir: &str, degrees: u16) -> Result<&str> {
 /// Sprite mip levels below the first (`Options.mipmapLevels`' default of 4).
 pub const MIP_LEVELS: usize = 4;
 
+/// `Stitcher`'s padding around every sprite, in texels: one texel of the
+/// smallest mip level, so filtering at a sprite's edge never reaches the
+/// sprite beside it.
+const PADDING: u32 = 1 << MIP_LEVELS;
+
+/// A sprite's mip level framed by `padding` texels of its edges repeated
+/// outward, as `animate_sprite_blit` fills a slot (the sprite sampled
+/// clamped to its edge, nearest).
+fn pad(image: &RgbaImage, padding: u32) -> RgbaImage {
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return image.clone();
+    }
+    RgbaImage::from_fn(width + 2 * padding, height + 2 * padding, |x, y| {
+        let x = x.saturating_sub(padding).min(width - 1);
+        let y = y.saturating_sub(padding).min(height - 1);
+        *image.get_pixel(x, y)
+    })
+}
+
+/// A sprite's mip levels, each padded by its share of [`PADDING`].
+fn padded(levels: Vec<RgbaImage>) -> Vec<RgbaImage> {
+    levels
+        .iter()
+        .enumerate()
+        .map(|(level, image)| pad(image, PADDING >> level))
+        .collect()
+}
+
 /// A texture's `.mcmeta` `texture` section: its mipmap strategy and alpha
 /// cutoff bias.
 fn mip_settings(meta: Option<&serde_json::Value>) -> (texture_mips::Strategy, f32) {
@@ -1356,10 +1386,10 @@ fn mip_settings(meta: Option<&serde_json::Value>) -> (texture_mips::Strategy, f3
 }
 
 /// The block, item, particle and entity atlas, as vanilla's stitcher lays a
-/// sprite atlas out: every sprite at its own resolution (one larger than
-/// a 16-texel cell spans several; a smaller one is scaled up to a cell),
-/// its mip levels made as `SpriteContents` makes them, and its UVs its
-/// exact bounds.
+/// sprite atlas out: every sprite at its own resolution (a smaller one than
+/// 16 texels is scaled up to 16) inside a slot with [`PADDING`] texels of
+/// its edges around it, rounded up to whole 16-texel cells; its mip levels
+/// made as `SpriteContents` makes them, and its UVs its exact bounds.
 pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<Atlas> {
     textures.insert(0, ResourceId::parse("minecraft:missingno")?);
     let tile = 16u32;
@@ -1377,33 +1407,28 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
                 } else {
                     (width, height)
                 };
-                (width.div_ceil(tile).max(1), height.div_ceil(tile).max(1))
+                let cells = |side: u32| (side.max(tile) + 2 * PADDING).div_ceil(tile);
+                (cells(width), cells(height))
             }
-            None => (1, 1),
+            None => ((tile + 2 * PADDING) / tile, (tile + 2 * PADDING) / tile),
         };
         images.push(bytes);
         spans.push(span);
     }
-    let cells: u32 = spans.iter().map(|&(w, h)| w * h).sum();
-    let mut side = (cells as f32).sqrt().ceil() as u32;
-    let positions = loop {
-        if let Some(positions) = place_cells(&spans, side) {
-            break positions;
-        }
-        side += 1;
-    };
-    let mut pixels = RgbaImage::new(side * tile, side * tile);
+    let (positions, (columns, rows)) = shelve(&spans);
+    let mut pixels = RgbaImage::new(columns * tile, rows * tile);
     let mut mipmaps = (1..=MIP_LEVELS)
-        .map(|level| RgbaImage::new(side * (tile >> level), side * (tile >> level)))
+        .map(|level| RgbaImage::new(columns * (tile >> level), rows * (tile >> level)))
         .collect::<Vec<_>>();
     let mut slots = HashMap::new();
     let mut missing = Vec::new();
     let mut animated = Vec::new();
     let mut animated_tiles = Vec::new();
-    let width = (side * tile) as f32;
+    let (width, height) = ((columns * tile) as f32, (rows * tile) as f32);
     for (i, id) in textures.into_iter().enumerate() {
         let (col, row) = positions[i];
-        let origin = (col * tile, row * tile);
+        let slot = (col * tile, row * tile);
+        let origin = (slot.0 + PADDING, slot.1 + PADDING);
         let meta = packs.animation(&id)?;
         let (strategy, bias) = mip_settings(meta.as_ref());
         let item = id.path.starts_with("item/");
@@ -1412,7 +1437,7 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
             if let Some(animation) = meta.as_ref().and_then(|meta| meta.get("animation")) {
                 animated.push(id.clone());
-                if let Some(tile) = animated_tile(&decoded, animation, origin, strategy, bias, item) {
+                if let Some(tile) = animated_tile(&decoded, animation, slot, strategy, bias, item) {
                     animated_tiles.push(tile);
                 }
                 let index = animation
@@ -1461,23 +1486,23 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
             frame
         };
         let (w, h) = frame.dimensions();
-        let levels = texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item);
-        image::imageops::replace(&mut pixels, &levels[0], origin.0 as i64, origin.1 as i64);
+        let levels = padded(texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item));
+        image::imageops::replace(&mut pixels, &levels[0], slot.0 as i64, slot.1 as i64);
         for (level, mip) in mipmaps.iter_mut().enumerate() {
             image::imageops::replace(
                 mip,
                 &levels[level + 1],
-                (origin.0 >> (level + 1)) as i64,
-                (origin.1 >> (level + 1)) as i64,
+                (slot.0 >> (level + 1)) as i64,
+                (slot.1 >> (level + 1)) as i64,
             );
         }
         slots.insert(
             id,
             [
                 origin.0 as f32 / width,
-                origin.1 as f32 / width,
+                origin.1 as f32 / height,
                 (origin.0 + w) as f32 / width,
-                (origin.1 + h) as f32 / width,
+                (origin.1 + h) as f32 / height,
             ],
         );
     }
@@ -1490,34 +1515,28 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
         animated_tiles,
     })
 }
-/// Grid cells for each texture's span (columns, rows) in a `side`-cell
-/// square: the multi-cell ones first, then the rest in order, each at the
-/// first free spot; `None` when they do not fit.
-fn place_cells(spans: &[(u32, u32)], side: u32) -> Option<Vec<(u32, u32)>> {
-    let mut used = vec![false; (side * side) as usize];
-    let mut positions = vec![(0, 0); spans.len()];
+/// Cells for each sprite's span (columns, rows), packed in shelves as
+/// vanilla's stitcher packs them: the tallest first, each shelf filled
+/// left to right up to a width near the square root of the total area.
+/// The positions, and the atlas's size in cells.
+fn shelve(spans: &[(u32, u32)]) -> (Vec<(u32, u32)>, (u32, u32)) {
+    let area: u32 = spans.iter().map(|&(w, h)| w * h).sum();
+    let widest = spans.iter().map(|&(w, _)| w).max().unwrap_or(1);
+    let columns = ((area as f64).sqrt().ceil() as u32).max(widest);
     let mut order: Vec<usize> = (0..spans.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].0 * spans[i].1));
-    let mut first_free = 0;
+    order.sort_by_key(|&i| (std::cmp::Reverse(spans[i].1), std::cmp::Reverse(spans[i].0)));
+    let mut positions = vec![(0, 0); spans.len()];
+    let (mut x, mut y, mut shelf) = (0, 0, 0);
     for i in order {
         let (w, h) = spans[i];
-        let fits = |col: u32, row: u32, used: &[bool]| {
-            col + w <= side && row + h <= side && (row..row + h).all(|r| (col..col + w).all(|c| !used[(r * side + c) as usize]))
-        };
-        let start = if (w, h) == (1, 1) { first_free } else { 0 };
-        let cell = (start..side * side).find(|&cell| fits(cell % side, cell / side, &used))?;
-        let (col, row) = (cell % side, cell / side);
-        for r in row..row + h {
-            for c in col..col + w {
-                used[(r * side + c) as usize] = true;
-            }
+        if x + w > columns {
+            (x, y, shelf) = (0, y + shelf, 0);
         }
-        if (w, h) == (1, 1) {
-            first_free = cell + 1;
-        }
-        positions[i] = (col, row);
+        positions[i] = (x, y);
+        x += w;
+        shelf = shelf.max(h);
     }
-    Some(positions)
+    (positions, (columns, y + shelf))
 }
 fn animated_tile(
     sheet: &RgbaImage,
@@ -1581,7 +1600,7 @@ fn animated_tile(
             } else {
                 frame
             };
-            texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item)
+            padded(texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item))
         })
         .collect();
     Some(AnimatedTile {
@@ -2594,8 +2613,9 @@ mod tests {
         );
         assert_eq!(tile.frame_at(7), 0);
         assert_eq!(tile.frames[2][0].get_pixel(0, 0).0, [80, 0, 0, 255]);
-        // Two-texel frames fill a 16-texel cell, down to one texel.
-        assert_eq!(tile.frames[2][4].dimensions(), (1, 1));
+        // Two-texel frames fill a 16-texel cell, down to one texel, with a
+        // texel of padding around it.
+        assert_eq!(tile.frames[2][4].dimensions(), (3, 3));
     }
 
     #[test]
