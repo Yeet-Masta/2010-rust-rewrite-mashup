@@ -303,10 +303,18 @@ impl Gui {
     /// makes an icon of its own.
     fn icon(&mut self, packs: &PackStack, stack: &ItemStack) -> Option<[f32; 4]> {
         let tint = crate::creative::potion_color(stack);
-        let key = match tint {
+        // A banner's patterns draw it.
+        let patterns = stack
+            .components
+            .as_ref()
+            .and_then(|parts| parts.get("minecraft:banner_patterns"));
+        let mut key = match tint {
             Some(color) => format!("{}#{color:06x}", stack.id),
             None => stack.id.clone(),
         };
+        if let Some(patterns) = patterns {
+            key.push_str(&patterns.to_string());
+        }
         if let Some(rect) = self.icons.cells.get(&key) {
             return *rect;
         }
@@ -328,6 +336,7 @@ impl Gui {
                 &stack.id,
                 ICON as usize,
                 tint,
+                stack.components.as_ref(),
             ) {
                 Ok(Some(icon)) => {
                     let cell = self.icons.next;

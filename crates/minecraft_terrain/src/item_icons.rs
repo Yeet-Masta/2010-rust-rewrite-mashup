@@ -9,17 +9,22 @@ use std::collections::HashMap;
 /// An item's GUI icon: its block model rastered, its generated layers, or
 /// its flat texture.
 pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Option<RgbaImage>> {
-    item_icon_tinted(packs, key, icon_size, None)
+    item_icon_tinted(packs, key, icon_size, None, None)
 }
 
 /// `item_icon`, with a stack's own colour for its `minecraft:potion` tint
-/// layers (`PotionContents.getColor`) in place of their default.
+/// layers (`PotionContents.getColor`) in place of their default, and its
+/// components for a special model (a banner's patterns).
 pub fn item_icon_tinted(
     packs: &PackStack,
     key: &str,
     icon_size: usize,
     potion: Option<u32>,
+    components: Option<&serde_json::Value>,
 ) -> Result<Option<RgbaImage>> {
+    if let Some(icon) = crate::special_icon::special_icon(packs, key, icon_size, components)? {
+        return Ok(Some(icon));
+    }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
     let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
