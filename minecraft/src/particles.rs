@@ -79,7 +79,9 @@ impl Sprites {
     /// The sprite lists the pack defines, resolved in the world atlas.
     pub fn load(packs: &PackStack, atlas: &Atlas) -> Self {
         let mut sets = HashMap::new();
-        let files = packs.list("minecraft", "particles").unwrap_or_default();
+        let files = packs
+            .list("minecraft", "particles")
+            .unwrap_or_else(|_| Vec::new());
         for path in files {
             let Some(name) = path
                 .rsplit('/')
@@ -111,7 +113,7 @@ impl Sprites {
                         .map(|texture| atlas.region(&texture))
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(Vec::new);
             sets.insert(name.to_owned(), SpriteSet(textures));
         }
         Self {
@@ -534,7 +536,7 @@ impl Particles {
     pub fn new(packs: &PackStack, atlas: &Atlas, seed: u64) -> Self {
         Self {
             sprites: Sprites::load(packs, atlas),
-            random: Random::new(seed as u64 ^ 0x2545_f491_4f6c_dd1d),
+            random: Random::new(seed ^ 0x2545_f491_4f6c_dd1d),
             tint: BiomeTint::from_pack(packs).unwrap_or_else(|_| BiomeTint::empty()),
             player: None,
             sounds: Vec::new(),

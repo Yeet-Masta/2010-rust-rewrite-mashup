@@ -1574,15 +1574,14 @@ fn fluid_at(world: &World, pos: (i32, i32, i32)) -> Option<(Fluid, f64)> {
         }
         _ => return None,
     };
-    let above = world.block((pos.0, pos.1 + 1, pos.2)).is_some_and(|b| {
-        let same = match fluid {
+    let above = world
+        .block((pos.0, pos.1 + 1, pos.2))
+        .is_some_and(|b| match fluid {
             Fluid::Water => {
                 b.id.path == "water" || b.properties.get("waterlogged").is_some_and(|w| w == "true")
             }
             _ => b.id.path == "lava",
-        };
-        same
-    });
+        });
     if above {
         return Some((fluid, 1.0));
     }
