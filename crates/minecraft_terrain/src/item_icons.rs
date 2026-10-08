@@ -9,14 +9,37 @@ use std::collections::HashMap;
 /// An item's GUI icon: its block model rastered, its generated layers, or
 /// its flat texture.
 pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Option<RgbaImage>> {
+    item_icon_tinted(packs, key, icon_size, None)
+}
+
+/// `item_icon`, with a stack's own colour for its `minecraft:potion` tint
+/// layers (`PotionContents.getColor`) in place of their default.
+pub fn item_icon_tinted(
+    packs: &PackStack,
+    key: &str,
+    icon_size: usize,
+    potion: Option<u32>,
+) -> Result<Option<RgbaImage>> {
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
     let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
-    let tints = definition
+    let mut tints = definition
         .as_ref()
         .map(|value| item_model_tints(packs, &value["model"]))
         .transpose()?
         .unwrap_or_default();
+    if let (Some(color), Some(kinds)) = (
+        potion,
+        definition
+            .as_ref()
+            .and_then(|value| value["model"]["tints"].as_array()),
+    ) {
+        for (tint, kind) in tints.iter_mut().zip(kinds) {
+            if kind["type"].as_str() == Some("minecraft:potion") {
+                *tint = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+            }
+        }
+    }
     if let Some(icon) = model
         .map(|model| crate::item_icon::block_icon(packs, model, &tints, icon_size))
         .transpose()?

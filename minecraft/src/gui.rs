@@ -37,6 +37,24 @@ pub enum Slot {
     WorkbenchResult,
     /// A cell of the creative item list, counted from the first shown.
     Creative(usize),
+    /// The creative inventory tab's bin (`destroyItemSlot`).
+    Destroy,
+}
+
+/// What the creative screen shows.
+pub struct CreativeView<'a> {
+    /// The selected tab, and those shown.
+    pub tab: usize,
+    pub tabs: &'a [usize],
+    pub inventory: &'a Inventory,
+    /// The tab's items (`ItemPickerMenu.items`), from row `row` on.
+    pub items: &'a [Option<ItemStack>],
+    pub row: usize,
+    /// `scrollOffs`, and whether there is more than a screen to scroll.
+    pub scroll: f32,
+    pub can_scroll: bool,
+    /// The search box's text, and whether its cursor shows.
+    pub search: Option<(&'a str, bool)>,
 }
 
 /// What is on screen over the world.
@@ -86,7 +104,7 @@ struct Icons {
 
 pub struct Gui {
     pub font: Font,
-    sprites: HashMap<&'static str, Sprite>,
+    sprites: HashMap<String, Sprite>,
     icons: Icons,
     language: HashMap<String, String>,
     /// Window pixels per GUI pixel.
@@ -99,13 +117,13 @@ pub struct Gui {
 
 const SPRITES: [(&str, &str, f32); 36] = [
     (
-        "creative_items",
-        "gui/container/creative_inventory/tab_items",
+        "creative_scroller",
+        "gui/sprites/container/creative_inventory/scroller",
         0.0,
     ),
     (
-        "creative_scroller",
-        "gui/sprites/container/creative_inventory/scroller",
+        "creative_scroller_disabled",
+        "gui/sprites/container/creative_inventory/scroller_disabled",
         0.0,
     ),
     ("hotbar", "gui/sprites/hud/hotbar", 0.0),
@@ -172,7 +190,38 @@ impl Gui {
     pub fn load(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {
         let font = Font::load(packs, renderer)?;
         let mut sprites = HashMap::new();
-        for (name, path, border) in SPRITES {
+        // The creative screen's backgrounds and tabs.
+        let mut creative = Vec::new();
+        for background in ["items", "item_search", "inventory"] {
+            creative.push((
+                format!("creative_{background}"),
+                format!("gui/container/creative_inventory/tab_{background}"),
+            ));
+        }
+        for row in ["top", "bottom"] {
+            for state in ["selected", "unselected"] {
+                for column in 1..=7 {
+                    creative.push((
+                        format!("tab_{row}_{state}_{column}"),
+                        format!(
+                            "gui/sprites/container/creative_inventory/tab_{row}_{state}_{column}"
+                        ),
+                    ));
+                }
+            }
+        }
+        let named = SPRITES
+            .iter()
+            .map(|&(name, path, border)| (name.to_owned(), path.to_owned(), border))
+            .chain(creative.into_iter().map(|(name, path)| (name, path, 0.0)))
+            .chain(
+                [
+                    ("leggings_slot", "gui/sprites/container/slot/leggings"),
+                    ("boots_slot", "gui/sprites/container/slot/boots"),
+                ]
+                .map(|(name, path)| (name.to_owned(), path.to_owned(), 0.0)),
+            );
+        for (name, path, border) in named {
             let Ok(id) = ResourceId::parse(&format!("minecraft:{path}")) else {
                 continue;
             };
@@ -190,25 +239,6 @@ impl Gui {
                     border,
                 },
             );
-        }
-        for (name, path) in [
-            ("leggings_slot", "gui/sprites/container/slot/leggings"),
-            ("boots_slot", "gui/sprites/container/slot/boots"),
-        ] {
-            if let Ok(id) = ResourceId::parse(&format!("minecraft:{path}"))
-                && let Some(bytes) = packs.texture(&id)?
-            {
-                let image = image::load_from_memory(&bytes)?.to_rgba8();
-                let size = (image.width() as f32, image.height() as f32);
-                sprites.insert(
-                    name,
-                    Sprite {
-                        texture: renderer.add_texture(&image),
-                        size,
-                        border: 0.0,
-                    },
-                );
-            }
         }
         Ok(Self {
             font,
@@ -243,9 +273,14 @@ impl Gui {
         self.mouse = (mouse.0 / scale, mouse.1 / scale);
     }
 
-    /// An item's display name.
-    pub fn item_name(&self, id: &str) -> String {
-        minecraft_terrain::item_icons::item_name(&self.language, id)
+    /// A stack's display name.
+    pub fn stack_name(&self, stack: &ItemStack) -> String {
+        crate::creative::name(&self.language, stack)
+    }
+
+    /// The pack's English text.
+    pub fn language(&self) -> &HashMap<String, String> {
+        &self.language
     }
 
     /// Uploads item icons made this frame.
@@ -262,8 +297,15 @@ impl Gui {
         }
     }
 
-    fn icon(&mut self, packs: &PackStack, id: &str) -> Option<[f32; 4]> {
-        if let Some(rect) = self.icons.cells.get(id) {
+    /// A stack's icon in the atlas, made on first use; a potion's colour
+    /// makes an icon of its own.
+    fn icon(&mut self, packs: &PackStack, stack: &ItemStack) -> Option<[f32; 4]> {
+        let tint = crate::creative::potion_color(stack);
+        let key = match tint {
+            Some(color) => format!("{}#{color:06x}", stack.id),
+            None => stack.id.clone(),
+        };
+        if let Some(rect) = self.icons.cells.get(&key) {
             return *rect;
         }
         if self
@@ -279,7 +321,12 @@ impl Gui {
         let rect = if self.icons.next >= per_row * per_row {
             None
         } else {
-            match minecraft_terrain::item_icons::item_icon(packs, id, ICON as usize) {
+            match minecraft_terrain::item_icons::item_icon_tinted(
+                packs,
+                &stack.id,
+                ICON as usize,
+                tint,
+            ) {
                 Ok(Some(icon)) => {
                     let cell = self.icons.next;
                     self.icons.next += 1;
@@ -308,7 +355,7 @@ impl Gui {
                 _ => None,
             }
         };
-        self.icons.cells.insert(id.to_owned(), rect);
+        self.icons.cells.insert(key, rect);
         rect
     }
 
@@ -441,7 +488,7 @@ impl Gui {
         x: f32,
         y: f32,
     ) {
-        if let Some(rect) = self.icon(packs, &stack.id)
+        if let Some(rect) = self.icon(packs, stack)
             && let Some(texture) = self.icons.texture
         {
             ui.quad(texture, self.rect(x, y, 16.0, 16.0), rect, WHITE);
@@ -728,7 +775,7 @@ impl Gui {
                 Slot::CraftingResult => inventory.crafting_output(),
                 Slot::Workbench(index) => inventory.workbench[index].clone(),
                 Slot::WorkbenchResult => inventory.workbench_output(),
-                Slot::Creative(_) => None,
+                Slot::Creative(_) | Slot::Destroy => None,
             };
             if stack.is_none() {
                 let empty = match slot {
@@ -763,11 +810,10 @@ impl Gui {
                 Slot::CraftingResult => inventory.crafting_output(),
                 Slot::Workbench(index) => inventory.workbench[index].clone(),
                 Slot::WorkbenchResult => inventory.workbench_output(),
-                Slot::Creative(_) => None,
+                Slot::Creative(_) | Slot::Destroy => None,
             };
             if let Some(stack) = stack {
-                let name = self.item_name(&stack.id);
-                self.tooltip(ui, &name);
+                self.stack_tooltip(ui, &stack, false);
             }
         }
     }
@@ -805,30 +851,61 @@ impl Gui {
     }
 
     fn tooltip(&self, ui: &mut UiList, text: &str) {
-        let (mx, my) = self.mouse;
-        let width = self.font.width(text);
-        let (mut x, mut y) = (mx + 12.0, my - 12.0);
-        if x + width + 4.0 > self.width {
-            x = (mx - 16.0 - width).max(4.0);
+        self.tooltip_lines(ui, &[(text.to_owned(), 0xFFFFFF)]);
+    }
+
+    /// A stack's tooltip, as `ItemStack.getTooltipLines` gives it, with
+    /// the tabs holding it when asked.
+    fn stack_tooltip(&self, ui: &mut UiList, stack: &ItemStack, tabs: bool) {
+        let mut lines = crate::creative::tooltip(&self.language, stack);
+        if tabs {
+            let data = crate::creative::data();
+            for (i, tab) in data.tabs_holding(stack).into_iter().enumerate() {
+                let title = crate::creative::translate(&self.language, &tab.title, &[]);
+                lines.insert(1 + i, (title, crate::creative::BLUE));
+            }
         }
-        y = y.max(4.0);
-        self.sprite(
-            ui,
-            "tooltip_background",
-            x - 3.0 - 9.0,
-            y - 3.0 - 9.0,
-            width + 6.0 + 18.0,
-            8.0 + 6.0 + 18.0,
-        );
-        self.sprite(
-            ui,
-            "tooltip_frame",
-            x - 3.0 - 9.0,
-            y - 3.0 - 9.0,
-            width + 6.0 + 18.0,
-            8.0 + 6.0 + 18.0,
-        );
-        self.text(ui, text, x, y, WHITE, true);
+        self.tooltip_lines(ui, &lines);
+    }
+
+    /// `TooltipRenderUtil` and `DefaultTooltipPositioner`: lines in their
+    /// colours, the first set 2 pixels apart from the rest.
+    fn tooltip_lines(&self, ui: &mut UiList, lines: &[(String, u32)]) {
+        if lines.is_empty() {
+            return;
+        }
+        let (mx, my) = self.mouse;
+        let width = lines
+            .iter()
+            .map(|(line, _)| self.font.width(line))
+            .fold(0.0, f32::max);
+        let height = if lines.len() == 1 {
+            8.0
+        } else {
+            10.0 * lines.len() as f32
+        };
+        let (mut x, mut y) = (mx + 12.0, my - 12.0);
+        if x + width > self.width {
+            x = (x - 24.0 - width).max(4.0);
+        }
+        if y + height + 3.0 > self.height {
+            y = self.height - height - 3.0;
+        }
+        for sprite in ["tooltip_background", "tooltip_frame"] {
+            self.sprite(
+                ui,
+                sprite,
+                x - 3.0 - 9.0,
+                y - 3.0 - 9.0,
+                width + 6.0 + 18.0,
+                height + 6.0 + 18.0,
+            );
+        }
+        let mut line_y = y;
+        for (i, (line, color)) in lines.iter().enumerate() {
+            self.text(ui, line, x, line_y, rgb(*color), true);
+            line_y += if i == 0 { 12.0 } else { 10.0 };
+        }
     }
 
     /// A screen's buttons: what each does (nothing for one shown greyed
@@ -927,36 +1004,63 @@ impl Gui {
         }
     }
 
-    /// The creative screen's corner and its slots: the item list's cells,
-    /// then the hotbar.
-    fn creative(&self) -> ((f32, f32), Vec<(Slot, f32, f32)>) {
-        let left = ((self.width - 195.0) / 2.0).floor();
-        let top = ((self.height - 136.0) / 2.0).floor();
-        let mut slots: Vec<(Slot, f32, f32)> = (0..45)
-            .map(|i| {
-                (
+    /// The creative screen's corner (`leftPos`, `topPos` for a 195 by 136
+    /// window).
+    fn creative_corner(&self) -> (f32, f32) {
+        (
+            ((self.width - 195.0) / 2.0).floor(),
+            ((self.height - 136.0) / 2.0).floor(),
+        )
+    }
+
+    /// The creative screen's slots: a category's 45 cells over the hotbar,
+    /// or the survival inventory tab's (`selectTab`'s `SlotWrapper`s) and
+    /// its bin.
+    fn creative_slots(&self, inventory_tab: bool) -> Vec<(Slot, f32, f32)> {
+        let (left, top) = self.creative_corner();
+        let mut slots = Vec::new();
+        if inventory_tab {
+            for (i, slot) in [39usize, 38, 37, 36].into_iter().enumerate() {
+                let (column, row) = (i / 2, i % 2);
+                slots.push((
+                    Slot::Inventory(slot),
+                    54.0 + column as f32 * 54.0,
+                    6.0 + row as f32 * 27.0,
+                ));
+            }
+            slots.push((Slot::Inventory(40), 35.0, 20.0));
+            for i in 9..36 {
+                let (column, row) = ((i - 9) % 9, (i - 9) / 9);
+                slots.push((
+                    Slot::Inventory(i),
+                    9.0 + column as f32 * 18.0,
+                    54.0 + row as f32 * 18.0,
+                ));
+            }
+            slots.push((Slot::Destroy, 173.0, 112.0));
+        } else {
+            for i in 0..45 {
+                slots.push((
                     Slot::Creative(i),
                     9.0 + (i % 9) as f32 * 18.0,
                     18.0 + (i / 9) as f32 * 18.0,
-                )
-            })
-            .collect();
+                ));
+            }
+        }
         slots.extend((0..9).map(|i| (Slot::Inventory(i), 9.0 + i as f32 * 18.0, 112.0)));
-        (
-            (left, top),
-            slots
-                .into_iter()
-                .map(|(slot, x, y)| (slot, left + x, top + y))
-                .collect(),
-        )
+        slots
+            .into_iter()
+            .map(|(slot, x, y)| (slot, left + x, top + y))
+            .collect()
     }
 
     /// The slot under the mouse on the creative screen, and whether the
     /// mouse is outside its window.
-    pub fn creative_slot_at(&self) -> (Option<Slot>, bool) {
-        let ((left, top), slots) = self.creative();
+    pub fn creative_slot_at(&self, inventory_tab: bool) -> (Option<Slot>, bool) {
+        let (left, top) = self.creative_corner();
         let (mx, my) = self.mouse;
-        let hit = slots
+        let hit = self
+            .creative_slots(inventory_tab)
             .into_iter()
             .find(|&(_, x, y)| mx >= x - 1.0 && mx < x + 17.0 && my >= y - 1.0 && my < y + 17.0)
             .map(|(slot, ..)| slot);
@@ -966,16 +1070,77 @@ impl Gui {
         )
     }
 
-    /// Every item, nine to a row from `first` on, over the hotbar.
-    pub fn creative_screen(
+    /// `getTabX` and `getTabY`: a tab's corner from the window's.
+    fn tab_corner(tab: &crate::creative::Tab) -> (f32, f32) {
+        let x = if tab.aligned_right {
+            195.0 - 27.0 * (7.0 - tab.column as f32) + 1.0
+        } else {
+            27.0 * tab.column as f32
+        };
+        (x, if tab.top { -32.0 } else { 136.0 })
+    }
+
+    /// The tab under the mouse (`checkTabClicked`).
+    pub fn creative_tab_at(&self, tabs: &[usize]) -> Option<usize> {
+        let data = crate::creative::data();
+        let (left, top) = self.creative_corner();
+        let (mx, my) = (self.mouse.0 - left, self.mouse.1 - top);
+        tabs.iter().copied().find(|&i| {
+            let (x, y) = Self::tab_corner(&data.tabs[i]);
+            mx >= x && mx <= x + 26.0 && my >= y && my <= y + 32.0
+        })
+    }
+
+    /// `insideScrollbar`.
+    pub fn creative_in_scrollbar(&self) -> bool {
+        let (left, top) = self.creative_corner();
+        let (mx, my) = self.mouse;
+        mx >= left + 175.0 && my >= top + 18.0 && mx < left + 189.0 && my < top + 130.0
+    }
+
+    /// `mouseDragged` on the scroller: where the mouse holds it.
+    pub fn creative_scroll_at_mouse(&self) -> f32 {
+        let (_, top) = self.creative_corner();
+        ((self.mouse.1 - (top + 18.0) - 7.5) / (112.0 - 15.0)).clamp(0.0, 1.0)
+    }
+
+    /// `extractTabButton`: the tab's sprite and its icon.
+    fn creative_tab(
         &mut self,
         ui: &mut UiList,
         packs: &PackStack,
         inventory: &Inventory,
-        items: &[ItemStack],
-        first: usize,
-        scroll: f32,
+        index: usize,
+        selected: bool,
     ) {
+        let tab = &crate::creative::data().tabs[index];
+        let (left, top) = self.creative_corner();
+        let x = left + Self::tab_corner(tab).0;
+        let y = if tab.top {
+            top - 28.0
+        } else {
+            top + 136.0 - 4.0
+        };
+        let sprite = format!(
+            "tab_{}_{}_{}",
+            if tab.top { "top" } else { "bottom" },
+            if selected { "selected" } else { "unselected" },
+            tab.column.min(6) + 1
+        );
+        self.sprite(ui, &sprite, x, y, 26.0, 32.0);
+        let icon = ItemStack::new(tab.icon.clone(), 1);
+        let icon_y = y + 16.0 - 8.0 + if tab.top { 1.0 } else { -1.0 };
+        self.item(ui, packs, inventory, &icon, x + 13.0 - 8.0, icon_y);
+    }
+
+    /// `CreativeModeInventoryScreen`: the shown tabs around the selected
+    /// tab's window, its items from `row` on (or the survival inventory),
+    /// its scroller, and the search box's text.
+    pub fn creative_screen(&mut self, ui: &mut UiList, packs: &PackStack, view: &CreativeView<'_>) {
+        let data = crate::creative::data();
+        let tab = &data.tabs[view.tab];
+        let inventory = view.inventory;
+        let inventory_tab = tab.kind == crate::creative::Kind::Inventory;
         self.fill(
             ui,
             0.0,
@@ -984,50 +1149,107 @@ impl Gui {
             self.height,
             [0.06, 0.06, 0.06, 0.75],
         );
-        let ((left, top), slots) = self.creative();
-        self.sprite_part(ui, "creative_items", left, top, 0.0, 0.0, 195.0, 136.0);
-        self.text(
+        for &i in view.tabs {
+            if i != view.tab {
+                self.creative_tab(ui, packs, inventory, i, false);
+            }
+        }
+        let (left, top) = self.creative_corner();
+        self.sprite_part(
             ui,
-            "Creative Items",
-            left + 8.0,
-            top + 6.0,
-            rgb(0x404040),
-            false,
+            &format!("creative_{}", tab.background),
+            left,
+            top,
+            0.0,
+            0.0,
+            195.0,
+            136.0,
         );
-        self.sprite(
-            ui,
-            "creative_scroller",
-            left + 175.0,
-            top + 18.0 + (112.0 - 17.0) * scroll.clamp(0.0, 1.0),
-            12.0,
-            15.0,
-        );
-        let hovered = self.creative_slot_at().0;
-        let mut tooltip = None;
-        for (slot, x, y) in slots {
+        if let Some((text, cursor)) = view.search {
+            // The borderless `EditBox` at (82, 6), 80 wide: as much of the
+            // text's end as fits, and the blinking `_` after it.
+            let mut shown = text;
+            while self.font.width(shown) > 80.0 {
+                let mut chars = shown.chars();
+                chars.next();
+                shown = chars.as_str();
+            }
+            self.text(ui, shown, left + 82.0, top + 6.0, WHITE, true);
+            if cursor {
+                let x = left + 82.0 + self.font.width(shown);
+                self.text(ui, "_", x, top + 6.0, WHITE, true);
+            }
+        }
+        if tab.scroll_bar {
+            let sprite = if view.can_scroll {
+                "creative_scroller"
+            } else {
+                "creative_scroller_disabled"
+            };
+            let y = top + 18.0 + ((112.0 - 17.0) * view.scroll).floor();
+            self.sprite(ui, sprite, left + 175.0, y, 12.0, 15.0);
+        }
+        self.creative_tab(ui, packs, inventory, view.tab, true);
+        let (hovered, _) = self.creative_slot_at(inventory_tab);
+        let mut hovered_stack = None;
+        for (slot, x, y) in self.creative_slots(inventory_tab) {
             let stack = match slot {
-                Slot::Creative(i) => items.get(first + i).cloned(),
+                Slot::Creative(i) => view.items.get(view.row * 9 + i).cloned().flatten(),
                 Slot::Inventory(i) => inventory.slots[i].clone(),
                 _ => None,
             };
+            if stack.is_none() {
+                let empty = match slot {
+                    Slot::Inventory(39) => Some("helmet_slot"),
+                    Slot::Inventory(38) => Some("chestplate_slot"),
+                    Slot::Inventory(37) => Some("leggings_slot"),
+                    Slot::Inventory(36) => Some("boots_slot"),
+                    Slot::Inventory(40) => Some("shield_slot"),
+                    _ => None,
+                };
+                if let Some(name) = empty {
+                    self.sprite(ui, name, x, y, 16.0, 16.0);
+                }
+            }
             if hovered == Some(slot) {
                 self.sprite(ui, "slot_highlight_back", x - 4.0, y - 4.0, 24.0, 24.0);
             }
             if let Some(stack) = stack.as_ref() {
                 self.item(ui, packs, inventory, stack, x, y);
-                if hovered == Some(slot) {
-                    tooltip = Some(self.item_name(&stack.id));
-                }
             }
             if hovered == Some(slot) {
                 self.sprite(ui, "slot_highlight_front", x - 4.0, y - 4.0, 24.0, 24.0);
+                hovered_stack = stack;
             }
+        }
+        if tab.show_title {
+            let title = crate::creative::translate(&self.language, &tab.title, &[]);
+            self.text(ui, &title, left + 8.0, top + 6.0, rgb(0x404040), false);
         }
         if let Some(stack) = inventory.cursor.as_ref() {
             let (mx, my) = self.mouse;
             self.item(ui, packs, inventory, stack, mx - 8.0, my - 8.0);
-        } else if let Some(name) = tooltip {
-            self.tooltip(ui, &name);
+            return;
+        }
+        // `checkTabHovering`: a tab's title over its icon.
+        let (mx, my) = (self.mouse.0 - left, self.mouse.1 - top);
+        for &i in view.tabs {
+            let (x, y) = Self::tab_corner(&data.tabs[i]);
+            if mx >= x + 3.0 && mx < x + 24.0 && my >= y + 3.0 && my < y + 30.0 {
+                let title = crate::creative::translate(&self.language, &data.tabs[i].title, &[]);
+                self.tooltip(ui, &title);
+                return;
+            }
+        }
+        if hovered == Some(Slot::Destroy) {
+            let text = crate::creative::translate(&self.language, "inventory.binSlot", &[]);
+            self.tooltip(ui, &text);
+        } else if let Some(stack) = hovered_stack {
+            // `getTooltipFromContainerItem`: a category's own items show
+            // no tab names.
+            let own = matches!(hovered, Some(Slot::Creative(_)))
+                && tab.kind == crate::creative::Kind::Category;
+            self.stack_tooltip(ui, &stack, !own);
         }
     }
 

@@ -10,6 +10,7 @@ macro_rules! log {
 
 mod ambient;
 mod console;
+mod creative;
 mod entities;
 mod font;
 mod game;
@@ -190,9 +191,12 @@ impl App {
                     input.sprint = pressed;
                 }
             }
+            // The hotbar save and load activators.
+            KeyCode::KeyC => input.save_hotbar = pressed,
+            KeyCode::KeyX => input.load_hotbar = pressed,
             _ => {}
         }
-        if !pressed || repeat && code != KeyCode::KeyQ {
+        if !pressed || repeat && !matches!(code, KeyCode::KeyQ | KeyCode::Backspace) {
             return;
         }
         let key = match code {
@@ -203,6 +207,8 @@ impl App {
             KeyCode::F1 => Key::HideHud,
             KeyCode::F2 => Key::Screenshot,
             KeyCode::F3 => Key::Debug,
+            KeyCode::KeyT => Key::Chat,
+            KeyCode::Backspace => Key::Backspace,
             KeyCode::F11 => {
                 if let Some(window) = self.window.as_ref() {
                     window.set_fullscreen(if window.fullscreen().is_some() {
@@ -347,8 +353,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.key(code, event.state == ElementState::Pressed, event.repeat);
+                    self.key(code, pressed, event.repeat);
+                }
+                // What the key types, for a text box (`charTyped`).
+                if pressed && let Some(text) = event.text.as_ref() {
+                    self.input.keys.extend(text.chars().map(Key::Char));
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

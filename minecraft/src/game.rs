@@ -23,6 +23,9 @@ use crate::render::{Renderer, UiList, WorldDraw};
 use crate::sounds::Sounds;
 use crate::world::World;
 
+#[path = "creative_screen.rs"]
+mod creative_screen;
+
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Vanilla's default field of view.
 const FOV: f32 = 70.0;
@@ -55,6 +58,9 @@ pub struct Input {
     pub middle_click: bool,
     pub scroll: f32,
     pub keys: Vec<Key>,
+    /// The hotbar save (C) and load (X) activators held.
+    pub save_hotbar: bool,
+    pub load_hotbar: bool,
 }
 
 /// Keys with an action of their own.
@@ -68,6 +74,11 @@ pub enum Key {
     HideHud,
     Screenshot,
     Forward,
+    /// The chat key, which opens the creative search tab.
+    Chat,
+    Backspace,
+    /// A character typed.
+    Char(char),
 }
 
 pub struct Options {
@@ -127,8 +138,8 @@ pub struct Game {
     /// The last forward press, for double-tap sprinting.
     forward_tapped: Option<u64>,
     tap_sprint: bool,
-    highlight: Option<(String, f64)>,
-    highlight_slot: Option<(usize, Option<String>)>,
+    highlight: Option<(ItemStack, f64)>,
+    highlight_slot: Option<(usize, Option<ItemStack>)>,
     debug: bool,
     hide_hud: bool,
     pub screenshot: bool,
@@ -140,9 +151,7 @@ pub struct Game {
     frames: (u32, f64, u32),
     /// Survival status before this tick, for its hurt sounds.
     health_before: f32,
-    /// Every item, for the creative screen, and its first row shown.
-    creative_items: Vec<ItemStack>,
-    creative_scroll: usize,
+    creative_screen: creative_screen::CreativeScreen,
     jump_taps: u32,
     jump_latched: bool,
     /// The tick the player died on.
@@ -255,8 +264,7 @@ impl Game {
             score: 0,
             frames: (0, 0.0, 0),
             health_before: health,
-            creative_items: Vec::new(),
-            creative_scroll: 0,
+            creative_screen: creative_screen::CreativeScreen::new(options.save.as_deref()),
             jump_taps: 0,
             jump_latched: false,
             died_at: 0,
@@ -624,6 +632,9 @@ impl Game {
 
     fn keys(&mut self, input: &mut Input, gui: &Gui) {
         for key in std::mem::take(&mut input.keys) {
+            if self.screen == Screen::Creative && self.creative_key(key, gui, input.ctrl) {
+                continue;
+            }
             match (key, self.screen) {
                 (Key::Escape, Screen::Playing) => self.pause(),
                 (Key::Escape, Screen::Paused) => self.screen = Screen::Playing,
@@ -632,38 +643,33 @@ impl Game {
                     Screen::Inventory | Screen::Crafting | Screen::Creative,
                 ) => self.close_container(),
                 (Key::Inventory, Screen::Playing) if self.alive() && self.landed => {
-                    self.screen = if self.creative {
-                        if self.creative_items.is_empty() {
-                            self.creative_items = self.all_items();
-                        }
-                        Screen::Creative
+                    if self.creative {
+                        self.open_creative(gui);
+                        self.screen = Screen::Creative;
                     } else {
-                        Screen::Inventory
-                    };
+                        self.screen = Screen::Inventory;
+                    }
                 }
-                (Key::Hotbar(slot), Screen::Creative) => match gui.creative_slot_at().0 {
-                    Some(Slot::Creative(cell)) => {
-                        if let Some(stack) = self
-                            .creative_items
-                            .get(self.creative_scroll * 9 + cell)
-                            .cloned()
-                        {
-                            self.entities
-                                .inventory
-                                .creative_take(stack, false, Some(slot));
-                        }
+                (Key::Hotbar(slot), Screen::Playing) => {
+                    if !self.hotbar_keys(slot, input) {
+                        self.entities.selected = slot;
                     }
-                    Some(Slot::Inventory(index)) => {
-                        self.entities.inventory.number_swap(index, slot)
-                    }
-                    _ => {}
-                },
-                (Key::Hotbar(slot), Screen::Playing) => self.entities.selected = slot,
+                }
                 (Key::Hotbar(slot), Screen::Inventory | Screen::Crafting) => {
                     if let (Some(Slot::Inventory(index)), _) =
                         gui.slot_at(self.screen == Screen::Crafting)
                     {
                         self.entities.inventory.number_swap(index, slot);
+                    }
+                }
+                // `THROW` over a stack: one of it, or all with control.
+                (Key::Drop, Screen::Inventory | Screen::Crafting) => {
+                    if let (Some(Slot::Inventory(index)), _) =
+                        gui.slot_at(self.screen == Screen::Crafting)
+                        && self.entities.inventory.cursor.is_none()
+                    {
+                        let dropped = self.entities.inventory.drop_selected(index, input.ctrl);
+                        self.throw(dropped.into_iter().collect());
                     }
                 }
                 (Key::Drop, Screen::Playing) if self.alive() => {
@@ -710,49 +716,7 @@ impl Game {
                     }
                 }
             }
-            Screen::Creative => {
-                let rows = self.creative_items.len().div_ceil(9).saturating_sub(5);
-                let notches = take_notches(&mut input.scroll);
-                self.creative_scroll = (self.creative_scroll as i64 - i64::from(notches))
-                    .clamp(0, rows as i64) as usize;
-                let (slot, outside) = gui.creative_slot_at();
-                for (right, pressed) in input.clicks.drain(..).collect::<Vec<_>>() {
-                    if !pressed {
-                        continue;
-                    }
-                    let inventory = &mut self.entities.inventory;
-                    match slot {
-                        // A carried stack dropped back on the list is gone.
-                        Some(Slot::Creative(_)) if inventory.cursor.is_some() => {
-                            inventory.cursor = None
-                        }
-                        Some(Slot::Creative(cell)) => {
-                            if let Some(stack) = self
-                                .creative_items
-                                .get(self.creative_scroll * 9 + cell)
-                                .cloned()
-                            {
-                                if input.shift {
-                                    let mut stack = stack;
-                                    stack.count = stack.max;
-                                    let selected = self.entities.selected;
-                                    let _ = self.entities.inventory.add_item(stack, selected);
-                                } else {
-                                    self.entities.inventory.creative_take(stack, right, None);
-                                }
-                            }
-                        }
-                        Some(Slot::Inventory(index)) => {
-                            let _ = inventory.click(Some(index), right, input.shift);
-                        }
-                        _ if outside => {
-                            let thrown = inventory.click(None, right, false);
-                            self.throw(thrown.into_iter().collect());
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            Screen::Creative => self.creative_input(input, gui),
             Screen::Inventory | Screen::Crafting => {
                 let workbench = self.screen == Screen::Crafting;
                 let (slot, outside) = gui.slot_at(workbench);
@@ -832,7 +796,7 @@ impl Game {
             Slot::WorkbenchResult => {
                 inventory.take_workbench_output(shift);
             }
-            Slot::Creative(_) => {}
+            Slot::Creative(_) | Slot::Destroy => {}
         }
     }
 
@@ -884,42 +848,6 @@ impl Game {
             self.player.yaw as f32,
             self.player.pitch as f32,
         );
-    }
-
-    /// Every item the pack defines, blocks first, for the creative screen.
-    fn all_items(&self) -> Vec<ItemStack> {
-        const HIDDEN: [&str; 13] = [
-            "air",
-            "debug_stick",
-            "command_block",
-            "chain_command_block",
-            "repeating_command_block",
-            "command_block_minecart",
-            "structure_block",
-            "structure_void",
-            "jigsaw",
-            "barrier",
-            "light",
-            "knowledge_book",
-            "test_block",
-        ];
-        let files = self
-            .world
-            .packs
-            .list("minecraft", "items")
-            .unwrap_or_else(|_| Vec::new());
-        let mut ids: Vec<String> = files
-            .iter()
-            .filter_map(|path| path.rsplit('/').next()?.strip_suffix(".json"))
-            .filter(|name| !HIDDEN.contains(name) && !name.starts_with("test_"))
-            .map(|name| format!("minecraft:{name}"))
-            .collect();
-        let blocks = &self.world.registries.blocks;
-        ids.sort_by_key(|id| (blocks.block_by_name(id).is_none(), id.clone()));
-        ids.dedup();
-        ids.into_iter()
-            .map(|id| self.entities.stack(&id, 1))
-            .collect()
     }
 
     /// The middle button: the targeted block's item into the hand.
@@ -1044,9 +972,15 @@ impl Game {
             *since += TICK_SECONDS;
         }
         let selected = self.entities.selected;
-        let shown = (selected, self.entities.held().map(|s| s.id.clone()));
+        let shown = (
+            selected,
+            self.entities.held().map(|s| ItemStack {
+                count: 1,
+                ..s.clone()
+            }),
+        );
         if self.highlight_slot.as_ref() != Some(&shown) {
-            self.highlight = shown.1.as_ref().map(|id| (id.clone(), 0.0));
+            self.highlight = shown.1.as_ref().map(|stack| (stack.clone(), 0.0));
             self.highlight_slot = Some(shown);
         }
     }
@@ -1873,9 +1807,9 @@ impl Game {
             return ui;
         }
         if !self.hide_hud && self.alive() {
-            let selected_name = self.highlight.as_ref().map(|(id, since)| {
+            let selected_name = self.highlight.as_ref().map(|(stack, since)| {
                 let left = 2.0 - since;
-                (gui.item_name(id), (left / 0.5).clamp(0.0, 1.0) as f32)
+                (gui.stack_name(stack), (left / 0.5).clamp(0.0, 1.0) as f32)
             });
             let debug = self.debug.then(|| self.debug_lines(sections));
             let hud = Hud {
@@ -1899,20 +1833,9 @@ impl Game {
                 gui.container_screen(&mut ui, packs, &self.entities.inventory, true)
             }
             Screen::Creative => {
-                let rows = self.creative_items.len().div_ceil(9).saturating_sub(5);
-                let scroll = if rows == 0 {
-                    0.0
-                } else {
-                    self.creative_scroll as f32 / rows as f32
-                };
-                gui.creative_screen(
-                    &mut ui,
-                    packs,
-                    &self.entities.inventory,
-                    &self.creative_items,
-                    self.creative_scroll * 9,
-                    scroll,
-                );
+                let (tabs, mut view) = self.creative_view();
+                view.tabs = &tabs;
+                gui.creative_screen(&mut ui, packs, &view);
             }
             Screen::Paused => gui.pause_screen(&mut ui),
             Screen::Dead => gui.death_screen(&mut ui, self.score, self.death_buttons_ready()),
