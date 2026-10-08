@@ -694,7 +694,7 @@ fn face_normal(direction: &str) -> Result<Vec3> {
     let (x, y, z) = self::direction(direction)?;
     Ok(Vec3::new(x as f32, y as f32, z as f32))
 }
-fn level_item_shade(normal: Vec3) -> f32 {
+pub fn level_item_shade(normal: Vec3) -> f32 {
     // entity.vsh uses Lighting.Entry.LEVEL and minecraft_mix_light for
     // dropped item quads, in addition to the sampled world lightmap.
     let light0 = Vec3::new(0.2, 1.0, -0.7).normalize();

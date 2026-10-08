@@ -269,6 +269,15 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
 pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Result<Mat4> {
     item_display_transform(pack, item, "firstperson_righthand")
 }
+/// `firstperson_righthand`, or for the left hand `firstperson_lefthand`
+/// (the right hand's when the model has none) mirrored by the left-hand fix.
+pub fn item_first_person_hand_transform(pack: &PackStack, item: &ResourceId, left: bool) -> Result<Mat4> {
+    if left {
+        item_transform(pack, item, "firstperson_lefthand", Some("firstperson_righthand"))
+    } else {
+        item_first_person_transform(pack, item)
+    }
+}
 pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str) -> Result<Mat4> {
     item_transform(pack, item, context, None)
 }

@@ -11,7 +11,7 @@ use glam::{DVec3, Vec3};
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::mesh::{Atlas, ChunkMesh, ItemVisuals};
-use minecraft_terrain::pack::PackStack;
+use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
@@ -340,20 +340,56 @@ impl Entities {
         }
     }
 
-    /// A held item's model under a view-space pose, lit at `light_at`.
+    /// An item in a first-person hand under `pose` (the arm's, before the
+    /// item's display transform), lit by the light at `light_at`.
+    #[allow(clippy::too_many_arguments)]
     pub fn held_item_mesh(
         &mut self,
-        id: &str,
+        stack: &ItemStack,
         pose: glam::Mat4,
+        left: bool,
         light_at: Vec3,
         packs: &PackStack,
         atlas: &Atlas,
         light: &SkyLight,
     ) -> ChunkMesh {
         let mut mesh = ChunkMesh::default();
+        // A special model renderer's item (a shield, a trident) applies its
+        // base model's display itself.
+        if minecraft_terrain::special_icon::append_special_in_hand(
+            &mut mesh,
+            packs,
+            atlas,
+            &stack.id,
+            stack.components.as_ref(),
+            pose,
+            left,
+            true,
+            &minecraft_terrain::mesh::level_item_shade,
+        )
+        .unwrap_or(false)
+        {
+            let at = (
+                light_at.x.floor() as i32,
+                light_at.y.floor() as i32,
+                light_at.z.floor() as i32,
+            );
+            let (sky, block) = (light.get(at) as f32, light.get_block(at) as f32);
+            for vertex in &mut mesh.vertices {
+                vertex.sky_light = sky;
+                vertex.block_light = block;
+            }
+            return mesh;
+        }
+        let display = ResourceId::parse(&stack.id)
+            .ok()
+            .and_then(|id| {
+                minecraft_terrain::model::item_first_person_hand_transform(packs, &id, left).ok()
+            })
+            .unwrap_or(glam::Mat4::IDENTITY);
         let _ = self.items.append_posed_blocks(
             &mut mesh,
-            &[(pose, light_at, id.to_owned())],
+            &[(pose * display, light_at, stack.id.clone())],
             packs,
             atlas,
             light,
@@ -383,6 +419,7 @@ impl Entities {
             stack.components.as_ref(),
             pose,
             left,
+            false,
             shade,
         )
         .unwrap_or(false)

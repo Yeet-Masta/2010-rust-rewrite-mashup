@@ -1830,51 +1830,65 @@ impl Game {
             .equipped
             .clone()
             .and_then(|id| self.entities.held().filter(|s| s.id == id).cloned());
-        let Some(stack) = held else {
+        let light_at = eye.as_vec3();
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        if let Some(stack) = held {
+            // Eating holds the item up to the mouth, bobbing.
+            let eating = self.eating.as_ref().map(|eating| {
+                let left = eating.remaining_ticks() as f32 - partial + 1.0;
+                let bob = if left / (eating.info.consume_ticks as f32) < 0.8 {
+                    ((left / 4.0 * std::f32::consts::PI).cos() * 0.1).abs()
+                } else {
+                    0.0
+                };
+                Mat4::from_translation(Vec3::new(-0.3, bob - 0.1, 0.0))
+                    * Mat4::from_rotation_y(-0.6)
+            });
+            let pose = bob
+                * eating.unwrap_or(Mat4::IDENTITY)
+                * crate::hand::item_pose(swing, equip, false);
+            let mesh = self.entities.held_item_mesh(
+                &stack,
+                pose,
+                false,
+                light_at,
+                &self.world.packs,
+                &self.world.atlas,
+                &self.world.light,
+            );
+            vertices.extend(mesh.vertices.iter().map(SectionVertex::from_vertex));
+            indices = mesh.indices;
+        } else {
             let look = self.player.look().as_vec3().normalize_or(Vec3::Z);
             let world_from_view =
                 Mat3::from_mat4(Mat4::look_to_rh(Vec3::ZERO, look, Vec3::Y)).transpose();
-            let (mut vertices, indices) =
+            let (arm, arm_indices) =
                 crate::hand::arm_mesh(&self.world.atlas, swing, equip, light, world_from_view);
-            for vertex in &mut vertices {
+            vertices.extend(arm.into_iter().map(|mut vertex| {
                 vertex.position = bob.transform_point3(Vec3::from(vertex.position)).to_array();
-            }
-            return (vertices, indices);
-        };
-        let display = ResourceId::parse(&stack.id)
-            .ok()
-            .and_then(|id| {
-                minecraft_terrain::model::item_first_person_transform(&self.world.packs, &id).ok()
-            })
-            .unwrap_or(Mat4::IDENTITY);
-        // Eating holds the item up to the mouth, bobbing.
-        let eating = self.eating.as_ref().map(|eating| {
-            let left = eating.remaining_ticks() as f32 - partial + 1.0;
-            let bob = if left / (eating.info.consume_ticks as f32) < 0.8 {
-                ((left / 4.0 * std::f32::consts::PI).cos() * 0.1).abs()
-            } else {
-                0.0
-            };
-            Mat4::from_translation(Vec3::new(-0.3, bob - 0.1, 0.0)) * Mat4::from_rotation_y(-0.6)
-        });
-        let pose =
-            bob * eating.unwrap_or(Mat4::IDENTITY) * crate::hand::item_pose(display, swing, equip);
-        let light_at = eye.as_vec3();
-        let mesh = self.entities.held_item_mesh(
-            &stack.id,
-            pose,
-            light_at,
-            &self.world.packs,
-            &self.world.atlas,
-            &self.world.light,
-        );
-        (
-            mesh.vertices
-                .iter()
-                .map(SectionVertex::from_vertex)
-                .collect(),
-            mesh.indices,
-        )
+                vertex
+            }));
+            indices = arm_indices;
+        }
+        // The offhand's item in the left hand (`renderArmWithItem` for
+        // `OFF_HAND`); the main hand's swing leaves it still.
+        if let Some(stack) = self.entities.inventory.slots[40].clone() {
+            let pose = bob * crate::hand::item_pose(0.0, 0.0, true);
+            let mesh = self.entities.held_item_mesh(
+                &stack,
+                pose,
+                true,
+                light_at,
+                &self.world.packs,
+                &self.world.atlas,
+                &self.world.light,
+            );
+            let start = vertices.len() as u32;
+            vertices.extend(mesh.vertices.iter().map(SectionVertex::from_vertex));
+            indices.extend(mesh.indices.iter().map(|index| index + start));
+        }
+        (vertices, indices)
     }
 
     /// The outline of the targeted block's shape, as line segments.

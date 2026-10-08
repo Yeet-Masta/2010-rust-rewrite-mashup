@@ -1,7 +1,8 @@
-//! The first-person hand: the held item placed as vanilla's
-//! `ItemInHandRenderer.applyItemArmTransform` places it with the item's
-//! `firstperson_righthand` display, or with nothing held the player's own
-//! right arm (`renderPlayerArm`), swinging as vanilla swings them. Vertices
+//! The first-person hands: held items placed as vanilla's
+//! `ItemInHandRenderer.applyItemArmTransform` places them with the item's
+//! `firstperson_righthand` or `_lefthand` display, or with nothing in the
+//! main hand the player's own right arm (`renderPlayerArm`), swinging as
+//! vanilla swings them. Vertices
 //! are in view space: x right, y up, z back.
 use glam::{Mat3, Mat4, Vec3};
 use minecraft_terrain::mesh::{Atlas, SectionVertex};
@@ -56,25 +57,24 @@ impl Swing {
     }
 }
 
-/// The item's view-space pose (`applyItemArmTransform` then its display).
-pub fn item_pose(display: Mat4, swing: f32, equip: f32) -> Mat4 {
-    Mat4::from_translation(Vec3::new(0.56, -0.52 - 0.6 * equip, -0.72))
-        * item_swing_transform(swing)
-        * display
-}
-
-fn item_swing_transform(swing: f32) -> Mat4 {
+/// A held item's view-space pose before its display transform: the swing
+/// (`renderArmWithItem`'s offsets), `applyItemArmTransform` and
+/// `applyItemArmAttackTransform`, mirrored for the left arm.
+pub fn item_pose(swing: f32, equip: f32, left: bool) -> Mat4 {
+    let invert = if left { -1.0 } else { 1.0 };
+    let pi = std::f32::consts::PI;
     let root = swing.sqrt();
-    let x = -0.4 * (root * std::f32::consts::PI).sin();
+    let x = -0.4 * (root * pi).sin();
     let y = 0.2 * (root * std::f32::consts::TAU).sin();
-    let z = -0.2 * (swing * std::f32::consts::PI).sin();
-    let y_rotation = (swing * swing * std::f32::consts::PI).sin();
-    let xz_rotation = (root * std::f32::consts::PI).sin();
-    Mat4::from_translation(Vec3::new(x, y, z))
-        * Mat4::from_rotation_y((45.0 - 20.0 * y_rotation).to_radians())
-        * Mat4::from_rotation_z((-20.0 * xz_rotation).to_radians())
-        * Mat4::from_rotation_x((-80.0 * xz_rotation).to_radians())
-        * Mat4::from_rotation_y((-45.0f32).to_radians())
+    let z = -0.2 * (swing * pi).sin();
+    let y_sin = (swing * swing * pi).sin();
+    let xz_sin = (root * pi).sin();
+    Mat4::from_translation(Vec3::new(invert * x, y, z))
+        * Mat4::from_translation(Vec3::new(invert * 0.56, -0.52 - 0.6 * equip, -0.72))
+        * Mat4::from_rotation_y((invert * (45.0 - 20.0 * y_sin)).to_radians())
+        * Mat4::from_rotation_z((invert * xz_sin * -20.0).to_radians())
+        * Mat4::from_rotation_x((xz_sin * -80.0).to_radians())
+        * Mat4::from_rotation_y((invert * -45.0).to_radians())
 }
 
 /// The bare right arm: the wide player model's arm cuboid with Steve's skin,

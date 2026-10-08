@@ -119,7 +119,7 @@ pub struct Gui {
     pub mouse: (f32, f32),
 }
 
-const SPRITES: [(&str, &str, f32); 36] = [
+const SPRITES: [(&str, &str, f32); 37] = [
     (
         "creative_scroller",
         "gui/sprites/container/creative_inventory/scroller",
@@ -132,6 +132,7 @@ const SPRITES: [(&str, &str, f32); 36] = [
     ),
     ("hotbar", "gui/sprites/hud/hotbar", 0.0),
     ("hotbar_selection", "gui/sprites/hud/hotbar_selection", 0.0),
+    ("hotbar_offhand_left", "gui/sprites/hud/hotbar_offhand_left", 0.0),
     ("crosshair", "gui/sprites/hud/crosshair", 0.0),
     ("heart_container", "gui/sprites/hud/heart/container", 0.0),
     ("heart_full", "gui/sprites/hud/heart/full", 0.0),
@@ -585,6 +586,12 @@ impl Gui {
             24.0,
             23.0,
         );
+        // The offhand's slot left of the hotbar (`Hud`'s
+        // `HOTBAR_OFFHAND_LEFT_SPRITE`; the main arm is the right).
+        let offhand = hud.inventory.slots[40].as_ref();
+        if offhand.is_some() {
+            self.sprite(ui, "hotbar_offhand_left", center - 91.0 - 29.0, h - 23.0, 29.0, 24.0);
+        }
         for slot in 0..9 {
             if let Some(stack) = hud.inventory.slots[slot].as_ref() {
                 self.item(
@@ -596,6 +603,9 @@ impl Gui {
                     h - 16.0 - 3.0,
                 );
             }
+        }
+        if let Some(stack) = offhand {
+            self.item(ui, packs, hud.inventory, stack, center - 91.0 - 26.0, h - 16.0 - 3.0);
         }
         if let Some(status) = hud.survival {
             // Experience.

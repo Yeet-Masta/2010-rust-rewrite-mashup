@@ -854,8 +854,9 @@ pub const HAND_SHEETS: &[&str] = &[
     "minecraft:entity/copper_golem/copper_golem_oxidized",
 ];
 
-/// An item a special model renderer draws, held in a hand
-/// (`ItemInHandLayer`, `THIRD_PERSON_RIGHT_HAND` or `_LEFT_HAND`): its
+/// An item a special model renderer draws, held in a hand (in third
+/// person `ItemInHandLayer`'s `THIRD_PERSON_RIGHT_HAND` or `_LEFT_HAND`,
+/// in first person `ItemInHandRenderer`'s `FIRST_PERSON_*`): its
 /// cuboids under `pose` (item space to the target's), the base model's
 /// display transform for that hand and the item's transformations,
 /// textured from the atlas, full bright and shaded by `shade` from each
@@ -870,25 +871,24 @@ pub fn append_special_in_hand(
     components: Option<&Value>,
     pose: Mat4,
     left: bool,
+    first_person: bool,
     shade: &dyn Fn(Vec3) -> f32,
 ) -> Result<bool> {
     let id = ResourceId::parse(key)?;
     let Some(definition) = packs.item_definition(&id)? else {
         return Ok(false);
     };
-    let context = if left { "thirdperson_lefthand" } else { "thirdperson_righthand" };
-    let Some((node, local)) = node_for(&definition["model"], context, Mat4::IDENTITY) else {
+    let person = if first_person { "firstperson" } else { "thirdperson" };
+    let context = format!("{person}_{}hand", if left { "left" } else { "right" });
+    let Some((node, local)) = node_for(&definition["model"], &context, Mat4::IDENTITY) else {
         return Ok(false);
     };
     let Some(layers) = layers(&node["model"], components)? else {
         return Ok(false);
     };
     let base = node["base"].as_str().unwrap_or("minecraft:item/generated");
-    let (display, _) = if left {
-        display_for(packs, base, context, Some("thirdperson_righthand"))?
-    } else {
-        display_for(packs, base, context, None)?
-    };
+    let right = format!("{person}_righthand");
+    let (display, _) = display_for(packs, base, &context, left.then_some(right.as_str()))?;
     let root = pose * display * local;
     for layer in layers.iter().filter(|layer| !layer.overlay) {
         let sheet = ResourceId::parse(&layer.texture)?;
