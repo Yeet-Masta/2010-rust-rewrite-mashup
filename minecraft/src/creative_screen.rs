@@ -216,6 +216,12 @@ impl Game {
         self.creative_screen.scroll = 0.0;
     }
 
+    /// Whether the creative screen shows the survival inventory tab.
+    pub(super) fn creative_inventory_tab(&self) -> bool {
+        self.screen == crate::gui::Screen::Creative
+            && self.creative_screen.kind() == Kind::Inventory
+    }
+
     /// What `gui.creative_screen` draws.
     pub(super) fn creative_view(&self) -> (Vec<usize>, CreativeView<'_>) {
         let screen = &self.creative_screen;

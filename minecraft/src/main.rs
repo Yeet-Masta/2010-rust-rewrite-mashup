@@ -16,6 +16,7 @@ mod font;
 mod game;
 mod gui;
 mod hand;
+mod inventory_player;
 mod log;
 mod mining;
 mod particles;

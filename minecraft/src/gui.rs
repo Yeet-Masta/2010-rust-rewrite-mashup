@@ -104,6 +104,8 @@ struct Icons {
 
 pub struct Gui {
     pub font: Font,
+    /// The texture the inventory's player is drawn into.
+    model_texture: TextureId,
     sprites: HashMap<String, Sprite>,
     icons: Icons,
     language: HashMap<String, String>,
@@ -115,7 +117,7 @@ pub struct Gui {
     pub mouse: (f32, f32),
 }
 
-const SPRITES: [(&str, &str, f32); 36] = [
+const SPRITES: [(&str, &str, f32); 35] = [
     (
         "creative_scroller",
         "gui/sprites/container/creative_inventory/scroller",
@@ -174,7 +176,6 @@ const SPRITES: [(&str, &str, f32); 36] = [
     ("title", "gui/title/minecraft", 0.0),
     ("edition", "gui/title/edition", 0.0),
     ("menu_background", "gui/menu_background", 0.0),
-    ("steve", "entity/player/wide/steve", 0.0),
     ("underwater", "misc/underwater", 0.0),
     ("vignette", "misc/vignette", 0.0),
     ("helmet_slot", "gui/sprites/container/slot/helmet", 0.0),
@@ -242,6 +243,7 @@ impl Gui {
         }
         Ok(Self {
             font,
+            model_texture: renderer.model_texture(),
             sprites,
             icons: Icons {
                 image: RgbaImage::new(ICON_ATLAS, ICON_ATLAS),
@@ -765,7 +767,7 @@ impl Gui {
             self.text(ui, "Inventory", left + 8.0, top + 72.0, grey, false);
         } else {
             self.text(ui, "Crafting", left + 97.0, top + 8.0, grey, false);
-            self.player_figure(ui, left + 26.0, top + 8.0);
+            self.player_model(ui, Screen::Inventory, false);
         }
         let hovered = self.slot_at(workbench).0;
         for (slot, x, y) in slots {
@@ -818,33 +820,32 @@ impl Gui {
         }
     }
 
-    /// The player, front on, in the inventory's character box.
-    fn player_figure(&self, ui: &mut UiList, x: f32, y: f32) {
-        let Some(skin) = self.sprites.get("steve") else {
+    /// Where the screen shows the player (`extractEntityInInventoryFollowsMouse`'s
+    /// box), and its pixels to a block.
+    pub fn player_box(&self, screen: Screen, creative_inventory: bool) -> Option<([f32; 4], f32)> {
+        match screen {
+            Screen::Inventory => {
+                let ((left, top), _) = self.container(false);
+                Some(([left + 26.0, top + 8.0, left + 75.0, top + 78.0], 30.0))
+            }
+            Screen::Creative if creative_inventory => {
+                let (left, top) = self.creative_corner();
+                Some(([left + 73.0, top + 6.0, left + 105.0, top + 49.0], 20.0))
+            }
+            _ => None,
+        }
+    }
+
+    /// The player's picture, drawn this frame into its texture.
+    fn player_model(&self, ui: &mut UiList, screen: Screen, creative_inventory: bool) {
+        if ui.model.is_none() {
             return;
-        };
-        let k = 1.75;
-        let (cx, top) = (x + 49.0 / 2.0, y + 7.0);
-        // Skin rectangles (u, v, w, h) and their place on the figure.
-        let parts: [([f32; 4], f32, f32); 6] = [
-            ([8.0, 8.0, 8.0, 8.0], -4.0, 0.0),
-            ([20.0, 20.0, 8.0, 12.0], -4.0, 8.0),
-            ([44.0, 20.0, 4.0, 12.0], -8.0, 8.0),
-            ([36.0, 52.0, 4.0, 12.0], 4.0, 8.0),
-            ([4.0, 20.0, 4.0, 12.0], -4.0, 20.0),
-            ([20.0, 52.0, 4.0, 12.0], 0.0, 20.0),
-        ];
-        let overlay: [([f32; 4], f32, f32); 1] = [([40.0, 8.0, 8.0, 8.0], -4.0, 0.0)];
-        for ([u, v, w, h], dx, dy) in parts.into_iter().chain(overlay) {
+        }
+        if let Some(([x0, y0, x1, y1], _)) = self.player_box(screen, creative_inventory) {
             ui.quad(
-                skin.texture,
-                self.rect(cx + dx * k, top + dy * k, w * k, h * k),
-                [
-                    u / skin.size.0,
-                    v / skin.size.1,
-                    (u + w) / skin.size.0,
-                    (v + h) / skin.size.1,
-                ],
+                self.model_texture,
+                self.rect(x0, y0, x1 - x0, y1 - y0),
+                [0.0, 0.0, 1.0, 1.0],
                 WHITE,
             );
         }
@@ -1190,6 +1191,7 @@ impl Gui {
             self.sprite(ui, sprite, left + 175.0, y, 12.0, 15.0);
         }
         self.creative_tab(ui, packs, inventory, view.tab, true);
+        self.player_model(ui, Screen::Creative, inventory_tab);
         let (hovered, _) = self.creative_slot_at(inventory_tab);
         let mut hovered_stack = None;
         for (slot, x, y) in self.creative_slots(inventory_tab) {

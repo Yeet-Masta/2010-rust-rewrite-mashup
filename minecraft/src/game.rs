@@ -102,6 +102,9 @@ struct Walk {
     /// `moveDist` and `nextStep`, for footsteps.
     move_dist: f32,
     next_step: f32,
+    /// `walkAnimation`'s position and speed, for the model's legs.
+    animation_pos: f32,
+    animation_speed: f32,
 }
 
 pub struct Game {
@@ -1510,6 +1513,10 @@ impl Game {
         // Footsteps (`Entity.applyMovementEmissionAndPlaySound`).
         let horizontal = (motion.x.hypot(motion.z) * 0.6) as f32;
         self.walk.dist += horizontal;
+        // `LivingEntity.calculateEntityAnimation`.
+        let target = (motion.x.hypot(motion.z) as f32 * 4.0).min(1.0);
+        self.walk.animation_speed += (target - self.walk.animation_speed) * 0.4;
+        self.walk.animation_pos += self.walk.animation_speed;
         let feet = self.player.pos;
         let block_at = |dy: f64| {
             let pos = (
@@ -1823,6 +1830,23 @@ impl Game {
                 debug,
             };
             gui.hud(&mut ui, packs, &hud);
+        }
+        if let Some((rect, size)) = gui.player_box(self.screen, self.creative_inventory_tab())
+            && let Some(region) = crate::inventory_player::skin(&self.world.atlas)
+        {
+            let inventory = &self.entities.inventory;
+            let pose = crate::inventory_player::Pose {
+                crouching: self.player.crouching,
+                holding: [
+                    inventory.slots[self.entities.selected].is_some(),
+                    inventory.slots[40].is_some(),
+                ],
+                age: self.ticks as f32,
+                walk: (self.walk.animation_pos, self.walk.animation_speed),
+            };
+            ui.model = Some(crate::inventory_player::model(
+                region, rect, size, 0.0625, gui.mouse, gui.scale, &pose,
+            ));
         }
         match self.screen {
             Screen::Playing => {}
