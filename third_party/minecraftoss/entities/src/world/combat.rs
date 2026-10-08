@@ -45,6 +45,8 @@ pub struct AttackResult {
     pub sweep: bool,
     /// The mobs the sweep hurt: ID, full hit, died.
     pub swept: Vec<(u64, bool, bool)>,
+    /// The health the target lost (`damageStatsAndHearts`).
+    pub damage_dealt: f32,
 }
 
 /// `LivingEntity.knockback(power, xd, zd)`: away along (xd, zd), halving
@@ -84,8 +86,11 @@ impl EntityWorld {
             base *= 1.5;
         }
         result.sweep = result.full_strength && !result.critical && !result.knockback && attack.can_sweep;
+        let health = |world: &Self| world.mob_body(target).map_or(0.0, |(_, health)| health.max(0.0));
+        let before = health(self);
         let Some(hit) = self.hurt_by_player(target, base + magic, attack) else { return AttackResult::default() };
         (result.hurt, result.died, result.full_hit) = (hit.applied, hit.died, hit.full);
+        result.damage_dealt = before - health(self);
         if !hit.applied {
             return result;
         }
@@ -127,6 +132,11 @@ impl EntityWorld {
             }
         }
         result
+    }
+
+    /// A living mob's feet, width and height, by ID.
+    pub fn mob_bounds(&self, id: u64) -> Option<(DVec3, f32, f32)> {
+        self.mob_body(id).map(|(body, _)| (body.position, body.width, body.height))
     }
 
     /// A living mob's body and health, by ID.

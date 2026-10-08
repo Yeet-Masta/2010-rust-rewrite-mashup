@@ -11,6 +11,7 @@ macro_rules! log {
 mod ambient;
 mod console;
 mod creative;
+mod emitters;
 mod entities;
 mod font;
 mod game;

@@ -62,6 +62,10 @@ pub struct MobResult {
     /// The mob took the action; a use it passed on goes on to use the item
     /// itself (food is eaten).
     pub handled: bool,
+    /// A hit's target and what it did (crits, a sweep, the damage).
+    pub attack: Option<(u64, minecraftoss_entities::world::AttackResult)>,
+    /// Entity events the action made (hearts).
+    pub events: Vec<(u64, u8)>,
 }
 
 /// A player's trading screen as the client shows it: the villager's
@@ -277,7 +281,7 @@ impl ServerSim {
             .map(|(slot, (now, _))| (slot, now.clone()))
             .collect();
         self.spawn_trade_experience();
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0), used, handled: outcome.handled }
+        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0), used, handled: outcome.handled, attack: outcome.attack, events: outcome.events }
     }
 
     /// The player's trading screen as the client shows it.
@@ -561,9 +565,6 @@ impl ServerSim {
         // `ServerPlayer.doTick` (the connection tick, after the levels):
         // the players push the mobs they walk into.
         mobs.push_from_players(players, &ticks);
-        // Entity events (a villager's hearts, anger, happiness) are for the
-        // client's particles, which it does not draw yet.
-        let _ = mobs.take_entity_events();
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
@@ -905,6 +906,8 @@ pub struct Output {
     pub player_splashes: Vec<(u64, minecraftoss_entities::world::PlayerSplash)>,
     /// Where splash potions broke (their sound and colour).
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
+    /// `ClientboundEntityEventPacket`s: entity, event.
+    pub entity_events: Vec<(u64, u8)>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
@@ -1171,6 +1174,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.player_hits.extend(sim.mobs.take_player_hits());
                     out.player_splashes.extend(sim.mobs.take_player_splashes());
                     out.potion_breaks.extend(sim.mobs.take_potion_breaks());
+                    // Entity events (hearts, a villager's anger and
+                    // happiness), for the client's particles.
+                    out.entity_events.extend(sim.mobs.take_entity_events());
                     out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;

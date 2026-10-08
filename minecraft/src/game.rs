@@ -117,6 +117,7 @@ pub struct Game {
     sounds: Sounds,
     mining: Mining,
     pub particles: Particles,
+    emitters: crate::emitters::Emitters,
     ambient: crate::ambient::Ambient,
     save_dir: Option<PathBuf>,
     previous: DVec3,
@@ -235,6 +236,7 @@ impl Game {
             sounds,
             mining,
             particles,
+            emitters: crate::emitters::Emitters::default(),
             ambient: crate::ambient::Ambient::default(),
             save_dir: options.save.clone(),
             previous,
@@ -487,6 +489,14 @@ impl Game {
         }
         for hit in events.hits {
             self.hurt_by_mob(hit);
+        }
+        for (id, event) in events.mob_events {
+            if let Some(bounds) = self.entities.mob_bounds(id) {
+                crate::emitters::entity_event(&mut self.particles, &self.world, bounds, event);
+            }
+        }
+        for (id, result) in events.attacks {
+            self.attack_particles(id, &result);
         }
         for pos in events.bone_meal_used {
             let mut sounds = Vec::new();
@@ -964,6 +974,9 @@ impl Game {
                 .tick(&self.world, &mut self.particles, around, &mut sounds);
         }
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
+        let entities = &self.entities;
+        self.emitters
+            .tick(&mut self.particles, &self.world, |id| entities.mob_bounds(id));
         self.particles.tick(&self.world);
         sounds.append(&mut self.particles.sounds);
         for (event, at, volume, pitch) in sounds {
@@ -1070,6 +1083,10 @@ impl Game {
                     FoodUseTick::Continuing { emit_sound } => {
                         if emit_sound {
                             let sound = format!("minecraft:{}", eating.info.sound);
+                            let crumbs = eating.info.particles.then(|| eating.stack.id.clone());
+                            if let Some(id) = crumbs {
+                                self.item_crumbs(&id, 5);
+                            }
                             let pitch = (self.sounds.random() - self.sounds.random()) * 0.2 + 1.0;
                             let volume = 0.5 + 0.5 * self.sounds.random();
                             self.play(&sound, None, volume, pitch);
@@ -1077,7 +1094,11 @@ impl Game {
                     }
                     FoodUseTick::Finished { overflow } => {
                         let id = eating.stack.id.clone();
+                        let crumbs = eating.info.particles;
                         self.eating = None;
+                        if crumbs {
+                            self.item_crumbs(&id, 16);
+                        }
                         let sounds = &mut self.sounds;
                         let teleport = minecraftoss_player::food::apply_consumed_food_effects(
                             &id,
@@ -1169,9 +1190,10 @@ impl Game {
                 })
             {
                 let selected = self.entities.selected;
-                if self.entities.inventory.wear_tool(selected, 1) {
-                    let pitch = 0.8 + self.sounds.random() * 0.4;
-                    self.play("minecraft:entity.item.break", Some(eye), 0.8, pitch);
+                if self.entities.inventory.wear_tool(selected, 1)
+                    && let Some(stack) = held
+                {
+                    self.item_broke(&stack.id);
                 }
             }
         }
@@ -1308,7 +1330,7 @@ impl Game {
             if !self.creative {
                 let selected = self.entities.selected;
                 if self.entities.inventory.wear_tool(selected, 1) {
-                    self.play("minecraft:entity.item.break", Some(eye), 0.8, 1.0);
+                    self.item_broke(&stack.id);
                 }
             }
             return;
@@ -1436,14 +1458,82 @@ impl Game {
         self.entities.drop_loot(pos, broken.drops);
         self.player.survival.food.add_exhaustion(0.005);
         let selected = self.entities.selected;
+        let tool = self.entities.inventory.slots[selected]
+            .as_ref()
+            .map(|stack| stack.id.clone());
         if self
             .entities
             .inventory
             .wear_tool_after_mining(selected, broken.hardness)
+            && let Some(tool) = tool
         {
-            let eye = self.player.eye();
-            let pitch = 0.8 + self.sounds.random() * 0.4;
-            self.play("minecraft:entity.item.break", Some(eye), 0.8, pitch);
+            self.item_broke(&tool);
+        }
+    }
+
+    /// `LivingEntity.breakItem`: the snap, and crumbs of the item.
+    fn item_broke(&mut self, item: &str) {
+        let eye = self.player.eye();
+        let pitch = 0.8 + self.sounds.random() * 0.4;
+        self.play("minecraft:entity.item.break", Some(eye), 0.8, pitch);
+        self.item_crumbs(item, 5);
+    }
+
+    /// `LivingEntity.spawnItemParticles` from the player's mouth.
+    fn item_crumbs(&mut self, item: &str, count: usize) {
+        crate::emitters::item_crumbs(
+            &mut self.particles,
+            &self.world,
+            item,
+            count,
+            self.player.pos,
+            self.player.eye_height(),
+            self.player.yaw,
+            self.player.pitch,
+        );
+    }
+
+    /// The particles of the player's hit on a mob: a crit's sparks
+    /// (`ClientboundAnimatePacket` 4), the sweep's arc and the damage
+    /// hearts (`Player.attack`'s `sendParticles`).
+    fn attack_particles(&mut self, id: u64, result: &minecraftoss_entities::world::AttackResult) {
+        let bounds = self.entities.mob_bounds(id);
+        if result.critical {
+            self.emitters.track(
+                &mut self.particles,
+                &self.world,
+                id,
+                bounds,
+                crate::particles::Type::Crit,
+            );
+        }
+        if result.sweep {
+            let yaw = (self.player.yaw as f32).to_radians();
+            let (dx, dz) = (-f64::from(yaw.sin()), f64::from(yaw.cos()));
+            let height = if self.player.crouching { 1.5 } else { 1.8 };
+            let at = self.player.pos + DVec3::new(dx, height * 0.5, dz);
+            crate::emitters::send(
+                &mut self.particles,
+                &self.world,
+                &crate::particles::Type::SweepAttack.into(),
+                at,
+                0,
+                DVec3::new(dx, 0.0, dz),
+                0.0,
+            );
+        }
+        if result.damage_dealt > 2.0
+            && let Some((feet, _, height)) = bounds
+        {
+            crate::emitters::send(
+                &mut self.particles,
+                &self.world,
+                &crate::particles::Type::DamageIndicator.into(),
+                feet + DVec3::new(0.0, f64::from(height) * 0.5, 0.0),
+                (result.damage_dealt * 0.5) as i32,
+                DVec3::new(0.1, 0.0, 0.1),
+                0.2,
+            );
         }
     }
 
@@ -1482,6 +1572,7 @@ impl Game {
         }
         let before = self.player.pos;
         let fall = self.player.fall_distance;
+        let was_in_water = self.player.in_water;
         let health = self.player.survival.health;
         if self.creative {
             self.player.tick(&self.world.scene, movement);
@@ -1529,6 +1620,30 @@ impl Game {
                 .map(|b| (pos, b))
         };
         let under = block_at(0.2);
+        // `Entity.baseTick`'s sprint dust, `doWaterSplashEffect` and
+        // `LivingEntity.checkFallDamage`'s landing dust.
+        let width = 0.6;
+        if self.player.sprinting
+            && !self.player.in_water
+            && !self.player.crouching
+            && self.alive()
+            && let Some((pos, block)) = under.as_ref()
+        {
+            crate::emitters::sprint(
+                &mut self.particles,
+                &self.world,
+                feet,
+                self.player.velocity,
+                width,
+                (*pos, block),
+            );
+        }
+        if self.player.on_ground
+            && fall > 0.0
+            && let Some((pos, block)) = under.as_ref()
+        {
+            crate::emitters::landing(&mut self.particles, &self.world, feet, fall, (*pos, block));
+        }
         if self.player.on_ground && !self.player.crouching && horizontal < 2.0 {
             self.walk.move_dist += horizontal;
             if self.walk.move_dist > self.walk.next_step
@@ -1562,6 +1677,18 @@ impl Game {
                 kind.volume * 0.5,
                 kind.pitch * 0.75,
             );
+        }
+        if self.player.in_water && !was_in_water && !self.player.swimming {
+            let v = self.player.velocity;
+            let speed = ((v.x * v.x * 0.2 + v.y * v.y + v.z * v.z * 0.2).sqrt() as f32 * 0.2).min(1.0);
+            let event = if speed < 0.25 {
+                "minecraft:entity.player.splash"
+            } else {
+                "minecraft:entity.player.splash.high_speed"
+            };
+            let pitch = 1.0 + (self.sounds.random() - self.sounds.random()) * 0.4;
+            self.play(event, Some(feet), speed, pitch);
+            crate::emitters::splash(&mut self.particles, &self.world, feet, v, width);
         }
         // View bobbing (`Player.aiStep`'s bob).
         let speed = if self.player.on_ground && self.alive() {

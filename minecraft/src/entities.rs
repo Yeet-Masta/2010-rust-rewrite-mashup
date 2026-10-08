@@ -68,6 +68,10 @@ pub struct Events {
     pub use_passed: bool,
     /// Where bone meal took (level event 1505).
     pub bone_meal_used: Vec<(i32, i32, i32)>,
+    /// Entity events with particles (hearts, a villager's moods).
+    pub mob_events: Vec<(u64, u8)>,
+    /// The player's hits: the mob, and what the hit did.
+    pub attacks: Vec<(u64, minecraftoss_entities::world::AttackResult)>,
 }
 
 pub struct Entities {
@@ -392,6 +396,11 @@ impl Entities {
             .append_hand_item(mesh, &stack.id, pose, left, tint, shade, packs, atlas);
     }
 
+    /// A mob's feet, width and height, as of the last server tick.
+    pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {
+        self.world.mob_bounds(id)
+    }
+
     /// The nearest living mob on the look ray within reach, and how far.
     pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         self.world
@@ -590,7 +599,10 @@ impl Entities {
                     sound.pitch,
                 ));
             }
+            events.mob_events.extend(output.entity_events.iter().copied());
             for result in &output.mob_results {
+                events.mob_events.extend(result.events.iter().copied());
+                events.attacks.extend(result.attack.clone());
                 if result.used {
                     events.use_taken |= result.handled;
                     events.use_passed |= !result.handled;

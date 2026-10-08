@@ -35,6 +35,10 @@ pub struct MobOutcome {
     pub experience: Vec<(DVec3, i32)>,
     /// The acting player's inventory changed.
     pub inventory_changed: bool,
+    /// The hit's target and what it did, for the client's particles.
+    pub attack: Option<(u64, minecraftoss_entities::world::AttackResult)>,
+    /// `broadcastEntityEvent`s the action made: entity, event (18 hearts).
+    pub events: Vec<(u64, u8)>,
 }
 
 impl MobOutcome {
@@ -84,6 +88,7 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
     }
     if !result.hurt {
         outcome.sound("entity.player.attack.nodamage", at, 1.0, "players_volume");
+        outcome.attack = Some((id, result));
         return outcome;
     }
     (outcome.drops, outcome.experience) = death_remains(world, actor.entity_loot.as_deref_mut());
@@ -97,6 +102,7 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
         outcome.sound(event, at, 1.0, "players_volume");
     }
     outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
+    outcome.attack = Some((id, result));
     outcome
 }
 
@@ -140,6 +146,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             if result == InteractionResult::Pass {
                 return outcome;
             }
+            if events.contains(&CowEvent::Hearts) {
+                outcome.events.push((id, 18));
+            }
             if events.contains(&CowEvent::Milk) {
                 outcome.sound("entity.cow.milk", position, 1.0, "friendly_volume");
             }
@@ -169,6 +178,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             if result == InteractionResult::Pass {
                 return outcome;
             }
+            if events.contains(&AnimalEvent::Hearts) {
+                outcome.events.push((id, 18));
+            }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
         MobHit::Pig(id) => {
@@ -187,6 +199,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             if !was_saddled && entity.pig.saddled {
                 outcome.sound("entity.pig.saddle", position, 1.0, "friendly_volume");
             }
+            if events.contains(&AnimalEvent::Hearts) {
+                outcome.events.push((id, 18));
+            }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
         MobHit::Chicken(id) => {
@@ -196,6 +211,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             let position = entity.chicken.body.position;
             if result == InteractionResult::Pass {
                 return outcome;
+            }
+            if events.contains(&AnimalEvent::Hearts) {
+                outcome.events.push((id, 18));
             }
             age_lock_sound(&mut outcome, animal_lock(&events), position);
         }
@@ -226,6 +244,9 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.sound(event, position, 1.0, "friendly_volume");
             } else if charged {
                 outcome.sound("entity.mooshroom.eat", position, 2.0, "friendly_volume");
+            }
+            if events.contains(&CowEvent::Hearts) {
+                outcome.events.push((id, 18));
             }
             age_lock_sound(&mut outcome, cow_lock(&events), position);
         }
