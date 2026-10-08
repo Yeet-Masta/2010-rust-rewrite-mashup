@@ -109,12 +109,17 @@ pub struct PoofParticles {
 
 impl Default for PoofParticles {
     fn default() -> Self {
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-        Self { particles: Vec::new(), random: LegacyRandom::new(seed) }
+        Self::with_seed(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64))
     }
 }
 
 impl PoofParticles {
+    /// Puffs drawn from a random with this seed (the game seeds it from
+    /// the clock, as vanilla's particles draw from unseeded randoms).
+    pub fn with_seed(seed: u64) -> Self {
+        Self { particles: Vec::new(), random: LegacyRandom::new(seed) }
+    }
+
     /// `makePoofParticles` for a mob with these feet and box: each particle
     /// starts at a random spot of the box, pulled back along a small
     /// gaussian motion (`getRandomX(1)`, `getRandomY()`, `getRandomZ(1)`).
@@ -201,17 +206,24 @@ mod tests {
 
     #[test]
     fn a_puff_rises_and_fades_within_its_lifetime() {
-        let mut poofs = PoofParticles::default();
-        poofs.spawn(DVec3::new(0.5, 64.0, 0.5), 0.9, 1.4);
-        assert_eq!(poofs.len(), 20);
-        let start: f64 = poofs.particles.iter().map(|p| p.position.y).sum();
-        for _ in 0..5 {
+        for seed in 0..64 {
+            let mut poofs = PoofParticles::with_seed(seed);
+            poofs.spawn(DVec3::new(0.5, 64.0, 0.5), 0.9, 1.4);
+            assert_eq!(poofs.len(), 20);
             for particle in &mut poofs.particles {
-                particle.tick(&[]);
+                // `16 / (r × 0.8 + 0.2) + 2` for r in [0, 1).
+                assert!((18..=82).contains(&particle.lifetime), "{}", particle.lifetime);
+                for _ in 0..5 {
+                    let before = particle.velocity.y;
+                    let height = particle.position.y;
+                    assert!(particle.tick(&[]));
+                    // Gravity -0.1 lifts it every tick: in open air it moves
+                    // by its speed plus the lift, then slows by friction.
+                    let lifted = before + 0.004;
+                    assert!((particle.position.y - height - lifted).abs() < 1e-9);
+                    assert!((particle.velocity.y - lifted * f64::from(0.9_f32)).abs() < 1e-9);
+                }
             }
         }
-        let later: f64 = poofs.particles.iter().map(|p| p.position.y).sum();
-        assert!(later > start, "gravity -0.1 lifts them");
-        assert!(poofs.particles.iter().all(|p| (3..=82).contains(&p.lifetime)));
     }
 }
