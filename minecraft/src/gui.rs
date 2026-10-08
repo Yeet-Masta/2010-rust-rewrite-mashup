@@ -12,8 +12,12 @@ use minecraftoss_player::survival::SurvivalStatus;
 use crate::font::{Font, LINE, rgb};
 use crate::render::{Renderer, TextureId, UiList};
 
-const ICON: u32 = 32;
-const ICON_ATLAS: u32 = ICON * 64;
+/// Icons in a row of the icon atlas, and rows: room for every creative
+/// item and its variants.
+const ICON_COLUMNS: u32 = 64;
+const ICON_ROWS: u32 = 32;
+/// The largest icon, so the atlas stays within a texture's size limit.
+const ICON_MAX: u32 = 128;
 /// Time a frame may spend making new item icons, so a screen full of new
 /// items fills in over a few frames instead of stalling one.
 const ICON_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
@@ -91,7 +95,13 @@ pub struct Hud<'a> {
     pub debug: Option<Vec<String>>,
 }
 
+/// Item icons drawn at the GUI's pixel size, 16 pixels to a GUI scale
+/// step (`GuiItemAtlas`), so blocks and items are as sharp as the screen.
 struct Icons {
+    /// An icon's side in pixels.
+    size: u32,
+    /// The image changed size: its texture is made anew.
+    resized: bool,
     image: RgbaImage,
     texture: Option<TextureId>,
     cells: HashMap<String, Option<[f32; 4]>>,
@@ -251,7 +261,9 @@ impl Gui {
             started: std::time::Instant::now(),
             sprites,
             icons: Icons {
-                image: RgbaImage::new(ICON_ATLAS, ICON_ATLAS),
+                size: 32,
+                resized: false,
+                image: RgbaImage::new(32 * ICON_COLUMNS, 32 * ICON_ROWS),
                 texture: None,
                 cells: HashMap::new(),
                 next: 0,
@@ -275,6 +287,16 @@ impl Gui {
             scale += 1.0;
         }
         self.scale = scale;
+        // Icons follow the scale: a new one starts the icons over.
+        let size = (16 * scale as u32).min(ICON_MAX);
+        if size != self.icons.size {
+            self.icons.size = size;
+            self.icons.resized = true;
+            self.icons.image = RgbaImage::new(size * ICON_COLUMNS, size * ICON_ROWS);
+            self.icons.cells.clear();
+            self.icons.next = 0;
+            self.icons.fresh.clear();
+        }
         self.width = w / scale;
         self.height = h / scale;
         self.mouse = (mouse.0 / scale, mouse.1 / scale);
@@ -296,10 +318,17 @@ impl Gui {
         let Some(texture) = self.icons.texture else {
             self.icons.texture = Some(renderer.add_texture(&self.icons.image));
             self.icons.fresh.clear();
+            self.icons.resized = false;
             return;
         };
+        if std::mem::take(&mut self.icons.resized) {
+            renderer.replace_texture(texture, &self.icons.image);
+            self.icons.fresh.clear();
+            return;
+        }
+        let size = self.icons.size;
         for (x, y) in std::mem::take(&mut self.icons.fresh) {
-            let cell = image::imageops::crop_imm(&self.icons.image, x, y, ICON, ICON).to_image();
+            let cell = image::imageops::crop_imm(&self.icons.image, x, y, size, size).to_image();
             renderer.update_region(texture, x, y, &cell);
         }
     }
@@ -333,25 +362,25 @@ impl Gui {
         {
             return None;
         }
-        let per_row = ICON_ATLAS / ICON;
-        let rect = if self.icons.next >= per_row * per_row {
+        let size = self.icons.size;
+        let rect = if self.icons.next >= ICON_COLUMNS * ICON_ROWS {
             None
         } else {
             match minecraft_terrain::item_icons::item_icon_tinted(
                 packs,
                 &stack.id,
-                ICON as usize,
+                size as usize,
                 tint,
                 stack.components.as_ref(),
             ) {
                 Ok(Some(icon)) => {
                     let cell = self.icons.next;
                     self.icons.next += 1;
-                    let (x, y) = ((cell % per_row) * ICON, (cell / per_row) * ICON);
+                    let (x, y) = ((cell % ICON_COLUMNS) * size, (cell / ICON_COLUMNS) * size);
                     let icon = image::imageops::resize(
                         &icon,
-                        ICON,
-                        ICON,
+                        size,
+                        size,
                         image::imageops::FilterType::Nearest,
                     );
                     image::imageops::replace(
@@ -361,12 +390,12 @@ impl Gui {
                         i64::from(y),
                     );
                     self.icons.fresh.push((x, y));
-                    let size = ICON_ATLAS as f32;
+                    let (width, height) = self.icons.image.dimensions();
                     Some([
-                        x as f32 / size,
-                        y as f32 / size,
-                        (x + ICON) as f32 / size,
-                        (y + ICON) as f32 / size,
+                        x as f32 / width as f32,
+                        y as f32 / height as f32,
+                        (x + size) as f32 / width as f32,
+                        (y + size) as f32 / height as f32,
                     ])
                 }
                 _ => None,

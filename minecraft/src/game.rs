@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use glam::{DVec3, Mat3, Mat4, Vec3};
 use minecraft_terrain::mesh::SectionVertex;
-use minecraft_terrain::pack::ResourceId;
 use minecraft_terrain::scene::{Block, BlockPos, Scene};
 use minecraft_terrain::sections::CullCamera;
 use minecraftoss_entities::world::{PlayerAttack, PlayerHitKind};
@@ -1831,9 +1830,7 @@ impl Game {
             .clone()
             .and_then(|id| self.entities.held().filter(|s| s.id == id).cloned());
         let light_at = eye.as_vec3();
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        if let Some(stack) = held {
+        let (mut vertices, mut indices) = if let Some(stack) = held {
             // Eating holds the item up to the mouth, bobbing.
             let eating = self.eating.as_ref().map(|eating| {
                 let left = eating.remaining_ticks() as f32 - partial + 1.0;
@@ -1857,20 +1854,24 @@ impl Game {
                 &self.world.atlas,
                 &self.world.light,
             );
-            vertices.extend(mesh.vertices.iter().map(SectionVertex::from_vertex));
-            indices = mesh.indices;
+            let vertices: Vec<SectionVertex> =
+                mesh.vertices.iter().map(SectionVertex::from_vertex).collect();
+            (vertices, mesh.indices)
         } else {
             let look = self.player.look().as_vec3().normalize_or(Vec3::Z);
             let world_from_view =
                 Mat3::from_mat4(Mat4::look_to_rh(Vec3::ZERO, look, Vec3::Y)).transpose();
             let (arm, arm_indices) =
                 crate::hand::arm_mesh(&self.world.atlas, swing, equip, light, world_from_view);
-            vertices.extend(arm.into_iter().map(|mut vertex| {
-                vertex.position = bob.transform_point3(Vec3::from(vertex.position)).to_array();
-                vertex
-            }));
-            indices = arm_indices;
-        }
+            let vertices: Vec<SectionVertex> = arm
+                .into_iter()
+                .map(|mut vertex| {
+                    vertex.position = bob.transform_point3(Vec3::from(vertex.position)).to_array();
+                    vertex
+                })
+                .collect();
+            (vertices, arm_indices)
+        };
         // The offhand's item in the left hand (`renderArmWithItem` for
         // `OFF_HAND`); the main hand's swing leaves it still.
         if let Some(stack) = self.entities.inventory.slots[40].clone() {

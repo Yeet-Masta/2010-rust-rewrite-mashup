@@ -616,6 +616,20 @@ impl Renderer {
 
     /// A texture for the HUD.
     pub fn add_texture(&mut self, image: &image::RgbaImage) -> TextureId {
+        let texture = self.ui_texture(image);
+        self.textures.push(texture);
+        TextureId(self.textures.len() - 1)
+    }
+
+    /// Swaps a HUD texture for another image, of any size.
+    pub fn replace_texture(&mut self, id: TextureId, image: &image::RgbaImage) {
+        let texture = self.ui_texture(image);
+        if let Some(held) = self.textures.get_mut(id.0) {
+            *held = texture;
+        }
+    }
+
+    fn ui_texture(&self, image: &image::RgbaImage) -> UiTexture {
         let (width, height) = image.dimensions();
         let texture = self.device.create_texture_with_data(
             &self.queue,
@@ -651,12 +665,11 @@ impl Renderer {
                 },
             ],
         });
-        self.textures.push(UiTexture {
+        UiTexture {
             texture,
             bind,
             size: (width, height),
-        });
-        TextureId(self.textures.len() - 1)
+        }
     }
 
     /// Replaces a rectangle of a HUD texture's pixels.

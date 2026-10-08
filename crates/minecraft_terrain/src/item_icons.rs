@@ -222,3 +222,26 @@ fn model_texture(packs: &PackStack, model: &str) -> Result<Option<ResourceId>> {
     }
     Ok(None)
 }
+
+#[cfg(test)]
+mod icon_dump {
+    /// With `ICON_PACK` set to a resource pack and `ICON_SHEET` to a PNG
+    /// path, draws a few items' icons at `ICON_SIZE` (64) pixels side by side.
+    #[test]
+    #[ignore]
+    fn dump_icons() {
+        let (Ok(pack), Ok(sheet)) = (std::env::var("ICON_PACK"), std::env::var("ICON_SHEET")) else {
+            return;
+        };
+        let size: u32 = std::env::var("ICON_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
+        let packs = crate::pack::PackStack::open(vec![pack.into()]).unwrap();
+        let items = ["bricks", "cyan_wool", "grass_block", "oak_sign", "redstone", "netherite_axe", "oak_stairs"];
+        let mut out = image::RgbaImage::from_pixel(size * items.len() as u32, size, image::Rgba([139, 139, 139, 255]));
+        for (i, item) in items.iter().enumerate() {
+            if let Some(icon) = super::item_icon_tinted(&packs, &format!("minecraft:{item}"), size as usize, None, None).unwrap() {
+                image::imageops::overlay(&mut out, &icon, i64::from(i as u32 * size), 0);
+            }
+        }
+        out.save(sheet).unwrap();
+    }
+}
