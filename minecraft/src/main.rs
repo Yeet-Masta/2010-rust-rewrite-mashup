@@ -16,6 +16,7 @@ mod gui;
 mod hand;
 mod log;
 mod mining;
+mod particles;
 mod placement;
 mod render;
 mod save;

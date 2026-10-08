@@ -122,6 +122,8 @@ pub struct WorldDraw {
     pub visible: Vec<SectionPos>,
     /// Break particles and item entities, as section vertices.
     pub particles: (Vec<SectionVertex>, Vec<u32>),
+    /// The particle engine's quads: cut out, and blended.
+    pub sprites: crate::particles::ParticleMesh,
     /// Mob models (cut out, back-face culled, translucent) and shadows.
     pub entities: [ChunkMesh; 4],
     /// Destroy stage cubes: position then strip uv.
@@ -161,6 +163,8 @@ struct Pipelines {
     sky: wgpu::RenderPipeline,
     opaque: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
+    particle: wgpu::RenderPipeline,
+    particle_translucent: wgpu::RenderPipeline,
     clouds: wgpu::RenderPipeline,
     crack: wgpu::RenderPipeline,
     entity: wgpu::RenderPipeline,
@@ -780,6 +784,16 @@ impl Renderer {
                     bytemuck::cast_slice(&world.hand.0),
                     &world.hand.1,
                 ),
+                upload(
+                    &self.device,
+                    bytemuck::cast_slice(&world.sprites.opaque.0),
+                    &world.sprites.opaque.1,
+                ),
+                upload(
+                    &self.device,
+                    bytemuck::cast_slice(&world.sprites.translucent.0),
+                    &world.sprites.translucent.1,
+                ),
             ];
         }
         let outline = world.filter(|w| !w.outline.is_empty()).map(|w| {
@@ -842,6 +856,7 @@ impl Renderer {
                     (&p.entity, &frame_meshes[1]),
                     (&p.entity_culled, &frame_meshes[2]),
                     (&p.shadow, &frame_meshes[4]),
+                    (&p.particle, &frame_meshes[7]),
                 ] {
                     if let Some(mesh) = mesh {
                         pass.set_pipeline(pipeline);
@@ -867,6 +882,10 @@ impl Renderer {
                 }
                 if let Some(mesh) = &frame_meshes[3] {
                     pass.set_pipeline(&p.entity_translucent);
+                    draw(&mut pass, mesh, 0..mesh.count);
+                }
+                if let Some(mesh) = &frame_meshes[8] {
+                    pass.set_pipeline(&p.particle_translucent);
                     draw(&mut pass, mesh, 0..mesh.count);
                 }
                 if let Some(mesh) = &frame_meshes[5] {
@@ -1264,6 +1283,24 @@ impl Pipelines {
                 "translucent",
                 &section,
                 Some((false, GreaterEqual)),
+                alpha,
+                None,
+            ),
+            // `OPAQUE_PARTICLE` and `TRANSLUCENT_PARTICLE`: both test and
+            // write depth; the translucent ones blend.
+            particle: world(
+                "vertex",
+                "particle",
+                &section,
+                Some((true, GreaterEqual)),
+                None,
+                None,
+            ),
+            particle_translucent: world(
+                "vertex",
+                "particle",
+                &section,
+                Some((true, GreaterEqual)),
                 alpha,
                 None,
             ),

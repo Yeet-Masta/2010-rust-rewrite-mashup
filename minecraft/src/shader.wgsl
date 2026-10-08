@@ -113,6 +113,18 @@ fn translucent(in: Out) -> @location(0) vec4<f32> {
     return shade(in, texel);
 }
 
+// Minecraft 26.3 particle.fsh: texture times the lit vertex colour, fogged,
+// dropped below a tenth of opacity.
+@fragment
+fn particle(in: Out) -> @location(0) vec4<f32> {
+    let texel = textureSample(atlas, atlas_sampler, in.uv);
+    let color = shade(in, texel);
+    if color.a < 0.1 {
+        discard;
+    }
+    return color;
+}
+
 // The sky, as MinecraftOSS's viewer draws it, behind everything.
 struct SkyOut {
     @builtin(position) clip: vec4<f32>,

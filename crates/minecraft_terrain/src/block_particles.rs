@@ -109,12 +109,18 @@ impl BlockParticles {
         Ok(Some((texture, tint)))
     }
 
-    /// BlockColors.getTintSource(state, 0) followed by
-    /// BlockTintSource.colorAsTerrainParticle. Grass blocks override this
-    /// method to return white, since their particle texture is dirt.
     fn particle_tint<S: Scene>(&self, scene: &S, pos: BlockPos, block: &Block) -> [f32; 3] {
+        terrain_tint(&self.tint, scene, pos, block)
+    }
+}
+
+/// BlockColors.getTintSource(state, 0) followed by
+/// BlockTintSource.colorAsTerrainParticle. Grass blocks override this
+/// method to return white, since their particle texture is dirt.
+pub fn terrain_tint<S: Scene>(tint: &BiomeTint, scene: &S, pos: BlockPos, block: &Block) -> [f32; 3] {
+    {
         match block.id.path.as_str() {
-            "short_grass" | "fern" | "potted_fern" | "bush" => self.tint.grass(scene.biome_at(pos)),
+            "short_grass" | "fern" | "potted_fern" | "bush" => tint.grass(scene.biome_at(pos)),
             "tall_grass" | "large_fern" => {
                 let sample = if block
                     .properties
@@ -125,12 +131,12 @@ impl BlockParticles {
                 } else {
                     pos
                 };
-                self.tint.grass(scene.biome_at(sample))
+                tint.grass(scene.biome_at(sample))
             }
             "spruce_leaves" => [0x61, 0x99, 0x61].map(|c| c as f32 / 255.0),
             "birch_leaves" => [0x80, 0xa7, 0x55].map(|c| c as f32 / 255.0),
             "oak_leaves" | "jungle_leaves" | "acacia_leaves" | "dark_oak_leaves"
-            | "mangrove_leaves" | "vine" => self.tint.foliage(scene.biome_at(pos)),
+            | "mangrove_leaves" | "vine" => tint.foliage(scene.biome_at(pos)),
             "lily_pad" => [0x20, 0x80, 0x30].map(|c| c as f32 / 255.0),
             "redstone_wire" => {
                 let power = block
@@ -148,7 +154,9 @@ impl BlockParticles {
             _ => [1.0; 3],
         }
     }
+}
 
+impl BlockParticles {
     /// Entity.spawnSprintParticle: one BLOCK particle per sprint tick from
     /// the block 0.2 below the player's feet. The caller checks entity state.
     pub fn spawn_sprint<S: Scene>(

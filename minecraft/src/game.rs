@@ -18,6 +18,7 @@ use minecraftoss_player::{GameMode, HitFrom, IncomingHit, Player};
 use crate::entities::{Entities, PlayerView};
 use crate::gui::{Button, Gui, Hud, Screen, Slot};
 use crate::mining::Mining;
+use crate::particles::{Options as Emit, Particles, Type};
 use crate::render::{Renderer, UiList, WorldDraw};
 use crate::sounds::Sounds;
 use crate::world::World;
@@ -101,6 +102,7 @@ pub struct Game {
     pub quit: bool,
     sounds: Sounds,
     mining: Mining,
+    pub particles: Particles,
     save_dir: Option<PathBuf>,
     previous: DVec3,
     eye_height: f64,
@@ -163,6 +165,7 @@ impl Game {
         });
         let mining = Mining::new(&world.registries, &world.packs, loot, world.seed);
         let sounds = Sounds::load(&world.packs);
+        let particles = Particles::new(&world.packs, &world.atlas, world.seed as u64);
         let (x, y, z) = world.stream.player_spawn;
         let mut player = Player::new(DVec3::new(x, y, z));
         let mut creative = options.creative;
@@ -218,6 +221,7 @@ impl Game {
             quit: false,
             sounds,
             mining,
+            particles,
             save_dir: options.save.clone(),
             previous,
             eye_height: 1.62,
@@ -558,8 +562,20 @@ impl Game {
         } else {
             self.hand_mesh(partial, eye)
         };
+        let sprites = self.particles.mesh(
+            &self.world,
+            &crate::particles::Camera {
+                eye,
+                right,
+                up: right.cross(forward).normalize_or(Vec3::Y),
+                yaw: (self.player.yaw as f32).to_radians(),
+                pitch: (self.player.pitch as f32).to_radians(),
+            },
+            partial,
+        );
         let draw = WorldDraw {
             clip_from_rel: projection * view_matrix,
+            sprites,
             eye: eye.as_vec3().to_array(),
             environment,
             visible,
@@ -999,6 +1015,11 @@ impl Game {
         }
         self.mining.tick_particles(&self.world.scene);
         self.entities.tick_scene(&self.world.scene);
+        self.particles.player = Some((self.player.pos, self.player.velocity.y));
+        self.particles.tick(&self.world);
+        for (event, at, volume, pitch) in std::mem::take(&mut self.particles.sounds) {
+            self.play(event, Some(at), volume, pitch);
+        }
         if let Some((_, since)) = self.highlight.as_mut() {
             *since += TICK_SECONDS;
         }

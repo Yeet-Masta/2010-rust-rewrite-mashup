@@ -201,6 +201,13 @@ pub struct BiomeTint {
     foliage: Option<RgbaImage>,
 }
 impl BiomeTint {
+    /// No colour maps: the default grass and foliage colours.
+    pub fn empty() -> Self {
+        Self {
+            grass: None,
+            foliage: None,
+        }
+    }
     pub fn from_pack(packs: &PackStack) -> Result<Self> {
         let mut tint = Self {
             grass: None,
@@ -523,7 +530,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     // Reserve block and item sprites up front. Neither placing a new block
     // nor tossing an item should resize/reupload the atlas during gameplay.
     if preload_blocks {
-        for prefix in ["textures/block/", "textures/item/"] {
+        for prefix in ["textures/block/", "textures/item/", "textures/particle/"] {
             for path in packs.list("minecraft", prefix)? {
                 if let Some(name) = path
                     .strip_prefix("assets/minecraft/textures/")

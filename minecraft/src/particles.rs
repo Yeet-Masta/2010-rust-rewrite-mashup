@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 
 use glam::{DVec3, Vec3};
-use minecraft_terrain::mesh::{Atlas, SectionVertex};
+use minecraft_terrain::mesh::{Atlas, BiomeTint, SectionVertex};
 use minecraft_terrain::pack::{PackStack, ResourceId};
 
 use crate::world::World;
 
-pub use kinds::{Kind, Options};
+pub use kinds::{Kind, Options, Type};
 
 mod kinds;
 
@@ -21,7 +21,10 @@ const MAX_PARTICLES: usize = 16384;
 const RESERVOIR_START: usize = 12288;
 
 /// Packed full brightness, as levels: sky 15, block 15.
-pub const FULL_BRIGHT: Light = Light { sky: 240, block: 240 };
+pub const FULL_BRIGHT: Light = Light {
+    sky: 240,
+    block: 240,
+};
 
 /// Light as vanilla packs it for a vertex: each channel 0..=240 (level * 16).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +91,11 @@ impl Sprites {
             let Ok(id) = ResourceId::parse(&format!("minecraft:{name}")) else {
                 continue;
             };
-            let Some(json) = packs.json(&id, "particles").ok().flatten() else {
+            let Some(json) = packs
+                .json(&id, &format!("particles/{name}.json"))
+                .ok()
+                .flatten()
+            else {
                 continue;
             };
             let textures = json["textures"]
@@ -270,7 +277,11 @@ impl Particle {
     ) -> Self {
         let mut particle = Self::at(kind, pos, sprite, random);
         let mut spread = || f64::from((random.next_float() * 2.0 - 1.0) * 0.4);
-        let mut v = DVec3::new(motion.x + spread(), motion.y + spread(), motion.z + spread());
+        let mut v = DVec3::new(
+            motion.x + spread(),
+            motion.y + spread(),
+            motion.z + spread(),
+        );
         let speed = f64::from((random.next_float() + random.next_float() + 1.0) * 0.15);
         let length = v.length();
         if length > 0.0 {
@@ -278,7 +289,6 @@ impl Particle {
         }
         v.y += f64::from(0.1f32);
         particle.velocity = v;
-        particle.quad_size = 0.1 * (random.next_float() * 0.5 + 0.5) * 2.0;
         particle
     }
 
@@ -454,7 +464,13 @@ fn collide(world: &World, min: DVec3, max: DVec3, motion: DVec3) -> DVec3 {
 }
 
 /// `Shapes.collide` along one axis for boxes.
-fn collide_axis(axis: usize, min: DVec3, max: DVec3, boxes: &[(DVec3, DVec3)], mut distance: f64) -> f64 {
+fn collide_axis(
+    axis: usize,
+    min: DVec3,
+    max: DVec3,
+    boxes: &[(DVec3, DVec3)],
+    mut distance: f64,
+) -> f64 {
     const EPSILON: f64 = 1.0e-7;
     let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
     for (box_min, box_max) in boxes {
@@ -504,15 +520,24 @@ pub struct ParticleMesh {
 pub struct Particles {
     pub sprites: Sprites,
     pub random: Random,
+    /// Biome colours, for block particles' tints.
+    pub tint: BiomeTint,
+    /// The player's feet and vertical speed, for clouds settling on them.
+    pub player: Option<(DVec3, f64)>,
+    /// Sounds particles made (drips landing): event, where, volume, pitch.
+    pub sounds: Vec<(&'static str, DVec3, f32, f32)>,
     live: Vec<Particle>,
     adding: Vec<Particle>,
 }
 
 impl Particles {
-    pub fn new(sprites: Sprites, seed: u64) -> Self {
+    pub fn new(packs: &PackStack, atlas: &Atlas, seed: u64) -> Self {
         Self {
-            sprites,
-            random: Random::new(seed ^ 0x2545_f491_4f6c_dd1d),
+            sprites: Sprites::load(packs, atlas),
+            random: Random::new(seed as u64 ^ 0x2545_f491_4f6c_dd1d),
+            tint: BiomeTint::from_pack(packs).unwrap_or_else(|_| BiomeTint::empty()),
+            player: None,
+            sounds: Vec::new(),
             live: Vec::new(),
             adding: Vec::new(),
         }
@@ -548,7 +573,8 @@ impl Particles {
                 continue;
             }
             if count >= RESERVOIR_START {
-                let free = (MAX_PARTICLES - count) as f32 / (MAX_PARTICLES - RESERVOIR_START) as f32;
+                let free =
+                    (MAX_PARTICLES - count) as f32 / (MAX_PARTICLES - RESERVOIR_START) as f32;
                 if self.random.next_float() >= free * free {
                     continue;
                 }
@@ -599,7 +625,7 @@ impl Particles {
                 channel(particle.rgb[0]),
                 channel(particle.rgb[1]),
                 channel(particle.rgb[2]),
-                channel(particle.alpha),
+                channel(kinds::alpha(particle, partial)),
             ];
             let target = match particle.layer {
                 Layer::Opaque => &mut mesh.opaque,
