@@ -16,7 +16,7 @@ use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
-    EntitySnapshot, PlayerEdit, ServerHandle, ServerItem, ServerSim, TickInput,
+    EntitySnapshot, MovingBlockView, PlayerEdit, ServerHandle, ServerItem, ServerSim, TickInput,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -83,6 +83,10 @@ pub struct Entities {
     poof: PoofParticles,
     portal: PortalParticles,
     items: ItemVisuals,
+    /// The blocks pistons are moving, as of the last server tick.
+    moving_blocks: Vec<MovingBlockView>,
+    /// Biome colours for moving blocks, read from the pack on first use.
+    tint: Option<minecraft_terrain::mesh::BiomeTint>,
     clock: f64,
     ticks: u64,
     /// The player's inventory: vanilla slots, stacking and recipes.
@@ -144,6 +148,8 @@ impl Entities {
             poof: PoofParticles::default(),
             portal: PortalParticles::default(),
             items: ItemVisuals::default(),
+            moving_blocks: Vec::new(),
+            tint: None,
             clock: 0.0,
             ticks: 0,
             inventory,
@@ -637,6 +643,9 @@ impl Entities {
                 ));
             }
             events.mob_events.extend(output.entity_events.iter().copied());
+            if let Some(moving) = output.moving_blocks {
+                self.moving_blocks = moving;
+            }
             for result in &output.mob_results {
                 events.mob_events.extend(result.events.iter().copied());
                 events.attacks.extend(result.attack.clone());
@@ -913,6 +922,18 @@ impl Entities {
         let _ = self
             .items
             .append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
+        // Blocks pistons are moving (`PistonHeadRenderer`).
+        if !self.moving_blocks.is_empty() {
+            let tint = self.tint.get_or_insert_with(|| {
+                mesh::BiomeTint::from_pack(packs).unwrap_or_else(|_| mesh::BiomeTint::empty())
+            });
+            let parts: Vec<_> = self
+                .moving_blocks
+                .iter()
+                .flat_map(|view| mesh::moving_block_parts(view, partial))
+                .collect();
+            let _ = mesh::append_moving_blocks(&mut out.items, scene, &parts, packs, atlas, tint, light);
+        }
         // Their shadows, at `getMaxLocalRawBrightness`.
         let casters = client_mobs::shadow_casters(w, poses, camera, partial);
         let raw = |pos: (i32, i32, i32)| {

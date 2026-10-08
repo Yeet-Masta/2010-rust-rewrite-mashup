@@ -676,8 +676,11 @@ impl ServerSim {
 
     /// A player's edit to `block` (`None` for air) at a position.
     pub fn player_edit_block(&mut self, pos: BlockPos, block: Option<&Block>, edit: PlayerEdit) {
-        let target = self.state_of(block);
+        let mut target = self.state_of(block);
         let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        if edit == PlayerEdit::Place && block.is_some_and(|b| b.id.path == "redstone_wire") {
+            target = self.level.wire_placement_state(at, target);
+        }
         if self.level.block(at) == target {
             return;
         }
@@ -813,6 +816,26 @@ impl ServerSim {
     }
 
     /// Positions changed since the last call, with the block now there.
+    /// The blocks pistons are moving now.
+    pub fn moving_blocks(&self) -> Vec<MovingBlockView> {
+        self.level
+            .moving
+            .entities
+            .iter()
+            .filter_map(|(pos, entity)| {
+                Some(MovingBlockView {
+                    pos: (pos.x, pos.y, pos.z),
+                    moved: self.states.block(entity.moved).cloned()?,
+                    direction: entity.direction.offset(),
+                    extending: entity.extending,
+                    source: entity.source,
+                    progress_o: entity.progress_o,
+                    progress: entity.progress,
+                })
+            })
+            .collect()
+    }
+
     pub fn take_changes(&mut self) -> Vec<(BlockPos, Option<Block>)> {
         let changed = self.level.take_changed();
         if std::env::var_os("MINECRAFTOSS_DEBUG_SERVER").is_some() && !changed.is_empty() {
@@ -885,6 +908,24 @@ pub struct TickInput {
     pub spawn_mobs: bool,
 }
 
+/// A block a piston is moving (`PistonMovingBlockEntity`), for the
+/// client to draw between cells.
+#[derive(Clone, Debug)]
+pub struct MovingBlockView {
+    /// Its cell (the moving piston block's).
+    pub pos: BlockPos,
+    /// The block it carries.
+    pub moved: Block,
+    /// The piston's facing, as a step.
+    pub direction: (i32, i32, i32),
+    pub extending: bool,
+    /// It is the piston itself (its base, retracting).
+    pub source: bool,
+    /// How far along it is, last tick and now (0 to 1).
+    pub progress_o: f32,
+    pub progress: f32,
+}
+
 /// What the server thread sends back after handling commands.
 #[derive(Default)]
 pub struct Output {
@@ -908,6 +949,8 @@ pub struct Output {
     pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
     /// `ClientboundEntityEventPacket`s: entity, event.
     pub entity_events: Vec<(u64, u8)>,
+    /// The blocks pistons are moving, after a tick.
+    pub moving_blocks: Option<Vec<MovingBlockView>>,
     /// Creeper blasts this tick (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// Sounds mobs made this tick.
@@ -1153,6 +1196,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     sim.prepare_spawning(&input.mob_players);
                     sim.tick();
+                    out.moving_blocks = Some(sim.moving_blocks());
                     let mobs_started = std::time::Instant::now();
                     sim.take_spawned();
                     sim.despawn_mobs(&input.mob_players, input.difficulty);
@@ -2330,6 +2374,107 @@ mod tests {
         times.sort_by(f64::total_cmp);
         let p = |q: usize| times[(times.len() - 1) * q / 100];
         eprintln!("{} mobs: tick p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} ms", server.mobs.len(), p(50), p(95), p(99), times[times.len() - 1]);
+    }
+
+    /// Redstone end to end: a lever pulled powers a line of dust (each
+    /// piece connected to the next, weakening a level a block), a repeater
+    /// carries it on a tick later, and a lamp at the end lights; a torch
+    /// under a powered block goes out.
+    #[test]
+    fn a_lever_lights_a_lamp_down_a_line_of_dust() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        let mut place = |scene: &mut HandcraftedScene, server: &mut ServerSim, pos: BlockPos, block: Block| {
+            scene.set(pos, Some(block));
+            server.player_edit(scene, pos, PlayerEdit::Place);
+        };
+        for x in 1..=14 {
+            for z in 6..=10 {
+                place(&mut scene, &mut server, (x, 200, z), Block::new("minecraft:stone"));
+            }
+        }
+        place(&mut scene, &mut server, (2, 201, 8), Block::new("minecraft:lever").with("face", "floor").with("facing", "east"));
+        for x in 3..=7 {
+            place(&mut scene, &mut server, (x, 201, 8), Block::new("minecraft:redstone_wire"));
+        }
+        place(&mut scene, &mut server, (8, 201, 8), Block::new("minecraft:repeater").with("facing", "west"));
+        place(&mut scene, &mut server, (9, 201, 8), Block::new("minecraft:redstone_wire"));
+        place(&mut scene, &mut server, (10, 201, 8), Block::new("minecraft:redstone_lamp"));
+        // A torch under a block the dust runs into.
+        place(&mut scene, &mut server, (5, 201, 10), Block::new("minecraft:stone"));
+        place(&mut scene, &mut server, (5, 202, 10), Block::new("minecraft:redstone_torch"));
+        place(&mut scene, &mut server, (5, 201, 9), Block::new("minecraft:redstone_wire"));
+        // Dust on its own is placed as a cross (`getStateForPlacement`).
+        place(&mut scene, &mut server, (12, 201, 10), Block::new("minecraft:redstone_wire"));
+        for _ in 0..4 {
+            server.tick();
+        }
+        let mut now: std::collections::HashMap<BlockPos, Block> = std::collections::HashMap::new();
+        for (pos, block) in server.take_changes() {
+            if let Some(block) = block {
+                now.insert(pos, block);
+            }
+        }
+        let property = |now: &std::collections::HashMap<BlockPos, Block>, pos: BlockPos, key: &str| now.get(&pos).and_then(|b| b.properties.get(key).cloned());
+        eprintln!("before: dust {:?}", (3..=7).map(|x| now.get(&(x, 201, 8)).map(|b| b.properties.clone())).collect::<Vec<_>>());
+        assert!(server.use_block((2, 201, 8), "east"), "the lever is pulled");
+        for _ in 0..6 {
+            server.tick();
+        }
+        for (pos, block) in server.take_changes() {
+            if let Some(block) = block {
+                now.insert(pos, block);
+            }
+        }
+        eprintln!("after: {:?}", (2..=10).map(|x| (x, now.get(&(x, 201, 8)).map(|b| (b.id.path.clone(), b.properties.clone())))).collect::<Vec<_>>());
+        assert_eq!(property(&now, (2, 201, 8), "powered").as_deref(), Some("true"));
+        assert_eq!(property(&now, (3, 201, 8), "power").as_deref(), Some("15"));
+        assert_eq!(property(&now, (7, 201, 8), "power").as_deref(), Some("11"));
+        assert_eq!(property(&now, (4, 201, 8), "east").as_deref(), Some("side"), "dust joins the next piece");
+        for side in ["north", "east", "south", "west"] {
+            assert_eq!(property(&now, (12, 201, 10), side).as_deref(), Some("side"), "lone dust is a cross");
+        }
+        assert_eq!(property(&now, (8, 201, 8), "powered").as_deref(), Some("true"), "the repeater turns on");
+        assert_eq!(property(&now, (10, 201, 8), "lit").as_deref(), Some("true"), "the lamp lights");
+        assert_eq!(property(&now, (5, 202, 10), "lit").as_deref(), Some("false"), "the torch on a powered block goes out");
+        // A piston powered by a redstone block pushes the stone in front of
+        // it: the stone moves between cells for the client to draw, then
+        // lands a block on with the head behind it.
+        place(&mut scene, &mut server, (12, 201, 6), Block::new("minecraft:stone"));
+        place(&mut scene, &mut server, (12, 201, 7), Block::new("minecraft:piston").with("facing", "north"));
+        place(&mut scene, &mut server, (13, 201, 7), Block::new("minecraft:redstone_block"));
+        server.tick();
+        let moving = server.moving_blocks();
+        assert!(
+            moving.iter().any(|m| m.moved.id.path == "stone" && m.extending && m.direction == (0, 0, -1)),
+            "the stone moves: {moving:?}"
+        );
+        for _ in 0..4 {
+            server.tick();
+        }
+        assert!(server.moving_blocks().is_empty(), "the push is done");
+        for (pos, block) in server.take_changes() {
+            if let Some(block) = block {
+                now.insert(pos, block);
+            } else {
+                now.remove(&pos);
+            }
+        }
+        assert_eq!(now.get(&(12, 201, 5)).map(|b| b.id.path.as_str()), Some("stone"));
+        assert_eq!(now.get(&(12, 201, 6)).map(|b| b.id.path.as_str()), Some("piston_head"));
     }
 
     /// TNT primed by a placed redstone block becomes an entity the client

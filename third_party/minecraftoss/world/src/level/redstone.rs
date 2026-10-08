@@ -293,6 +293,14 @@ impl Level<'_> {
 
     /// `BlockState.getSignal(level, pos, direction)`: `direction` points from
     /// the reader to this block.
+    /// `RedStoneWireBlock.getStateForPlacement`: dust placed at `pos` starts
+    /// as the cross and joins what is around it.
+    pub fn wire_placement_state(&self, pos: BlockPos, wire: BlockStateId) -> BlockStateId {
+        let cross = ["north", "east", "south", "west"].into_iter().fold(wire, |state, side| self.with(state, side, "side"));
+        let mut view = self.view();
+        wire_connection_state(&Ctx { lib: self.lib, region: &mut view }, cross, pos)
+    }
+
     pub fn state_signal(&self, state: BlockStateId, pos: BlockPos, direction: Direction) -> i32 {
         match self.redstone_kind(state) {
             Some(Kind::Wire) => {

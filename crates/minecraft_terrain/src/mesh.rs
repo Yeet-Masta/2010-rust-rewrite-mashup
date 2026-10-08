@@ -1040,6 +1040,91 @@ impl ItemVisuals {
     }
 }
 
+/// What `PistonHeadRenderer` draws for a block a piston moves, at a
+/// partial tick: the block at its cell moved along the piston's facing (a
+/// piston head short for the first half of its stroke; for a retracting
+/// piston its head, with its extended base in place), each with the cell
+/// its light and biome come from.
+pub fn moving_block_parts(view: &crate::server::MovingBlockView, partial: f32) -> Vec<(BlockPos, Vec3, Block, BlockPos)> {
+    // `getProgress`, `getXOff`.
+    let progress = view.progress_o + (view.progress - view.progress_o) * partial.min(1.0);
+    let along = if view.extending { progress - 1.0 } else { 1.0 - progress };
+    let (dx, dy, dz) = view.direction;
+    let offset = Vec3::new(dx as f32, dy as f32, dz as f32) * along;
+    let movement = if view.extending { (dx, dy, dz) } else { (-dx, -dy, -dz) };
+    let (x, y, z) = view.pos;
+    let from = (x - movement.0, y - movement.1, z - movement.2);
+    let flag = |on: bool| if on { "true" } else { "false" };
+    match view.moved.id.path.as_str() {
+        "air" | "cave_air" | "void_air" => Vec::new(),
+        "piston_head" => vec![(view.pos, offset, view.moved.clone().with("short", flag(progress <= 0.5)), from)],
+        path if view.source && !view.extending => {
+            let facing = view.moved.properties.get("facing").map_or("north", String::as_str);
+            let head = Block::new("minecraft:piston_head")
+                .with("type", if path == "sticky_piston" { "sticky" } else { "normal" })
+                .with("facing", facing)
+                .with("short", flag(progress >= 0.5));
+            vec![(view.pos, offset, head, from), (view.pos, Vec3::ZERO, view.moved.clone().with("extended", "true"), view.pos)]
+        }
+        _ => vec![(view.pos, offset, view.moved.clone(), from)],
+    }
+}
+
+/// Blocks pistons are moving (`submitMovingBlock`): each block state's
+/// model at its cell moved by its offset, every face drawn with the
+/// terrain's directional shade, tinted for the biome of its light cell and
+/// lit by the light there.
+pub fn append_moving_blocks<S: Scene>(
+    mesh: &mut ChunkMesh,
+    scene: &S,
+    parts: &[(BlockPos, Vec3, Block, BlockPos)],
+    packs: &PackStack,
+    atlas: &Atlas,
+    tint_source: &BiomeTint,
+    light: &SkyLight,
+) -> Result<()> {
+    for (cell, offset, block, light_cell) in parts {
+        let variants = resolve_block_variants(packs, block)?;
+        if variants.is_empty() {
+            continue;
+        }
+        let model = &variants[variant_index(&variants, *cell)].0;
+        let biome = scene.biome_at(*light_cell);
+        let (sky, block_light) = (light.get(*light_cell) as f32, light.get_block(*light_cell) as f32);
+        let origin = Vec3::new(cell.0 as f32, cell.1 as f32, cell.2 as f32) + *offset;
+        for element in &model.elements {
+            for face in &element.faces {
+                if !atlas.contains(&face.texture) {
+                    continue;
+                }
+                let corners = element_corners(element, &face.direction)?;
+                let dir = quad_direction(element, &face.direction, &corners)?;
+                let uv = face_uvs(element, face, atlas.region(&face.texture));
+                let shade = match element.shade_direction_override.as_deref().unwrap_or(dir) {
+                    "up" => 1.0,
+                    "down" => 0.5,
+                    "north" | "south" => 0.8,
+                    _ => 0.6,
+                };
+                let tint = block_face_tint(block, face.tint, biome, tint_source);
+                let start = mesh.vertices.len() as u32;
+                for (corner, uv) in corners.into_iter().zip(uv) {
+                    mesh.vertices.push(Vertex {
+                        position: (origin + Vec3::from_array(corner)).to_array(),
+                        uv,
+                        color: [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0],
+                        sky_light: sky,
+                        block_light,
+                    });
+                }
+                mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+                mesh.faces += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Which display transform a held item takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeldDisplay {
@@ -3084,6 +3169,35 @@ mod tests {
             corners("east", [0.0; 3], [1.0; 3]).unwrap()[0],
             [1.0, 1.0, 1.0]
         );
+    }
+
+    /// `PistonHeadRenderer`: a pushed block starts a cell back and slides
+    /// on; a retracting piston draws its head sliding in, short for the
+    /// second half, and its extended base in place.
+    #[test]
+    fn moving_blocks_slide_between_cells() {
+        let view = |moved: Block, extending: bool, source: bool| crate::server::MovingBlockView {
+            pos: (5, 0, 0),
+            moved,
+            direction: (1, 0, 0),
+            extending,
+            source,
+            progress_o: 0.5,
+            progress: 1.0,
+        };
+        let pushed = moving_block_parts(&view(Block::new("minecraft:stone"), true, false), 0.0);
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].1, Vec3::new(-0.5, 0.0, 0.0));
+        assert_eq!(pushed[0].3, (4, 0, 0), "lit from the cell it left");
+        let piston = Block::new("minecraft:sticky_piston").with("facing", "east").with("extended", "false");
+        let retracting = moving_block_parts(&view(piston, false, true), 1.0);
+        assert_eq!(retracting.len(), 2);
+        let (_, offset, head, _) = &retracting[0];
+        assert_eq!(*offset, Vec3::ZERO);
+        assert_eq!(head.id.path, "piston_head");
+        assert_eq!(head.properties.get("type").map(String::as_str), Some("sticky"));
+        assert_eq!(head.properties.get("short").map(String::as_str), Some("true"));
+        assert_eq!(retracting[1].2.properties.get("extended").map(String::as_str), Some("true"));
     }
 
     #[test]
