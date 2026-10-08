@@ -54,6 +54,27 @@ pub struct UiBatch {
 pub struct UiList {
     pub vertices: Vec<UiVertex>,
     pub batches: Vec<UiBatch>,
+    /// A model drawn into the model texture before the layer, as vanilla's
+    /// picture-in-picture renderers draw the inventory's player.
+    pub model: Option<GuiModel>,
+}
+
+/// An entity model for the UI: drawn into its own texture
+/// ([`Renderer::model_texture`]), which the UI shows as a quad.
+pub struct GuiModel {
+    pub vertices: Vec<minecraft_terrain::mesh::Vertex>,
+    pub indices: Vec<u32>,
+    /// From the model's space to the texture's clip space (reverse-Z).
+    pub clip_from_model: glam::Mat4,
+    /// The texture's size in window pixels.
+    pub size: (u32, u32),
+}
+
+/// The texture a [`GuiModel`] is drawn into, with its depth.
+struct ModelTarget {
+    view: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    size: (u32, u32),
 }
 
 impl UiList {
@@ -175,6 +196,7 @@ struct Pipelines {
     outline: wgpu::RenderPipeline,
     ui: wgpu::RenderPipeline,
     ui_invert: wgpu::RenderPipeline,
+    gui_entity: wgpu::RenderPipeline,
 }
 
 pub struct Renderer {
@@ -203,6 +225,12 @@ pub struct Renderer {
     sections: HashMap<SectionPos, SectionGpu>,
     clouds: Option<Mesh>,
     textures: Vec<UiTexture>,
+    /// The UI model's view uniform and world bindings, its target, and the
+    /// UI texture that shows it.
+    model_view_buffer: wgpu::Buffer,
+    model_bind: Option<wgpu::BindGroup>,
+    model_target: Option<ModelTarget>,
+    model_texture: TextureId,
 }
 
 impl Renderer {
@@ -328,6 +356,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let model_view_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("model view"),
+            size: std::mem::size_of::<ViewUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("screen"),
             size: 16,
@@ -382,9 +416,15 @@ impl Renderer {
             sections: HashMap::new(),
             clouds: None,
             textures: Vec::new(),
+            model_view_buffer,
+            model_bind: None,
+            model_target: None,
+            model_texture: TextureId(0),
         };
         let white = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
         renderer.add_texture(&white);
+        // A placeholder until a model is drawn at its size.
+        renderer.model_texture = renderer.add_texture(&image::RgbaImage::new(1, 1));
         Ok(renderer)
     }
 
@@ -401,6 +441,106 @@ impl Renderer {
 
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
+    }
+
+    /// The UI texture a [`GuiModel`] is drawn into.
+    pub fn model_texture(&self) -> TextureId {
+        self.model_texture
+    }
+
+    /// Draws a UI model into the model texture, resized to fit it.
+    fn draw_model(&mut self, encoder: &mut wgpu::CommandEncoder, model: &GuiModel) {
+        let Some(bind) = self.model_bind.as_ref() else {
+            return;
+        };
+        let size = (model.size.0.max(1), model.size.1.max(1));
+        if self.model_target.as_ref().is_none_or(|t| t.size != size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("ui model"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let ui_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ui model"),
+                layout: &self.ui_texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.ui_sampler),
+                    },
+                ],
+            });
+            self.textures[self.model_texture.0] = UiTexture {
+                texture,
+                bind: ui_bind,
+                size,
+            };
+            self.model_target = Some(ModelTarget {
+                view,
+                depth: depth_view(&self.device, size.0, size.1),
+                size,
+            });
+        }
+        let Some(target) = self.model_target.as_ref() else {
+            return;
+        };
+        let uniform = ViewUniform {
+            clip_from_rel: model.clip_from_model.to_cols_array(),
+            rel_from_clip: model.clip_from_model.inverse().to_cols_array(),
+            hand_clip: glam::Mat4::IDENTITY.to_cols_array(),
+            camera: [0.0; 4],
+            environment: [[0.0; 4]; 16],
+        };
+        self.queue
+            .write_buffer(&self.model_view_buffer, 0, bytemuck::bytes_of(&uniform));
+        let mesh = upload(
+            &self.device,
+            bytemuck::cast_slice(&model.vertices),
+            &model.indices,
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ui model"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if let Some(mesh) = &mesh {
+            pass.set_bind_group(0, bind, &[]);
+            pass.set_pipeline(&self.pipelines.gui_entity);
+            draw(&mut pass, mesh, 0..mesh.count);
+        }
     }
 
     /// A texture for the HUD.
@@ -528,6 +668,35 @@ impl Renderer {
         let atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let celestial = self.plain_texture(celestial);
         let cracks = self.plain_texture(cracks);
+        let bind = |buffer: &wgpu::Buffer| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("world"),
+                layout: &self.world_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&atlas_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&celestial),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&cracks),
+                    },
+                ],
+            })
+        };
+        self.model_bind = Some(bind(&self.model_view_buffer));
         self.world_bind = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("world"),
             layout: &self.world_layout,
@@ -739,6 +908,9 @@ impl Renderer {
         world: Option<&WorldDraw>,
         ui: &UiList,
     ) {
+        if let Some(model) = ui.model.as_ref() {
+            self.draw_model(encoder, model);
+        }
         let (width, height) = (self.config.width as f32, self.config.height as f32);
         self.queue.write_buffer(
             &self.screen_buffer,
@@ -1350,6 +1522,15 @@ impl Pipelines {
                 &entity,
                 Some((false, GreaterEqual)),
                 alpha,
+                None,
+            ),
+            // Lit and shaded on the CPU, full bright and without fog.
+            gui_entity: world(
+                "gui_entity_vertex",
+                "gui_entity_fragment",
+                &entity,
+                Some((true, GreaterEqual)),
+                None,
                 None,
             ),
             hand: world(

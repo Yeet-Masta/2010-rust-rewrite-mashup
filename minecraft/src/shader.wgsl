@@ -287,6 +287,34 @@ fn entity_translucent_fragment(in: EntityOut) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), texel.a * in.colour.a);
 }
 
+// An entity model in the UI (`ENTITY_IN_UI` lighting, baked into the
+// colour): no lightmap, no fog.
+@vertex
+fn gui_entity_vertex(
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) colour: vec4<f32>,
+    @location(3) sky_light: f32,
+    @location(4) block_light: f32,
+) -> EntityOut {
+    var out: EntityOut;
+    out.clip = view.clip_from_rel * vec4<f32>(position, 1.0);
+    out.uv = uv;
+    out.colour = colour;
+    out.world_pos = position;
+    out.light = vec3<f32>(1.0);
+    return out;
+}
+
+@fragment
+fn gui_entity_fragment(in: EntityOut) -> @location(0) vec4<f32> {
+    let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+    if texel.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(texel.rgb * in.colour.rgb, 1.0);
+}
+
 // Black, as dark as the shadow sprite and the vertex alpha.
 @fragment
 fn shadow_fragment(in: EntityOut) -> @location(0) vec4<f32> {
