@@ -106,6 +106,8 @@ pub struct Gui {
     pub font: Font,
     /// The texture the inventory's player is drawn into.
     model_texture: TextureId,
+    /// When the GUI was made, for the glint's scroll.
+    started: std::time::Instant,
     sprites: HashMap<String, Sprite>,
     icons: Icons,
     language: HashMap<String, String>,
@@ -117,7 +119,7 @@ pub struct Gui {
     pub mouse: (f32, f32),
 }
 
-const SPRITES: [(&str, &str, f32); 35] = [
+const SPRITES: [(&str, &str, f32); 36] = [
     (
         "creative_scroller",
         "gui/sprites/container/creative_inventory/scroller",
@@ -177,6 +179,7 @@ const SPRITES: [(&str, &str, f32); 35] = [
     ("edition", "gui/title/edition", 0.0),
     ("menu_background", "gui/menu_background", 0.0),
     ("underwater", "misc/underwater", 0.0),
+    ("glint", "misc/enchanted_glint_item", 0.0),
     ("vignette", "misc/vignette", 0.0),
     ("helmet_slot", "gui/sprites/container/slot/helmet", 0.0),
     (
@@ -244,6 +247,7 @@ impl Gui {
         Ok(Self {
             font,
             model_texture: renderer.model_texture(),
+            started: std::time::Instant::now(),
             sprites,
             icons: Icons {
                 image: RgbaImage::new(ICON_ATLAS, ICON_ATLAS),
@@ -368,6 +372,21 @@ impl Gui {
         };
         self.icons.cells.insert(key, rect);
         rect
+    }
+
+    /// `TextureTransform.setupGlintTexturing(8)` at the default glint
+    /// speed of 0.5, over an item whose sprite spans a sixty-fourth of its
+    /// sheet, as vanilla's items do.
+    fn glint_uv(&self, [u0, v0, ..]: [f32; 4]) -> [[f32; 2]; 4] {
+        let millis = (self.started.elapsed().as_millis() as f64 * 0.5 * 8.0) as u64;
+        let offset0 = (millis % 110_000) as f32 / 110_000.0;
+        let offset1 = (millis % 30_000) as f32 / 30_000.0;
+        let (sin, cos) = (std::f32::consts::PI / 18.0).sin_cos();
+        let span = 1.0 / 64.0;
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|[s, t]| {
+            let (u, v) = ((u0 + s * span) * 8.0, (v0 + t * span) * 8.0);
+            [u * cos - v * sin - offset0, u * sin + v * cos + offset1]
+        })
     }
 
     fn rect(&self, x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
@@ -503,6 +522,17 @@ impl Gui {
             && let Some(texture) = self.icons.texture
         {
             ui.quad(texture, self.rect(x, y, 16.0, 16.0), rect, WHITE);
+            if crate::creative::foil(stack)
+                && let Some(glint) = self.sprites.get("glint")
+            {
+                ui.glint(
+                    texture,
+                    glint.texture,
+                    self.rect(x, y, 16.0, 16.0),
+                    rect,
+                    self.glint_uv(rect),
+                );
+            }
         }
         if let Some((damage, max)) = inventory
             .recipes

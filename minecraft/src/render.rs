@@ -45,6 +45,9 @@ pub struct UiBatch {
     pub texture: TextureId,
     /// Inverts what is behind it, as the crosshair does.
     pub invert: bool,
+    /// The enchantment glint's texture, scrolled over the texture's
+    /// opaque pixels (`RenderPipelines.GLINT`).
+    pub glint: Option<TextureId>,
     pub start: u32,
     pub count: u32,
 }
@@ -91,6 +94,50 @@ impl UiList {
         self.push(WHITE, false, rect, [0.0, 0.0, 1.0, 1.0], colour);
     }
 
+    /// The glint over `mask`'s opaque pixels in `rect`, at `glint_uv`
+    /// for the corners (top left, top right, bottom right, bottom left).
+    pub fn glint(
+        &mut self,
+        mask: TextureId,
+        glint: TextureId,
+        [x, y, w, h]: [f32; 4],
+        [u0, v0, u1, v1]: [f32; 4],
+        glint_uv: [[f32; 2]; 4],
+    ) {
+        let start = self.vertices.len() as u32;
+        // The glint's coordinates ride in the colour.
+        let v = |px: f32, py: f32, u: f32, t: f32, [gu, gv]: [f32; 2]| UiVertex {
+            position: [px, py],
+            uv: [u, t],
+            colour: [gu, gv, 0.0, 1.0],
+        };
+        let [a, b, c, d] = glint_uv;
+        self.vertices.extend_from_slice(&[
+            v(x, y, u0, v0, a),
+            v(x + w, y, u1, v0, b),
+            v(x + w, y + h, u1, v1, c),
+            v(x, y, u0, v0, a),
+            v(x + w, y + h, u1, v1, c),
+            v(x, y + h, u0, v1, d),
+        ]);
+        match self.batches.last_mut() {
+            Some(batch)
+                if batch.texture == mask
+                    && batch.glint == Some(glint)
+                    && batch.start + batch.count == start =>
+            {
+                batch.count += 6
+            }
+            _ => self.batches.push(UiBatch {
+                texture: mask,
+                invert: false,
+                glint: Some(glint),
+                start,
+                count: 6,
+            }),
+        }
+    }
+
     fn push(
         &mut self,
         texture: TextureId,
@@ -117,6 +164,7 @@ impl UiList {
             Some(batch)
                 if batch.texture == texture
                     && batch.invert == invert
+                    && batch.glint.is_none()
                     && batch.start + batch.count == start =>
             {
                 batch.count += 6
@@ -124,6 +172,7 @@ impl UiList {
             _ => self.batches.push(UiBatch {
                 texture,
                 invert,
+                glint: None,
                 start,
                 count: 6,
             }),
@@ -196,6 +245,7 @@ struct Pipelines {
     outline: wgpu::RenderPipeline,
     ui: wgpu::RenderPipeline,
     ui_invert: wgpu::RenderPipeline,
+    ui_glint: wgpu::RenderPipeline,
     gui_entity: wgpu::RenderPipeline,
 }
 
@@ -1130,12 +1180,17 @@ impl Renderer {
                 let Some(texture) = self.textures.get(batch.texture.0) else {
                     continue;
                 };
-                pass.set_pipeline(if batch.invert {
+                pass.set_pipeline(if batch.glint.is_some() {
+                    &self.pipelines.ui_glint
+                } else if batch.invert {
                     &self.pipelines.ui_invert
                 } else {
                     &self.pipelines.ui
                 });
                 pass.set_bind_group(1, &texture.bind, &[]);
+                if let Some(glint) = batch.glint.and_then(|g| self.textures.get(g.0)) {
+                    pass.set_bind_group(2, &glint.bind, &[]);
+                }
                 pass.draw(batch.start..batch.start + batch.count, 0..1);
             }
         }
@@ -1313,6 +1368,15 @@ impl Pipelines {
         let ui_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ui"),
             bind_group_layouts: &[Some(screen_layout), Some(ui_texture_layout)],
+            immediate_size: 0,
+        });
+        let ui_glint_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ui glint"),
+            bind_group_layouts: &[
+                Some(screen_layout),
+                Some(ui_texture_layout),
+                Some(ui_texture_layout),
+            ],
             immediate_size: 0,
         });
         let section_attributes =
@@ -1571,6 +1635,29 @@ impl Pipelines {
                 buffers: &ui,
                 depth: None,
                 blend: Some(invert),
+                cull: None,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            }),
+            // `BlendFunction.GLINT`: the glint's colour times itself, added.
+            ui_glint: make(Spec {
+                module: &ui_shader,
+                layout: &ui_glint_layout,
+                vertex: "vertex",
+                fragment: "glint",
+                buffers: &ui,
+                depth: None,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Src,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::Zero,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
                 cull: None,
                 topology: wgpu::PrimitiveTopology::TriangleList,
             }),

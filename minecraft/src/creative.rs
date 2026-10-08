@@ -303,6 +303,27 @@ pub fn name(language: &HashMap<String, String>, stack: &ItemStack) -> String {
     minecraft_terrain::item_icons::item_name(language, &stack.id)
 }
 
+/// `ItemStack.hasFoil`: the glint override, else an item glinting of its
+/// own (`Items`' `ENCHANTMENT_GLINT_OVERRIDE` defaults), else enchanted.
+pub fn foil(stack: &ItemStack) -> bool {
+    let parts = components(stack);
+    if let Some(glint) = parts["minecraft:enchantment_glint_override"].as_bool() {
+        return glint;
+    }
+    matches!(
+        path(&stack.id),
+        "enchanted_golden_apple"
+            | "experience_bottle"
+            | "written_book"
+            | "nether_star"
+            | "enchanted_book"
+            | "end_crystal"
+            | "debug_stick"
+    ) || parts["minecraft:enchantments"]
+        .as_object()
+        .is_some_and(|map| !map.is_empty())
+}
+
 /// `ItemStack.getRarity`'s colour: the item's rarity, raised a step when
 /// it is enchanted.
 pub fn rarity_color(stack: &ItemStack) -> u32 {

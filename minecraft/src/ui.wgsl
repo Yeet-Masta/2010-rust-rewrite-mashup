@@ -40,3 +40,18 @@ fn invert(in: Out) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(vec3<f32>(texel.a), texel.a);
 }
+
+// The enchantment glint (`core/glint`): its scrolled texture over the
+// item's opaque pixels, at the default glint strength of 0.75.
+@group(2) @binding(0) var glint_image: texture_2d<f32>;
+@group(2) @binding(1) var glint_sampler: sampler;
+
+@fragment
+fn glint(in: Out) -> @location(0) vec4<f32> {
+    let mask = textureSample(image, image_sampler, in.uv);
+    let colour = textureSample(glint_image, glint_sampler, in.colour.xy);
+    if mask.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(colour.rgb * 0.75, 1.0);
+}
