@@ -148,6 +148,23 @@ pub fn item_first_person_transform(pack: &PackStack, item: &ResourceId) -> Resul
     item_display_transform(pack, item, "firstperson_righthand")
 }
 pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str) -> Result<Mat4> {
+    item_transform(pack, item, context, None)
+}
+
+/// `ItemTransform.apply` for a third-person hand: the left hand takes its
+/// own transform if the model has one, else the right hand's (as
+/// `ItemTransforms` defaults it), mirrored (`applyLeftHandFix`).
+pub fn item_hand_transform(pack: &PackStack, item: &ResourceId, left: bool) -> Result<Mat4> {
+    if left {
+        item_transform(pack, item, "thirdperson_lefthand", Some("thirdperson_righthand"))
+    } else {
+        item_transform(pack, item, "thirdperson_righthand", None)
+    }
+}
+
+/// The display transform for `context`; with `mirror_of`, the left-hand
+/// fix applied, falling back to `mirror_of`'s transform.
+fn item_transform(pack: &PackStack, item: &ResourceId, context: &str, mirror_of: Option<&str>) -> Result<Mat4> {
     let Some(definition) = pack.item_definition(item)? else {
         return Ok(Mat4::IDENTITY);
     };
@@ -155,7 +172,10 @@ pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str
         return Ok(Mat4::IDENTITY);
     };
     let model = load_parented(pack, &ResourceId::parse(reference)?, &mut HashSet::new())?;
-    let display = &model["display"][context];
+    let display = match mirror_of {
+        Some(fallback) if model["display"][context].is_null() => &model["display"][fallback],
+        _ => &model["display"][context],
+    };
     let vector = |key: &str, default: Vec3| -> Vec3 {
         display[key]
             .as_array()
@@ -169,14 +189,16 @@ pub fn item_display_transform(pack: &PackStack, item: &ResourceId, context: &str
             })
             .unwrap_or(default)
     };
+    let mirror = if mirror_of.is_some() { -1.0 } else { 1.0 };
     let degrees = vector("rotation", Vec3::ZERO);
     let rotation = Vec3::new(
         degrees.x.to_radians(),
-        degrees.y.to_radians(),
-        degrees.z.to_radians(),
+        mirror * degrees.y.to_radians(),
+        mirror * degrees.z.to_radians(),
     );
-    let translation =
-        vector("translation", Vec3::ZERO).clamp(Vec3::splat(-80.0), Vec3::splat(80.0)) / 16.0;
+    let translation = vector("translation", Vec3::ZERO).clamp(Vec3::splat(-80.0), Vec3::splat(80.0))
+        * Vec3::new(mirror, 1.0, 1.0)
+        / 16.0;
     let scale = vector("scale", Vec3::ONE).clamp(Vec3::splat(-4.0), Vec3::splat(4.0));
     Ok(Mat4::from_translation(translation)
         * Mat4::from_quat(Quat::from_euler(

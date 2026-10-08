@@ -278,6 +278,15 @@ pub fn potion_color(stack: &ItemStack) -> Option<u32> {
         .map(|color| color as u32)
 }
 
+/// `DyedItemColor`: a dyed leather piece's colour.
+pub fn dyed_color(stack: &ItemStack) -> Option<u32> {
+    let color = &components(stack)["minecraft:dyed_color"];
+    color
+        .as_i64()
+        .or_else(|| color["rgb"].as_i64())
+        .map(|rgb| rgb as u32 & 0xFFFFFF)
+}
+
 /// `ItemStack.getHoverName`.
 pub fn name(language: &HashMap<String, String>, stack: &ItemStack) -> String {
     let parts = components(stack);

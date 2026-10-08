@@ -306,7 +306,8 @@ impl Gui {
     /// A stack's icon in the atlas, made on first use; a potion's colour
     /// makes an icon of its own.
     fn icon(&mut self, packs: &PackStack, stack: &ItemStack) -> Option<[f32; 4]> {
-        let tint = crate::creative::potion_color(stack);
+        let tint =
+            crate::creative::potion_color(stack).or_else(|| crate::creative::dyed_color(stack));
         // A banner's patterns draw it.
         let patterns = stack
             .components

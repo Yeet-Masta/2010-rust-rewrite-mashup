@@ -12,8 +12,9 @@ pub fn item_icon(packs: &PackStack, key: &str, icon_size: usize) -> Result<Optio
     item_icon_tinted(packs, key, icon_size, None, None)
 }
 
-/// `item_icon`, with a stack's own colour for its `minecraft:potion` tint
-/// layers (`PotionContents.getColor`) in place of their default, and its
+/// `item_icon`, with a stack's own colour for its `minecraft:potion` or
+/// `minecraft:dye` tint layers (`PotionContents.getColor`, `DyedItemColor`)
+/// in place of their default, and its
 /// components for a special model (a banner's patterns).
 pub fn item_icon_tinted(
     packs: &PackStack,
@@ -37,10 +38,11 @@ pub fn item_icon_tinted(
         potion,
         definition
             .as_ref()
-            .and_then(|value| value["model"]["tints"].as_array()),
+            .and_then(|value| crate::interface::item_model_node(&value["model"]))
+            .and_then(|node| node["tints"].as_array()),
     ) {
         for (tint, kind) in tints.iter_mut().zip(kinds) {
-            if kind["type"].as_str() == Some("minecraft:potion") {
+            if matches!(kind["type"].as_str(), Some("minecraft:potion" | "minecraft:dye")) {
                 *tint = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
             }
         }

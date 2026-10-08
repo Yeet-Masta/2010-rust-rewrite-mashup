@@ -167,26 +167,13 @@ impl Atlas {
             })
             .unwrap_or([0.0, 0.0, 1.0, 1.0])
     }
-    /// Entity models address individual pixels inside a skin. The regular
-    /// region is inset by half a texel to protect whole block sprites from
-    /// neighbouring atlas tiles; scaling that inset over a skin moves inner
-    /// UV boundaries into the adjacent body-part texture.
-    /// Entity skins need their exact pixel boundaries; see `region_exact`.
+    /// An entity skin's region: like every sprite's, its exact bounds, so
+    /// models address its individual pixels.
     pub fn entity_region(&self, id: &ResourceId) -> [f32; 4] {
-        self.region_exact(id)
+        self.region(id)
     }
     pub fn contains(&self, id: &ResourceId) -> bool {
         self.slots.contains_key(id)
-    }
-    fn region_exact(&self, id: &ResourceId) -> [f32; 4] {
-        let [u0, v0, u1, v1] = self.region(id);
-        let half_texel = 0.5 / self.pixels.width() as f32;
-        [
-            u0 - half_texel,
-            v0 - half_texel,
-            u1 + half_texel,
-            v1 + half_texel,
-        ]
     }
 }
 pub struct Build {
@@ -388,6 +375,11 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(&format!("minecraft:entity/skeleton/{skin}"))?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/creeper/creeper")?, ());
+    // Special model renderers' sheets, for items held in a hand
+    // (`special_icon::append_special_in_hand`).
+    for sheet in crate::special_icon::HAND_SHEETS {
+        textures.insert(ResourceId::parse(sheet)?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
@@ -698,6 +690,8 @@ struct ItemVisual {
     ground: Mat4,
     /// The `thirdperson_righthand` display transform.
     right_hand: Mat4,
+    /// The `thirdperson_lefthand` one, mirrored.
+    left_hand: Mat4,
     min_y: f32,
     tints: Vec<[f32; 3]>,
     flat: bool,
@@ -727,7 +721,8 @@ impl ItemVisuals {
                 return Ok(None);
             }
             let ground = crate::model::item_display_transform(packs, &resource, "ground")?;
-            let right_hand = crate::model::item_display_transform(packs, &resource, "thirdperson_righthand")?;
+            let right_hand = crate::model::item_hand_transform(packs, &resource, false)?;
+            let left_hand = crate::model::item_hand_transform(packs, &resource, true)?;
             let definition = packs.item_definition(&resource)?;
             let tints = definition
                 .as_ref()
@@ -756,6 +751,7 @@ impl ItemVisuals {
                     model,
                     ground,
                     right_hand,
+                    left_hand,
                     min_y: min.y,
                     tints,
                     flat: max.z - min.z <= 0.0625,
@@ -943,6 +939,68 @@ impl ItemVisuals {
                 }
             }
             self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), packs, atlas, sky_light)?;
+        }
+        Ok(())
+    }
+
+    /// An item in a hand (`ItemInHandLayer`) under `pose`, with that hand's
+    /// third-person display transform, its first tint replaced when given,
+    /// full bright and shaded by `shade` from each face's normal under the
+    /// pose (the lights of whatever draws it, such as a GUI entity's).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_hand_item(
+        &mut self,
+        mesh: &mut ChunkMesh,
+        id: &str,
+        pose: Mat4,
+        left: bool,
+        first_tint: Option<[f32; 3]>,
+        shade: &dyn Fn(Vec3) -> f32,
+        packs: &PackStack,
+        atlas: &Atlas,
+    ) -> Result<()> {
+        let Some(visual) = self.model(id, packs)? else {
+            return Ok(());
+        };
+        let pose = pose * if left { visual.left_hand } else { visual.right_hand };
+        let mut tints = visual.tints.clone();
+        if let Some(color) = first_tint {
+            if tints.is_empty() {
+                tints.push(color);
+            } else {
+                tints[0] = color;
+            }
+        }
+        for element in &visual.model.elements {
+            for face in &element.faces {
+                if !atlas.contains(&face.texture) {
+                    continue;
+                }
+                let corners = element_corners(element, &face.direction)?;
+                let [u0, v0, u1, v1] = atlas.region(&face.texture);
+                let [a, b, c, d] = face.uv;
+                let uv = [
+                    [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
+                    [u0 + (u1 - u0) * a, v0 + (v1 - v0) * d],
+                    [u0 + (u1 - u0) * c, v0 + (v1 - v0) * d],
+                    [u0 + (u1 - u0) * c, v0 + (v1 - v0) * b],
+                ];
+                let normal = pose.transform_vector3(face_normal(&face.direction)?).normalize_or_zero();
+                let light = shade(normal);
+                let tint = face.tint_index.and_then(|index| tints.get(index)).copied().unwrap_or([1.0; 3]);
+                let start = mesh.vertices.len() as u32;
+                for (corner, uv) in corners.into_iter().zip(uv) {
+                    mesh.vertices.push(Vertex {
+                        position: pose.transform_point3(Vec3::from_array(corner)).to_array(),
+                        uv,
+                        color: [tint[0] * light, tint[1] * light, tint[2] * light, 1.0],
+                        sky_light: 15.0,
+                        block_light: 15.0,
+                    });
+                }
+                mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+                mesh.faces += 1;
+            }
         }
         Ok(())
     }
@@ -1280,22 +1338,48 @@ fn rotated_direction(dir: &str, degrees: u16) -> Result<&str> {
     };
     Ok(["north", "east", "south", "west"][(i + degrees as usize / 90) % 4])
 }
+/// Sprite mip levels below the first (`Options.mipmapLevels`' default of 4).
+pub const MIP_LEVELS: usize = 4;
+
+/// A texture's `.mcmeta` `texture` section: its mipmap strategy and alpha
+/// cutoff bias.
+fn mip_settings(meta: Option<&serde_json::Value>) -> (texture_mips::Strategy, f32) {
+    let texture = meta.and_then(|meta| meta.get("texture"));
+    let strategy = texture
+        .and_then(|texture| texture.get("mipmap_strategy"))
+        .and_then(|value| value.as_str());
+    let bias = texture
+        .and_then(|texture| texture.get("alpha_cutoff_bias"))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0) as f32;
+    (texture_mips::Strategy::parse(strategy), bias)
+}
+
+/// The block, item, particle and entity atlas, as vanilla's stitcher lays a
+/// sprite atlas out: every sprite at its own resolution (one larger than
+/// a 16-texel cell spans several; a smaller one is scaled up to a cell),
+/// its mip levels made as `SpriteContents` makes them, and its UVs its
+/// exact bounds.
 pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<Atlas> {
     textures.insert(0, ResourceId::parse("minecraft:missingno")?);
-    let tile = 64u32;
-    // Entity skins keep their own resolution, as vanilla binds each one on
-    // its own: one larger than a cell spans several cells, a texel to a
-    // pixel. Everything else fills one cell.
+    let tile = 16u32;
     let mut images = Vec::with_capacity(textures.len());
     let mut spans = Vec::with_capacity(textures.len());
     for id in &textures {
         let bytes = if id.path == "missingno" { None } else { packs.texture(id)? };
         let span = match &bytes {
-            Some(bytes) if id.path.starts_with("entity/") && packs.animation(id)?.is_none() => {
+            Some(bytes) => {
                 let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png).into_dimensions()?;
+                // An animation's sheet holds square frames.
+                let (width, height) = if packs.animation(id)?.is_some_and(|meta| meta.get("animation").is_some()) {
+                    let side = width.min(height);
+                    (side, side)
+                } else {
+                    (width, height)
+                };
                 (width.div_ceil(tile).max(1), height.div_ceil(tile).max(1))
             }
-            _ => (1, 1),
+            None => (1, 1),
         };
         images.push(bytes);
         spans.push(span);
@@ -1309,68 +1393,46 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
         side += 1;
     };
     let mut pixels = RgbaImage::new(side * tile, side * tile);
-    let mut mipmaps = (1..=4)
+    let mut mipmaps = (1..=MIP_LEVELS)
         .map(|level| RgbaImage::new(side * (tile >> level), side * (tile >> level)))
         .collect::<Vec<_>>();
     let mut slots = HashMap::new();
     let mut missing = Vec::new();
     let mut animated = Vec::new();
     let mut animated_tiles = Vec::new();
+    let width = (side * tile) as f32;
     for (i, id) in textures.into_iter().enumerate() {
         let (col, row) = positions[i];
-        let (span_w, span_h) = spans[i];
-        let image = images[i].take();
-        let mut dark_cutout = false;
-        let mut native_leaf_mips = None;
-        let tile_image = if let Some(bytes) = image {
+        let origin = (col * tile, row * tile);
+        let meta = packs.animation(&id)?;
+        let (strategy, bias) = mip_settings(meta.as_ref());
+        let item = id.path.starts_with("item/");
+        let frame = if let Some(bytes) = images[i].take() {
             let decoded =
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
-            let frame = if let Some(meta) = packs.animation(&id)? {
-                dark_cutout = meta
-                    .get("texture")
-                    .and_then(|texture| texture.get("mipmap_strategy"))
-                    .and_then(|value| value.as_str())
-                    == Some("dark_cutout");
-                if let Some(animation) = meta.get("animation") {
-                    animated.push(id.clone());
-                    if let Some(tile) = animated_tile(&decoded, animation, (col * tile, row * tile))
-                    {
-                        animated_tiles.push(tile);
-                    }
-                    let index = animation
-                        .get("frames")
-                        .and_then(|f| f.as_array())
-                        .and_then(|a| a.first())
-                        .and_then(|v| {
-                            v.as_u64()
-                                .or_else(|| v.get("index").and_then(|x| x.as_u64()))
-                        })
-                        .unwrap_or(0) as u32;
-                    let size = decoded.width().min(decoded.height());
-                    image::imageops::crop_imm(
-                        &decoded,
-                        0,
-                        (index * size).min(decoded.height() - size),
-                        size,
-                        size,
-                    )
-                    .to_image()
-                } else {
-                    decoded
+            if let Some(animation) = meta.as_ref().and_then(|meta| meta.get("animation")) {
+                animated.push(id.clone());
+                if let Some(tile) = animated_tile(&decoded, animation, origin, strategy, bias, item) {
+                    animated_tiles.push(tile);
                 }
+                let index = animation
+                    .get("frames")
+                    .and_then(|f| f.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_u64().or_else(|| v.get("index").and_then(|x| x.as_u64())))
+                    .unwrap_or(0) as u32;
+                let size = decoded.width().min(decoded.height());
+                let columns = (decoded.width() / size).max(1);
+                image::imageops::crop_imm(
+                    &decoded,
+                    (index % columns) * size,
+                    ((index / columns) * size).min(decoded.height() - size),
+                    size,
+                    size,
+                )
+                .to_image()
             } else {
                 decoded
-            };
-            if dark_cutout && frame.width() == 16 && frame.height() == 16 {
-                native_leaf_mips = Some(texture_mips::dark_cutout(frame, 5));
-                image::imageops::resize(
-                    &native_leaf_mips.as_ref().unwrap()[0],
-                    tile,
-                    tile,
-                    FilterType::Nearest,
-                )
-            } else {
-                image::imageops::resize(&frame, span_w * tile, span_h * tile, FilterType::Nearest)
             }
         } else {
             if id.path != "missingno" {
@@ -1392,64 +1454,30 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
             }
             checker
         };
-        image::imageops::replace(
-            &mut pixels,
-            &tile_image,
-            (col * tile) as i64,
-            (row * tile) as i64,
-        );
-        let tile_mips = if let Some(native) = native_leaf_mips {
-            // Keep the 16-pixel foliage cutout chain intact while the 64-pixel
-            // atlas also preserves the native 64-pixel chest entity texture.
-            let mut levels = vec![tile_image];
-            levels.push(image::imageops::resize(
-                &native[0],
-                32,
-                32,
-                FilterType::Nearest,
-            ));
-            levels.extend(native.into_iter().take(3));
-            levels
-        } else if dark_cutout {
-            texture_mips::dark_cutout(tile_image, 5)
+        // Sprites under a cell's size (particles' 8 texels) fill it.
+        let frame = if frame.width() < tile || frame.height() < tile {
+            image::imageops::resize(&frame, frame.width().max(tile), frame.height().max(tile), FilterType::Nearest)
         } else {
-            (0..5)
-                .map(|level| {
-                    image::imageops::resize(
-                        &tile_image,
-                        (span_w * tile) >> level,
-                        (span_h * tile) >> level,
-                        FilterType::Triangle,
-                    )
-                })
-                .collect::<Vec<_>>()
+            frame
         };
-        // The dark-cutout source also alters transparent RGB at level zero.
-        if dark_cutout {
-            image::imageops::replace(
-                &mut pixels,
-                &tile_mips[0],
-                (col * tile) as i64,
-                (row * tile) as i64,
-            );
-        }
+        let (w, h) = frame.dimensions();
+        let levels = texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item);
+        image::imageops::replace(&mut pixels, &levels[0], origin.0 as i64, origin.1 as i64);
         for (level, mip) in mipmaps.iter_mut().enumerate() {
-            let mip_tile = tile >> (level + 1);
             image::imageops::replace(
                 mip,
-                &tile_mips[level + 1],
-                (col * mip_tile) as i64,
-                (row * mip_tile) as i64,
+                &levels[level + 1],
+                (origin.0 >> (level + 1)) as i64,
+                (origin.1 >> (level + 1)) as i64,
             );
         }
-        let width = (side * tile) as f32;
         slots.insert(
             id,
             [
-                (col * tile) as f32 / width + 0.5 / width,
-                (row * tile) as f32 / width + 0.5 / width,
-                ((col + span_w) * tile) as f32 / width - 0.5 / width,
-                ((row + span_h) * tile) as f32 / width - 0.5 / width,
+                origin.0 as f32 / width,
+                origin.1 as f32 / width,
+                (origin.0 + w) as f32 / width,
+                (origin.1 + h) as f32 / width,
             ],
         );
     }
@@ -1495,6 +1523,9 @@ fn animated_tile(
     sheet: &RgbaImage,
     metadata: &serde_json::Value,
     origin: (u32, u32),
+    strategy: texture_mips::Strategy,
+    bias: f32,
+    item: bool,
 ) -> Option<AnimatedTile> {
     let square = sheet.width().min(sheet.height());
     let width = metadata
@@ -1545,12 +1576,12 @@ fn animated_tile(
                 height,
             )
             .to_image();
-            let tile = image::imageops::resize(&frame, 64, 64, FilterType::Nearest);
-            (0..5)
-                .map(|level| {
-                    image::imageops::resize(&tile, 64 >> level, 64 >> level, FilterType::Triangle)
-                })
-                .collect::<Vec<_>>()
+            let frame = if frame.width() < 16 || frame.height() < 16 {
+                image::imageops::resize(&frame, frame.width().max(16), frame.height().max(16), FilterType::Nearest)
+            } else {
+                frame
+            };
+            texture_mips::generate(frame, MIP_LEVELS, strategy, bias, item)
         })
         .collect();
     Some(AnimatedTile {
@@ -2291,15 +2322,7 @@ pub fn block_preview<S: Scene>(
                 }
             }
             let corners = element_corners(element, &face.direction)?;
-            let [u0, v0, u1, v1] = if block.id.path == "chest" {
-                // Chest ModelPart UVs address individual pixels in a 64x64
-                // entity sheet. The terrain atlas' half-texel tile inset
-                // distorts one-pixel lock faces and can sample alpha beside
-                // them, so preserve the entity sheet's exact coordinate span.
-                atlas.region_exact(&face.texture)
-            } else {
-                atlas.region(&face.texture)
-            };
+            let [u0, v0, u1, v1] = atlas.region(&face.texture);
             let [a, b, c, d] = face.uv;
             let uv = [
                 [u0 + (u1 - u0) * a, v0 + (v1 - v0) * b],
@@ -2503,25 +2526,19 @@ mod tests {
         let atlas = Atlas {
             pixels: RgbaImage::new(64, 64),
             mipmaps: vec![],
-            slots: HashMap::from([(
-                texture.clone(),
-                [0.5 / 64.0, 0.5 / 64.0, 63.5 / 64.0, 63.5 / 64.0],
-            )]),
+            slots: HashMap::from([(texture.clone(), [0.0, 0.0, 1.0, 1.0])]),
             missing: vec![],
             animated: vec![],
             animated_tiles: vec![],
         };
-        assert_eq!(atlas.region_exact(&texture), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(atlas.entity_region(&texture), [0.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]
     fn entity_skin_uvs_keep_internal_pixel_boundaries_exact() {
         let id = ResourceId::parse("minecraft:entity/zombie/zombie").unwrap();
         let mut slots = HashMap::new();
-        slots.insert(
-            id.clone(),
-            [64.5 / 128.0, 0.5 / 128.0, 127.5 / 128.0, 63.5 / 128.0],
-        );
+        slots.insert(id.clone(), [64.0 / 128.0, 0.0, 1.0, 64.0 / 128.0]);
         let atlas = Atlas {
             pixels: RgbaImage::new(128, 128),
             mipmaps: Vec::new(),
@@ -2532,14 +2549,9 @@ mod tests {
         };
         let [u0, v0, u1, v1] = atlas.entity_region(&id);
         assert_eq!([u0, v0, u1, v1], [0.5, 0.0, 1.0, 0.5]);
-        // The zombie hand starts at skin pixel 48. With the regular inset,
-        // that boundary lands at 47.75 and selects a shirt pixel instead.
+        // The zombie hand starts at skin pixel 48: exactly atlas pixel 112,
+        // not a shirt pixel beside it.
         assert_eq!((u0 + (u1 - u0) * 48.0 / 64.0) * 128.0, 112.0);
-        assert!(
-            (atlas.region(&id)[0] + (atlas.region(&id)[2] - atlas.region(&id)[0]) * 48.0 / 64.0)
-                * 128.0
-                < 112.0
-        );
     }
 
     #[test]
@@ -2573,7 +2585,7 @@ mod tests {
             "frametime": 2,
             "frames": [0, {"index": 2, "time": 3}, 1]
         });
-        let tile = animated_tile(&sheet, &metadata, (64, 128)).unwrap();
+        let tile = animated_tile(&sheet, &metadata, (64, 128), texture_mips::Strategy::Mean, 0.0, false).unwrap();
         assert_eq!(tile.origin, (64, 128));
         assert_eq!(
             (0..7).map(|tick| tile.frame_at(tick)).collect::<Vec<_>>(),
@@ -2581,7 +2593,8 @@ mod tests {
         );
         assert_eq!(tile.frame_at(7), 0);
         assert_eq!(tile.frames[2][0].get_pixel(0, 0).0, [80, 0, 0, 255]);
-        assert_eq!(tile.frames[2][4].dimensions(), (4, 4));
+        // Two-texel frames fill a 16-texel cell, down to one texel.
+        assert_eq!(tile.frames[2][4].dimensions(), (1, 1));
     }
 
     #[test]
@@ -2596,6 +2609,9 @@ mod tests {
             &sheet,
             &serde_json::json!({"frametime":8,"interpolate":true}),
             (0, 0),
+            texture_mips::Strategy::Mean,
+            0.0,
+            false,
         )
         .unwrap();
         let state = tile.state_at(4);
@@ -2669,6 +2685,7 @@ mod tests {
                 },
                 ground: Mat4::IDENTITY,
                 right_hand: Mat4::IDENTITY,
+                left_hand: Mat4::IDENTITY,
                 min_y: 0.0,
                 tints: vec![[0.3, 0.6, 0.2]],
                 flat: false,
@@ -3132,5 +3149,37 @@ mod tests {
         assert_eq!(variant_index(&variants, (2_000_000_000, 1, 0)), 1);
         assert_eq!(rotate_y([0.0, 1.0, 0.0], 90), [1.0, 1.0, 0.0]);
         assert_eq!(rotated_direction("north", 90).unwrap(), "east");
+    }
+}
+
+#[cfg(test)]
+mod atlas_dump {
+    use super::*;
+
+    /// With `ICON_PACK` set to a resource pack and `ICON_SHEET` to a PNG
+    /// path, writes an atlas of a few sprites and its first mip level.
+    #[test]
+    #[ignore]
+    fn dump_atlas() {
+        let (Ok(pack), Ok(sheet)) = (std::env::var("ICON_PACK"), std::env::var("ICON_SHEET")) else {
+            return;
+        };
+        let packs = PackStack::open(vec![pack.into()]).unwrap();
+        let ids = ["minecraft:block/short_grass", "minecraft:block/stone", "minecraft:block/water_still", "minecraft:entity/zombie/zombie", "minecraft:block/oak_leaves", "minecraft:particle/generic_0"]
+            .map(|id| ResourceId::parse(id).unwrap())
+            .to_vec();
+        let atlas = make_atlas(&packs, ids.clone()).unwrap();
+        for id in &ids {
+            eprintln!("{} {:?}", id.key(), atlas.region(id));
+        }
+        eprintln!("size {:?} mips {:?}", atlas.pixels.dimensions(), atlas.mipmaps.iter().map(|m| m.dimensions()).collect::<Vec<_>>());
+        atlas.pixels.save(&sheet).unwrap();
+        atlas.mipmaps[1].save(format!("{sheet}.mip2.png")).unwrap();
+        let started = std::time::Instant::now();
+        let full = build_internal(&crate::scene::HandcraftedScene::new(), &packs, true).unwrap().atlas;
+        eprintln!("preload build took {:?}", started.elapsed());
+        let opaque = full.pixels.pixels().filter(|p| p[3] > 0).count();
+        eprintln!("full {:?} opaque {opaque} of {}", full.pixels.dimensions(), full.pixels.width() * full.pixels.height());
+        full.pixels.save(format!("{sheet}.full.png")).unwrap();
     }
 }

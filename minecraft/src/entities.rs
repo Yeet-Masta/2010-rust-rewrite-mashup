@@ -357,6 +357,41 @@ impl Entities {
         mesh
     }
 
+    /// An item in a hand of the inventory's player, under `pose` and that
+    /// hand's display transform, shaded by `shade` (the GUI's lights).
+    #[allow(clippy::too_many_arguments)]
+    pub fn hand_item_mesh(
+        &mut self,
+        mesh: &mut ChunkMesh,
+        stack: &ItemStack,
+        pose: glam::Mat4,
+        left: bool,
+        shade: &dyn Fn(Vec3) -> f32,
+        packs: &PackStack,
+        atlas: &Atlas,
+    ) {
+        // A special model renderer's item (a shield, a trident) first.
+        if minecraft_terrain::special_icon::append_special_in_hand(
+            mesh,
+            packs,
+            atlas,
+            &stack.id,
+            stack.components.as_ref(),
+            pose,
+            left,
+            shade,
+        )
+        .unwrap_or(false)
+        {
+            return;
+        }
+        let tint = crate::creative::potion_color(stack)
+            .map(|c| [(c >> 16) & 255, (c >> 8) & 255, c & 255].map(|v| v as f32 / 255.0));
+        let _ = self
+            .items
+            .append_hand_item(mesh, &stack.id, pose, left, tint, shade, packs, atlas);
+    }
+
     /// The nearest living mob on the look ray within reach, and how far.
     pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<f64> {
         self.world

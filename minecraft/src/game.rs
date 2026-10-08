@@ -1843,10 +1843,37 @@ impl Game {
                 ],
                 age: self.ticks as f32,
                 walk: (self.walk.animation_pos, self.walk.animation_speed),
+                armor: crate::inventory_player::armor_layers(
+                    &self.world.atlas,
+                    [39, 38, 37, 36].map(|slot| inventory.slots[slot].as_ref()),
+                ),
             };
-            ui.model = Some(crate::inventory_player::model(
+            let (mut model, hands) = crate::inventory_player::model(
                 region, rect, size, 0.0625, gui.mouse, gui.scale, &pose,
-            ));
+            );
+            // The main hand is the right; the offhand the left.
+            let held = [
+                self.entities.inventory.slots[self.entities.selected].clone(),
+                self.entities.inventory.slots[40].clone(),
+            ];
+            let mut items = minecraft_terrain::mesh::ChunkMesh::default();
+            for ((stack, hand), left) in held.iter().zip(hands).zip([false, true]) {
+                if let Some(stack) = stack {
+                    self.entities.hand_item_mesh(
+                        &mut items,
+                        stack,
+                        hand,
+                        left,
+                        &crate::inventory_player::shade,
+                        &self.world.packs,
+                        &self.world.atlas,
+                    );
+                }
+            }
+            let base = model.vertices.len() as u32;
+            model.vertices.extend(items.vertices);
+            model.indices.extend(items.indices.iter().map(|i| i + base));
+            ui.model = Some(model);
         }
         match self.screen {
             Screen::Playing => {}

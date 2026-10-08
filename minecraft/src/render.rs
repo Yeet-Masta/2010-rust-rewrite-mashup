@@ -267,6 +267,7 @@ pub struct Renderer {
     screen_buffer: wgpu::Buffer,
     screen_bind: wgpu::BindGroup,
     sampler: wgpu::Sampler,
+    terrain_sampler: wgpu::Sampler,
     ui_sampler: wgpu::Sampler,
     atlas: Option<AtlasGpu>,
     celestial: Option<wgpu::TextureView>,
@@ -366,6 +367,14 @@ impl Renderer {
                 },
                 texture_entry(3),
                 texture_entry(4),
+                // The chunk layers' linear sampler (`LevelRenderer`'s
+                // `chunkLayerSampler`), for `sampleNearest`.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -435,6 +444,17 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        // Vanilla's chunk layer sampler: clamped, linear, mipmapped, without
+        // anisotropy at the default texture filtering.
+        let terrain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("terrain"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let ui_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("ui"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -458,6 +478,7 @@ impl Renderer {
             screen_buffer,
             screen_bind,
             sampler,
+            terrain_sampler,
             ui_sampler,
             atlas: None,
             celestial: None,
@@ -743,6 +764,10 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&cracks),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.terrain_sampler),
+                    },
                 ],
             })
         };
@@ -770,6 +795,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&cracks),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.terrain_sampler),
                 },
             ],
         }));

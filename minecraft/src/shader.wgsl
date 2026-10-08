@@ -21,6 +21,7 @@ struct View {
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var celestials: texture_2d<f32>;
 @group(0) @binding(4) var cracks: texture_2d<f32>;
+@group(0) @binding(5) var terrain_sampler: sampler;
 
 fn rel_from_block(position: vec3<f32>) -> vec3<f32> {
     return position - view.camera.xyz;
@@ -98,9 +99,25 @@ fn shade(in: Out, texel: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), texel.a * in.colour.a);
 }
 
+// Minecraft 26.3 texture_sampling.glsl's sampleNearest, the chunk layers'
+// sampling at the default texture filtering: each texel solid, with its
+// edges blended over about a screen pixel by the linear sampler, so texel
+// and cutout edges do not crawl as the view moves.
+fn sample_nearest(uv: vec2<f32>) -> vec4<f32> {
+    let pixel_size = 1.0 / vec2<f32>(textureDimensions(atlas));
+    let du = dpdx(uv);
+    let dv = dpdy(uv);
+    let texel_screen_size = sqrt(du * du + dv * dv);
+    let texel_coords = uv / pixel_size;
+    let texel_center = round(texel_coords) - 0.5;
+    var offset = texel_coords - texel_center;
+    offset = clamp((offset - 0.5) * pixel_size / texel_screen_size + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+    return textureSampleGrad(atlas, terrain_sampler, (texel_center + offset) * pixel_size, du, dv);
+}
+
 @fragment
 fn opaque(in: Out) -> @location(0) vec4<f32> {
-    let texel = textureSample(atlas, atlas_sampler, in.uv);
+    let texel = sample_nearest(in.uv);
     if texel.a < 0.5 {
         discard;
     }
@@ -109,7 +126,7 @@ fn opaque(in: Out) -> @location(0) vec4<f32> {
 
 @fragment
 fn translucent(in: Out) -> @location(0) vec4<f32> {
-    let texel = textureSample(atlas, atlas_sampler, in.uv);
+    let texel = sample_nearest(in.uv);
     return shade(in, texel);
 }
 

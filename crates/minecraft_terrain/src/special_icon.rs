@@ -5,6 +5,7 @@
 //! cuboids from its layer definition, the base model's GUI `ItemTransform`,
 //! and `GuiItemAtlas`'s pose and item lighting (`ITEMS_3D`, or
 //! `ITEMS_FLAT` for a front-lit base model).
+use crate::mesh::{Atlas, ChunkMesh, Vertex};
 use crate::pack::{PackStack, ResourceId};
 use anyhow::Result;
 use glam::{EulerRot, Mat3, Mat4, Quat, Vec3};
@@ -215,6 +216,21 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
                 part([0.0; 3], vec![cube(26.0, 0.0, [-1.0, -3.0, -1.0], [2.0, 6.0, 6.0])]),
             ],
         )],
+        // `TridentModel.createLayer`.
+        "minecraft:trident" => {
+            let mut right_spike = cube(4.0, 3.0, [1.5, -3.0, -0.5], [1.0, 4.0, 1.0]);
+            right_spike.mirror = true;
+            vec![layer(
+                "minecraft:entity/trident/trident",
+                [32.0, 32.0],
+                vec![part([0.0; 3], vec![cube(0.0, 6.0, [-0.5, 2.0, -0.5], [1.0, 25.0, 1.0])]).with(vec![
+                    part([0.0; 3], vec![cube(4.0, 0.0, [-1.5, 0.0, -0.5], [3.0, 2.0, 1.0])]),
+                    part([0.0; 3], vec![cube(4.0, 3.0, [-2.5, -3.0, -0.5], [1.0, 4.0, 1.0])]),
+                    part([0.0; 3], vec![cube(0.0, 0.0, [-0.5, -4.0, -0.5], [1.0, 4.0, 1.0])]),
+                    part([0.0; 3], vec![right_spike]),
+                ])],
+            )]
+        }
         // `ConduitRenderer.createShellLayer`.
         "minecraft:conduit" => vec![layer(
             "minecraft:entity/conduit/base",
@@ -355,29 +371,37 @@ fn dragon_head(texture: &str) -> Layer {
 /// The GUI's model node of an item definition, with the transformations
 /// above it composed.
 fn gui_node(value: &Value, transform: Mat4) -> Option<(&Value, Mat4)> {
+    node_for(value, "gui", transform)
+}
+
+/// The special model node an item definition picks in a display context
+/// (`ItemDisplayContext`'s name), with the transformations above it
+/// composed.
+fn node_for<'a>(value: &'a Value, context: &str, transform: Mat4) -> Option<(&'a Value, Mat4)> {
     let transform = transform * transformation(value.get("transformation"));
     match value["type"].as_str()? {
         "minecraft:special" => Some((value, transform)),
         "minecraft:select" => {
-            let gui = value["property"] == "minecraft:display_context";
+            let display = value["property"] == "minecraft:display_context";
             let case = value["cases"].as_array().and_then(|cases| {
                 cases.iter().find(|case| {
-                    gui && case["when"]
-                        .as_array()
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[])
-                        .iter()
-                        .chain(std::iter::once(&case["when"]))
-                        .any(|when| when == "gui")
+                    display
+                        && case["when"]
+                            .as_array()
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[])
+                            .iter()
+                            .chain(std::iter::once(&case["when"]))
+                            .any(|when| when == context)
                 })
             });
             match case {
-                Some(case) => gui_node(&case["model"], transform),
-                None => gui_node(value.get("fallback")?, transform),
+                Some(case) => node_for(&case["model"], context, transform),
+                None => node_for(value.get("fallback")?, context, transform),
             }
         }
-        "minecraft:condition" => gui_node(value.get("on_false")?, transform),
-        "minecraft:range_dispatch" => gui_node(value.get("fallback")?, transform),
+        "minecraft:condition" => node_for(value.get("on_false")?, context, transform),
+        "minecraft:range_dispatch" => node_for(value.get("fallback")?, context, transform),
         _ => None,
     }
 }
@@ -414,14 +438,24 @@ fn transformation(value: Option<&Value>) -> Mat4 {
 /// The base model's GUI `ItemTransform` (`apply`, with its closing
 /// half-block shift) and whether it is lit from the front.
 fn display(packs: &PackStack, base: &str) -> Result<(Mat4, bool)> {
+    display_for(packs, base, "gui", None)
+}
+
+/// The base model's `ItemTransform` for `context`; with `mirror_of`, the
+/// left hand's (its own, else `mirror_of`'s, with `applyLeftHandFix`).
+fn display_for(packs: &PackStack, base: &str, context: &str, mirror_of: Option<&str>) -> Result<(Mat4, bool)> {
     let mut gui = None;
+    let mut fallback = None;
     let mut light = None;
     let mut current = Some(ResourceId::parse(base)?);
     for _ in 0..12 {
         let Some(id) = current.take() else { break };
         let Some(value) = packs.model(&id)? else { break };
         if gui.is_none() {
-            gui = value.get("display").and_then(|d| d.get("gui")).cloned();
+            gui = value.get("display").and_then(|d| d.get(context)).cloned();
+        }
+        if let (None, Some(other)) = (&fallback, mirror_of) {
+            fallback = value.get("display").and_then(|d| d.get(other)).cloned();
         }
         if light.is_none() {
             light = value.get("gui_light").and_then(Value::as_str).map(str::to_owned);
@@ -432,6 +466,7 @@ fn display(packs: &PackStack, base: &str) -> Result<(Mat4, bool)> {
             .map(ResourceId::parse)
             .transpose()?;
     }
+    let gui = gui.or(fallback);
     let get = |key: &str, default: f32| {
         let v = gui.as_ref().map(|g| &g[key]);
         let at = |i: usize| {
@@ -440,8 +475,11 @@ fn display(packs: &PackStack, base: &str) -> Result<(Mat4, bool)> {
         };
         Vec3::new(at(0), at(1), at(2))
     };
-    let rotation = get("rotation", 0.0) * (std::f32::consts::PI / 180.0);
-    let matrix = Mat4::from_translation(get("translation", 0.0).clamp(Vec3::splat(-80.0), Vec3::splat(80.0)) / 16.0)
+    let mirror = if mirror_of.is_some() { Vec3::new(1.0, -1.0, -1.0) } else { Vec3::ONE };
+    let rotation = get("rotation", 0.0) * (std::f32::consts::PI / 180.0) * mirror;
+    let translation = get("translation", 0.0).clamp(Vec3::splat(-80.0), Vec3::splat(80.0))
+        * if mirror_of.is_some() { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
+    let matrix = Mat4::from_translation(translation / 16.0)
         * Mat4::from_quat(Quat::from_euler(EulerRot::XYZ, rotation.x, rotation.y, rotation.z))
         * Mat4::from_scale(get("scale", 1.0))
         * Mat4::from_translation(Vec3::splat(-0.5));
@@ -591,6 +629,149 @@ pub fn special_icon(
         }
     }
     Ok(output.pixels().any(|p| p[3] > 0).then_some(output))
+}
+
+/// The sheets special model renderers draw items held in a hand with, for
+/// the world atlas.
+pub const HAND_SHEETS: &[&str] = &[
+    "minecraft:entity/shield/shield_base_nopattern",
+    "minecraft:entity/trident/trident",
+    "minecraft:entity/chest/normal",
+    "minecraft:entity/chest/trapped",
+    "minecraft:entity/chest/ender",
+    "minecraft:entity/chest/christmas",
+    "minecraft:entity/chest/copper",
+    "minecraft:entity/chest/copper_exposed",
+    "minecraft:entity/chest/copper_weathered",
+    "minecraft:entity/chest/copper_oxidized",
+    "minecraft:entity/conduit/base",
+    "minecraft:entity/decorated_pot/decorated_pot_base",
+    "minecraft:entity/decorated_pot/decorated_pot_side",
+    "minecraft:entity/banner/banner_base",
+    "minecraft:entity/banner/base",
+    "minecraft:entity/skeleton/wither_skeleton",
+    "minecraft:entity/piglin/piglin",
+    "minecraft:entity/enderdragon/dragon",
+    "minecraft:entity/shulker/shulker",
+    "minecraft:entity/shulker/shulker_white",
+    "minecraft:entity/shulker/shulker_orange",
+    "minecraft:entity/shulker/shulker_magenta",
+    "minecraft:entity/shulker/shulker_light_blue",
+    "minecraft:entity/shulker/shulker_yellow",
+    "minecraft:entity/shulker/shulker_lime",
+    "minecraft:entity/shulker/shulker_pink",
+    "minecraft:entity/shulker/shulker_gray",
+    "minecraft:entity/shulker/shulker_light_gray",
+    "minecraft:entity/shulker/shulker_cyan",
+    "minecraft:entity/shulker/shulker_purple",
+    "minecraft:entity/shulker/shulker_blue",
+    "minecraft:entity/shulker/shulker_brown",
+    "minecraft:entity/shulker/shulker_green",
+    "minecraft:entity/shulker/shulker_red",
+    "minecraft:entity/shulker/shulker_black",
+];
+
+/// An item a special model renderer draws, held in a hand
+/// (`ItemInHandLayer`, `THIRD_PERSON_RIGHT_HAND` or `_LEFT_HAND`): its
+/// cuboids under `pose` (item space to the target's), the base model's
+/// display transform for that hand and the item's transformations,
+/// textured from the atlas, full bright and shaded by `shade` from each
+/// face's normal under the pose. False when the item's model for that
+/// hand is not a special one.
+#[allow(clippy::too_many_arguments)]
+pub fn append_special_in_hand(
+    mesh: &mut ChunkMesh,
+    packs: &PackStack,
+    atlas: &Atlas,
+    key: &str,
+    components: Option<&Value>,
+    pose: Mat4,
+    left: bool,
+    shade: &dyn Fn(Vec3) -> f32,
+) -> Result<bool> {
+    let id = ResourceId::parse(key)?;
+    let Some(definition) = packs.item_definition(&id)? else {
+        return Ok(false);
+    };
+    let context = if left { "thirdperson_lefthand" } else { "thirdperson_righthand" };
+    let Some((node, local)) = node_for(&definition["model"], context, Mat4::IDENTITY) else {
+        return Ok(false);
+    };
+    let Some(layers) = layers(&node["model"], components)? else {
+        return Ok(false);
+    };
+    let base = node["base"].as_str().unwrap_or("minecraft:item/generated");
+    let (display, _) = if left {
+        display_for(packs, base, context, Some("thirdperson_righthand"))?
+    } else {
+        display_for(packs, base, context, None)?
+    };
+    let root = pose * display * local;
+    for layer in layers.iter().filter(|layer| !layer.overlay) {
+        let sheet = ResourceId::parse(&layer.texture)?;
+        if !atlas.contains(&sheet) {
+            continue;
+        }
+        let region = atlas.entity_region(&sheet);
+        let tint = [(layer.tint >> 16) & 255, (layer.tint >> 8) & 255, layer.tint & 255].map(|c| c as f32 / 255.0);
+        for part in &layer.parts {
+            emit_part(mesh, part, root, region, layer.size, tint, shade);
+        }
+    }
+    Ok(true)
+}
+
+fn emit_part(mesh: &mut ChunkMesh, part: &Part, parent: Mat4, region: [f32; 4], size: [f32; 2], tint: [f32; 3], shade: &dyn Fn(Vec3) -> f32) {
+    let pose = parent * part.matrix();
+    let normals = Mat3::from_mat4(pose).inverse().transpose();
+    for c in &part.cubes {
+        let [x, y, z] = c.from;
+        let [w, h, d] = c.size;
+        let (mut x0, y0, z0) = (x - c.grow, y - c.grow, z - c.grow);
+        let (mut x1, y1, z1) = (x + w + c.grow, y + h + c.grow, z + d + c.grow);
+        if c.mirror {
+            std::mem::swap(&mut x0, &mut x1);
+        }
+        let p = |x: f32, y: f32, z: f32| Vec3::new(x, y, z) / 16.0;
+        let (t0, t1, t2, t3) = (p(x0, y0, z0), p(x1, y0, z0), p(x1, y1, z0), p(x0, y1, z0));
+        let (l0, l1, l2, l3) = (p(x0, y0, z1), p(x1, y0, z1), p(x1, y1, z1), p(x0, y1, z1));
+        let [u, v] = c.uv;
+        let (u0, u1, u2, u22, u3, u4) = (u, u + d, u + d + w, u + d + w + w, u + d + w + d, u + d + w + d + w);
+        let (v0, v1, v2) = (v, v + d, v + d + h);
+        let polygons = [
+            ([l1, l0, t0, t1], [u1, v0, u2, v1], 0, Vec3::NEG_Y),
+            ([t2, t3, l3, l2], [u2, v1, u22, v0], 1, Vec3::Y),
+            ([t0, l0, l3, t3], [u0, v1, u1, v2], 4, Vec3::NEG_X),
+            ([t1, t0, t3, t2], [u1, v1, u2, v2], 2, Vec3::NEG_Z),
+            ([l1, t1, t2, l2], [u2, v1, u3, v2], 5, Vec3::X),
+            ([l0, l1, l2, l3], [u3, v1, u4, v2], 3, Vec3::Z),
+        ];
+        for (corners, [ua, va, ub, vb], direction, normal) in polygons {
+            if c.faces & (1 << direction) == 0 {
+                continue;
+            }
+            let normal = if c.mirror { normal * Vec3::new(-1.0, 1.0, 1.0) } else { normal };
+            let light = shade((normals * normal).normalize_or_zero());
+            let start = mesh.vertices.len() as u32;
+            for (corner, [s, t]) in corners.into_iter().zip([[ub, va], [ua, va], [ua, vb], [ub, vb]]) {
+                mesh.vertices.push(Vertex {
+                    position: pose.transform_point3(corner).to_array(),
+                    uv: [
+                        region[0] + (region[2] - region[0]) * s / size[0],
+                        region[1] + (region[3] - region[1]) * t / size[1],
+                    ],
+                    color: [tint[0] * light, tint[1] * light, tint[2] * light, 1.0],
+                    sky_light: 15.0,
+                    block_light: 15.0,
+                });
+            }
+            mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            mesh.faces += 1;
+        }
+    }
+    for child in &part.children {
+        emit_part(mesh, child, pose, region, size, tint, shade);
+    }
 }
 
 fn raster(

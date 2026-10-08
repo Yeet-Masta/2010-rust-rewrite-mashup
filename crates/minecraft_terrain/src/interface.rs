@@ -29,10 +29,40 @@ pub(crate) fn item_model_reference(value: &serde_json::Value) -> Option<&str> {
     }
 }
 
+/// The `minecraft:model` node `item_model_reference` picks.
+pub(crate) fn item_model_node(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    match value.get("type")?.as_str()? {
+        "minecraft:model" => Some(value),
+        "minecraft:select" | "minecraft:range_dispatch" => value
+            .get("fallback")
+            .and_then(item_model_node)
+            .or_else(|| {
+                value
+                    .get("cases")
+                    .or_else(|| value.get("entries"))?
+                    .as_array()?
+                    .iter()
+                    .find_map(|entry| item_model_node(&entry["model"]))
+            }),
+        "minecraft:condition" => value
+            .get("on_false")
+            .or_else(|| value.get("on_true"))
+            .and_then(item_model_node),
+        "minecraft:composite" => value
+            .get("models")?
+            .as_array()?
+            .iter()
+            .find_map(item_model_node),
+        _ => None,
+    }
+}
+
+/// The tint colours of the model node `item_model_reference` picks.
 pub(crate) fn item_model_tints(
     packs: &PackStack,
     model: &serde_json::Value,
 ) -> Result<Vec<[u8; 3]>> {
+    let model = item_model_node(model).unwrap_or(model);
     let Some(tints) = model.get("tints").and_then(serde_json::Value::as_array) else {
         return Ok(Vec::new());
     };
@@ -81,7 +111,12 @@ pub(crate) fn item_model_tints(
                         None
                     }
                 }
-                _ => None,
+                // Every other source (a dye, a firework star's colours, a
+                // map's) shows its default without the stack's data.
+                _ => tint
+                    .get("default")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|color| color as u32),
             }
             .unwrap_or(0xffffff);
             Ok([

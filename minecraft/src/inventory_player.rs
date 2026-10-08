@@ -3,10 +3,13 @@
 //! drawn into a texture of its own as `PictureInPictureRenderer` and
 //! `GuiEntityRenderer` draw it: the wide player model (`PlayerModel`) and
 //! its outer layer, posed as `HumanoidModel.setupAnim` poses it and lit as
-//! `Lighting.Entry.ENTITY_IN_UI` lights it.
+//! `Lighting.Entry.ENTITY_IN_UI` lights it, with its armour
+//! (`HumanoidArmorLayer`) and where its hands hold items
+//! (`ItemInHandLayer`).
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use minecraft_terrain::mesh::{Atlas, Vertex};
 use minecraft_terrain::pack::ResourceId;
+use minecraftoss_player::inventory::ItemStack;
 
 use crate::render::GuiModel;
 
@@ -20,6 +23,60 @@ pub struct Pose {
     pub age: f32,
     /// `walkAnimationPos` and `walkAnimationSpeed`.
     pub walk: (f32, f32),
+    /// The worn armour's layers.
+    pub armor: Vec<ArmorLayer>,
+}
+
+/// One layer of a worn armour piece: its slot (0 head, 1 chest, 2 legs,
+/// 3 feet), its equipment texture in the atlas and its colour.
+pub struct ArmorLayer {
+    pub slot: usize,
+    pub region: [f32; 4],
+    pub tint: [f32; 3],
+}
+
+/// `EquipmentLayerRenderer`'s layers for the armour worn in the head,
+/// chest, legs and feet slots: each piece's equipment asset's `humanoid`
+/// (or `humanoid_leggings`) texture, leather dyed (its `dyed_color`, else
+/// its undyed colour) under its plain overlay.
+pub fn armor_layers(atlas: &Atlas, worn: [Option<&ItemStack>; 4]) -> Vec<ArmorLayer> {
+    let mut layers = Vec::new();
+    for (slot, stack) in worn.into_iter().enumerate() {
+        let Some(stack) = stack else { continue };
+        let Some((asset, fits)) = minecraft_terrain::armor_render::armor_asset(&stack.id) else {
+            continue;
+        };
+        if fits != slot {
+            continue;
+        }
+        let folder = if slot == 2 {
+            "humanoid_leggings"
+        } else {
+            "humanoid"
+        };
+        let dyed = crate::creative::dyed_color(stack).unwrap_or(0xA06540);
+        let rgb = |c: u32| [(c >> 16) & 255, (c >> 8) & 255, c & 255].map(|v| v as f32 / 255.0);
+        let textures: &[(&str, [f32; 3])] = if asset == "leather" {
+            &[("leather", rgb(dyed)), ("leather_overlay", [1.0; 3])]
+        } else {
+            &[(asset, [1.0; 3])]
+        };
+        for &(texture, tint) in textures {
+            let Ok(id) =
+                ResourceId::parse(&format!("minecraft:entity/equipment/{folder}/{texture}"))
+            else {
+                continue;
+            };
+            if atlas.contains(&id) {
+                layers.push(ArmorLayer {
+                    slot,
+                    region: atlas.entity_region(&id),
+                    tint,
+                });
+            }
+        }
+    }
+    layers
 }
 
 /// A model part's pose: `PartPose`, then its `xRot`, `yRot` and `zRot`.
@@ -49,30 +106,43 @@ impl Part {
     }
 }
 
-/// `INVENTORY_DIFFUSE_LIGHT_0` and `_1`.
-fn shade(normal: Vec3) -> f32 {
+/// `INVENTORY_DIFFUSE_LIGHT_0` and `_1`, from a normal in the texture's
+/// space.
+pub fn shade(normal: Vec3) -> f32 {
     let light0 = Vec3::new(0.2, -1.0, 1.0).normalize();
     let light1 = Vec3::new(-0.2, -1.0, 0.0).normalize();
     let light = light0.dot(normal).max(0.0) + light1.dot(normal).max(0.0);
     (light * 0.6 + 0.4).min(1.0)
 }
 
-/// `ModelPart.Cube` with its box layout on the 64-pixel skin: its corners
-/// through `pose` into the texture's pixels, shaded by where each face
-/// points there.
+/// A sheet in the atlas: its region, its size in pixels and a colour.
+#[derive(Clone, Copy)]
+struct Sheet {
+    region: [f32; 4],
+    size: [f32; 2],
+    tint: [f32; 3],
+}
+
+/// `ModelPart.Cube` with its box layout on `sheet`, mirrored across x when
+/// asked: its corners through `pose` into the texture's pixels, shaded by
+/// where each face points there.
 #[allow(clippy::too_many_arguments)]
 fn cube(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
     pose: &Mat4,
-    region: [f32; 4],
+    sheet: Sheet,
     [u, v]: [f32; 2],
     origin: [f32; 3],
     [dx, dy, dz]: [f32; 3],
     grow: f32,
+    mirror: bool,
 ) {
-    let min = Vec3::from(origin) - grow;
-    let max = Vec3::from(origin) + Vec3::new(dx, dy, dz) + grow;
+    let mut min = Vec3::from(origin) - grow;
+    let mut max = Vec3::from(origin) + Vec3::new(dx, dy, dz) + grow;
+    if mirror {
+        std::mem::swap(&mut min.x, &mut max.x);
+    }
     let corner = |x: bool, y: bool, z: bool| {
         Vec3::new(
             if x { max.x } else { min.x },
@@ -109,10 +179,11 @@ fn cube(
         ([v6, v2, v3, v7], [h, m, j, n]),
         ([v5, v6, v7, v8], [j, m, k, n]),
     ];
+    let region = sheet.region;
     let to_atlas = |px: f32, py: f32| {
         [
-            region[0] + (region[2] - region[0]) * px / 64.0,
-            region[1] + (region[3] - region[1]) * py / 64.0,
+            region[0] + (region[2] - region[0]) * px / sheet.size[0],
+            region[1] + (region[3] - region[1]) * py / sheet.size[1],
         ]
     };
     let middle = pose.transform_point3((min + max) / 32.0);
@@ -120,12 +191,13 @@ fn cube(
         let placed = corners.map(|c| pose.transform_point3(c));
         let face_middle = placed.iter().copied().sum::<Vec3>() / 4.0;
         let light = shade((face_middle - middle).normalize_or_zero());
+        let [r, g, b] = sheet.tint.map(|c| c * light);
         let first = vertices.len() as u32;
         for (position, (s, t)) in placed.iter().zip([(u2, t1), (u1, t1), (u1, t2), (u2, t2)]) {
             vertices.push(Vertex {
                 position: position.to_array(),
                 uv: to_atlas(s, t),
-                color: [light, light, light, 1.0],
+                color: [r, g, b, 1.0],
                 sky_light: 15.0,
                 block_light: 15.0,
             });
@@ -142,7 +214,9 @@ pub fn skin(atlas: &Atlas) -> Option<[f32; 4]> {
 
 /// The player in the GUI box `x0, y0` to `x1, y1` (GUI pixels), `size`
 /// pixels to a block, looking toward the mouse; drawn into a texture of
-/// the box's size in window pixels.
+/// the box's size in window pixels. Also where its right and left hands
+/// hold items: `ItemInHandLayer`'s pose for each, from item space to the
+/// texture's.
 pub fn model(
     region: [f32; 4],
     [x0, y0, x1, y1]: [f32; 4],
@@ -151,7 +225,7 @@ pub fn model(
     mouse: (f32, f32),
     gui_scale: f32,
     pose: &Pose,
-) -> GuiModel {
+) -> (GuiModel, [Mat4; 2]) {
     let (center_x, center_y) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
     let x_angle = ((center_x - mouse.0) / 40.0).atan();
     let y_angle = ((center_y - mouse.1) / 40.0).atan();
@@ -268,6 +342,11 @@ pub fn model(
     ];
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
+    let skin = Sheet {
+        region,
+        size: [64.0, 64.0],
+        tint: [1.0; 3],
+    };
     for (part, inner, outer, grow) in parts {
         let pose = entity * part.matrix();
         for ((uv, origin, extent), inflate) in [(inner, 0.0), (outer, grow)] {
@@ -275,14 +354,111 @@ pub fn model(
                 &mut vertices,
                 &mut indices,
                 &pose,
-                region,
+                skin,
                 uv,
                 origin,
                 extent,
                 inflate,
+                false,
             );
         }
     }
+    // `HumanoidArmorLayer` on `HumanoidModel.createArmorMeshSet`: the outer
+    // set (1.0) for the head, chest and feet, the inner (0.5) for the legs,
+    // armour legs a tenth thinner, posed as the player's own parts.
+    for layer in &pose.armor {
+        let sheet = Sheet {
+            region: layer.region,
+            size: [64.0, 32.0],
+            tint: layer.tint,
+        };
+        let grow = if layer.slot == 2 { 0.5 } else { 1.0 };
+        let mut add =
+            |part: Part, uv: [f32; 2], origin: [f32; 3], extent: [f32; 3], g: f32, mirror: bool| {
+                let pose = entity * part.matrix();
+                cube(
+                    &mut vertices,
+                    &mut indices,
+                    &pose,
+                    sheet,
+                    uv,
+                    origin,
+                    extent,
+                    g,
+                    mirror,
+                );
+            };
+        let limb = [4.0, 12.0, 4.0];
+        match layer.slot {
+            0 => {
+                add(head, [0.0, 0.0], [-4.0, -8.0, -4.0], [8.0; 3], grow, false);
+                add(
+                    head,
+                    [32.0, 0.0],
+                    [-4.0, -8.0, -4.0],
+                    [8.0; 3],
+                    grow + 0.5,
+                    false,
+                );
+            }
+            1 => {
+                add(
+                    body,
+                    [16.0, 16.0],
+                    [-4.0, 0.0, -2.0],
+                    [8.0, 12.0, 4.0],
+                    grow,
+                    false,
+                );
+                add(
+                    right_arm,
+                    [40.0, 16.0],
+                    [-3.0, -2.0, -2.0],
+                    limb,
+                    grow,
+                    false,
+                );
+                add(left_arm, [40.0, 16.0], [-1.0, -2.0, -2.0], limb, grow, true);
+            }
+            _ => {
+                if layer.slot == 2 {
+                    add(
+                        body,
+                        [16.0, 16.0],
+                        [-4.0, 0.0, -2.0],
+                        [8.0, 12.0, 4.0],
+                        grow,
+                        false,
+                    );
+                }
+                add(
+                    right_leg,
+                    [0.0, 16.0],
+                    [-2.0, 0.0, -2.0],
+                    limb,
+                    grow - 0.1,
+                    false,
+                );
+                add(
+                    left_leg,
+                    [0.0, 16.0],
+                    [-2.0, 0.0, -2.0],
+                    limb,
+                    grow - 0.1,
+                    true,
+                );
+            }
+        }
+    }
+    // `ItemInHandLayer.submitArmWithItem`: the arm, then a quarter turn
+    // down and a half turn round, a pixel out, two down and ten forward.
+    let hands = [(right_arm, 1.0), (left_arm, -1.0)].map(|(arm, side)| {
+        entity
+            * arm.matrix()
+            * Mat4::from_rotation_x((-90.0f32).to_radians())
+            * Mat4::from_rotation_y(180.0f32.to_radians())
+            * Mat4::from_translation(Vec3::new(side / 16.0, 2.0 / 16.0, -10.0 / 16.0))
+    });
     // The texture's pixels (y down, z toward the viewer) to clip space,
     // `setOrtho(0, w, h, 0, -1000, 1000)` with reverse-Z depth.
     let clip_from_model = Mat4::from_cols(
@@ -291,12 +467,15 @@ pub fn model(
         glam::Vec4::new(0.0, 0.0, 1.0 / 2000.0, 0.0),
         glam::Vec4::new(-1.0, 1.0, 0.5, 1.0),
     );
-    GuiModel {
-        vertices,
-        indices,
-        clip_from_model,
-        size: (width as u32, tall as u32),
-    }
+    (
+        GuiModel {
+            vertices,
+            indices,
+            clip_from_model,
+            size: (width as u32, tall as u32),
+        },
+        hands,
+    )
 }
 
 #[cfg(test)]
@@ -310,6 +489,7 @@ mod tests {
             holding: [false; 2],
             age: 0.0,
             walk: (0.0, 0.0),
+            armor: Vec::new(),
         };
         let model = |mouse| {
             model(
@@ -321,6 +501,7 @@ mod tests {
                 2.0,
                 &pose,
             )
+            .0
         };
         let ahead = model((50.5, 43.0));
         assert_eq!(ahead.size, (98, 140));
