@@ -46,6 +46,7 @@ use minecraftoss_entities::{
     creeper::Creeper,
     gossip::{GossipType, Gossips},
     iron_golem::IronGolem,
+    merchant::MerchantMenu,
     tempt::PlayerCandidate,
     trading::{MerchantOffer, TradeBook},
     villager::Profession,
@@ -58,6 +59,7 @@ use minecraftoss_entities::{
 };
 use minecraftoss_player::{
     inventory::{Inventory, ItemStack},
+    menu::{self, ContainerInput, Menu, MenuContext, MenuInput},
     path_type::PathType,
     rng::LegacyRandom,
     Block, Pos, World, WorldItem,
@@ -455,6 +457,23 @@ struct Probe {
     yaw: f32,
     inventory: Inventory,
     uuid: String,
+    /// Its trading screen, and the villager it trades with.
+    screen: Option<(u64, MerchantMenu)>,
+}
+
+/// An input on a probe's trading screen with the villager as it now is,
+/// the villager told of it after; what was thrown.
+fn merchant_input(world: &mut EntityWorld, probe: &mut Probe, input: &MenuInput) -> Vec<ItemStack> {
+    let Some((villager, menu)) = probe.screen.as_mut() else { return Vec::new() };
+    if let Some(offers) = world.merchant_offers(*villager) {
+        menu.set_offers(offers);
+    }
+    let mut random = LegacyRandom::new(0);
+    let mut cx = MenuContext::new(&mut probe.inventory, &mut random);
+    menu::handle(menu, &mut cx, input);
+    let thrown = std::mem::take(&mut cx.thrown);
+    world.merchant_notify(*villager, &menu.take_events());
+    thrown
 }
 
 /// A stack as `ItemStack.CODEC` writes it.
@@ -726,7 +745,7 @@ fn main() {
                 for s in action["inventory"].as_array().into_iter().flatten() {
                     inventory.slots[s["slot"].as_u64().unwrap() as usize] = Some(stack(s["item"].as_str().unwrap(), s["count"].as_u64().unwrap() as u8));
                 }
-                probes.insert(tag, Probe { candidate: probe_candidate(id, position), yaw: action["yaw"].as_f64().unwrap_or(0.0) as f32, inventory, uuid: data["uuid"].as_str().unwrap().to_owned() });
+                probes.insert(tag, Probe { candidate: probe_candidate(id, position), yaw: action["yaw"].as_f64().unwrap_or(0.0) as f32, inventory, uuid: data["uuid"].as_str().unwrap().to_owned(), screen: None });
             }
             "player_attack" => {
                 // `Player.attack` with a bare hand at full strength.
@@ -750,9 +769,13 @@ fn main() {
                 let at = format!("{scenario} tick {} interact", row["tick"]);
                 let probe = probes.get_mut(data["probe"].as_str().unwrap()).unwrap();
                 let held = probe.inventory.slots[0].as_ref().map(|s| s.id.clone());
-                let used = world.villager_interact(ids[data["tag"].as_str().unwrap()], probe.candidate.id, true, held.as_deref());
+                let villager = ids[data["tag"].as_str().unwrap()];
+                let used = world.villager_interact(villager, probe.candidate.id, true, held.as_deref());
+                if probe.screen.is_none() && world.trading_villager(probe.candidate.id) == Some(villager) {
+                    probe.screen = Some((villager, MerchantMenu::new(Vec::new())));
+                }
                 assert_eq!(data["consumes_action"].as_bool().unwrap(), used != VillagerUse::Pass, "{at} consumed");
-                assert_eq!(data["merchant_open"].as_bool().unwrap(), world.merchant_menu(probe.candidate.id).is_some(), "{at} screen open");
+                assert_eq!(data["merchant_open"].as_bool().unwrap(), probe.screen.is_some(), "{at} screen open");
                 trade_actions += 1;
             }
             "merchant_select" | "merchant_click" | "merchant_close" => {
@@ -762,26 +785,24 @@ fn main() {
                 let probe = probes.get_mut(data["probe"].as_str().unwrap()).unwrap();
                 let player = probe.candidate.id;
                 let eyes = probe.candidate.position + DVec3::Y * 1.62;
-                let valid = world.merchant_still_valid(player, eyes);
+                let valid = probe.screen.as_ref().is_some_and(|(villager, _)| world.merchant_still_valid(*villager, player, eyes, false));
                 if kind == "merchant_close" {
-                    assert_eq!(data["was_merchant"].as_bool().unwrap(), world.merchant_menu(player).is_some(), "{at} screen");
-                    let drops = world.merchant_close(player, &mut probe.inventory, 0);
-                    assert!(drops.is_empty(), "{at}: nothing dropped");
+                    assert_eq!(data["was_merchant"].as_bool().unwrap(), probe.screen.is_some(), "{at} screen");
+                    let thrown = merchant_input(&mut world, probe, &MenuInput::Close);
+                    assert!(thrown.is_empty(), "{at}: nothing dropped");
+                    if let Some((villager, _)) = probe.screen.take() {
+                        world.merchant_stop(villager);
+                    }
                 } else {
                     assert_eq!(data["valid"].as_bool().unwrap(), valid, "{at} still valid");
-                    if valid && kind == "merchant_select" {
-                        world.merchant_select(player, data["index"].as_i64().unwrap() as i32, &mut probe.inventory);
-                    } else if valid {
-                        let (slot, right, shift) = (data["slot"].as_u64().unwrap() as usize, data["button"] == 1, data["mode"] == "quick_move");
-                        match slot {
-                            0 | 1 => world.merchant_click_payment(player, slot, right, shift, &mut probe.inventory),
-                            2 => world.merchant_click_result(player, shift, &mut probe.inventory),
-                            _ if shift => world.merchant_quick_move_inventory(player, if slot < 30 { slot - 3 + 9 } else { slot - 30 }, &mut probe.inventory),
-                            // An inventory slot: the standard pickup.
-                            _ => {
-                                probe.inventory.click(Some(if slot < 30 { slot - 3 + 9 } else { slot - 30 }), right, false);
-                            }
-                        }
+                    if valid {
+                        let input = if kind == "merchant_select" {
+                            MenuInput::SelectTrade(data["index"].as_i64().unwrap() as i32)
+                        } else {
+                            let kind = if data["mode"] == "quick_move" { ContainerInput::QuickMove } else { ContainerInput::Pickup };
+                            MenuInput::Click { slot: data["slot"].as_i64().unwrap() as i32, button: data["button"].as_i64().unwrap_or(0) as i32, kind }
+                        };
+                        merchant_input(&mut world, probe, &input);
                     }
                 }
                 trade_actions += 1;
@@ -1328,8 +1349,9 @@ fn main() {
                     assert_eq!(Value::Object(ours), theirs["inventory"], "{at} inventory");
                     assert_eq!(stack_json(&p.inventory.cursor), theirs["cursor"], "{at} cursor");
                     // Gson leaves out empty slots.
-                    let menu = world.merchant_menu(p.candidate.id).map(|m| {
-                        let mut v = json!({ "payment_a": stack_json(&m.payment[0]), "payment_b": stack_json(&m.payment[1]), "result": stack_json(&m.result), "future_xp": m.future_xp });
+                    let menu = p.screen.as_ref().map(|(_, m)| {
+                        let slot = |i: usize| m.own().get(i).cloned();
+                        let mut v = json!({ "payment_a": stack_json(&slot(0)), "payment_b": stack_json(&slot(1)), "result": stack_json(&slot(2)), "future_xp": m.future_xp() });
                         v.as_object_mut().unwrap().retain(|_, x| !x.is_null());
                         v
                     });

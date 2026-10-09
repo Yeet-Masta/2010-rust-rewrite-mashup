@@ -473,6 +473,17 @@ pub trait Menu {
     fn own_container(&self, _slot: usize) -> usize {
         0
     }
+
+    /// The menu as its own type, for a kind that keeps more than slots and
+    /// data (a merchant's offers), which its owner loads and reads.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// [`Menu::as_any`], to change.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// `target.container == slot.container`: whether two menu slots show the

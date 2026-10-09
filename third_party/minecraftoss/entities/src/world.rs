@@ -2286,10 +2286,9 @@ pub struct EntityWorld {
     /// differ from session to session.
     uuids: HashMap<u64, u128>,
     uuid_salt: u64,
-    /// Players' Hero of the Village levels, their trading screens, and the
-    /// experience trades dropped.
+    /// Players' Hero of the Village levels, and the experience trades
+    /// dropped.
     player_heroes: HashMap<u64, i32>,
-    merchant_menus: HashMap<u64, crate::merchant::MerchantMenu>,
     trade_experience: Vec<(DVec3, i32)>,
     /// Players' main-hand items, as villagers see them.
     player_main_hands: HashMap<u64, String>,
@@ -2357,7 +2356,6 @@ impl Default for EntityWorld {
             uuids: HashMap::new(),
             uuid_salt: 0,
             player_heroes: HashMap::new(),
-            merchant_menus: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
             entity_events: Vec::new(),
@@ -4305,7 +4303,6 @@ impl EntityWorld {
             uuids: self.uuids.clone(),
             uuid_salt: self.uuid_salt,
             player_heroes: self.player_heroes.clone(),
-            merchant_menus: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
             entity_events: Vec::new(),

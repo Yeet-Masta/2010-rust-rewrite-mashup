@@ -7,11 +7,12 @@
 //! 26.3 no longer resets them when trading stops), each trade uses the offer, pays the villager experience (levelling it up
 //! at once, with its next level's offers and regeneration) and drops an
 //! experience orb, and the villager answers the payment slots with yes or
-//! no. The screen itself is `crate::merchant`.
+//! no. The screen itself is `crate::merchant`, which its owner runs: it
+//! shows the villager's offers ([`EntityWorld::merchant_offers`]) and tells
+//! it what the trader did ([`EntityWorld::merchant_notify`]).
 use super::*;
-use crate::merchant::{Merchant, MerchantMenu};
+use crate::merchant::{MerchantEvent, Offers};
 use crate::trading::MerchantOffer;
-use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// `VillagerData.NEXT_LEVEL_XP_THRESHOLDS`.
 const LEVEL_XP: [i32; 5] = [0, 10, 70, 150, 250];
@@ -40,30 +41,6 @@ pub enum VillagerUse {
     Success,
     /// Taken with nothing to show (`CONSUME`): no offers.
     Consume,
-}
-
-/// The villager a menu trades with, as the menu asks of it.
-struct VillagerMerchant<'a> {
-    world: &'a mut EntityWorld,
-    villager: u64,
-}
-
-impl Merchant for VillagerMerchant<'_> {
-    fn offers(&mut self) -> Vec<MerchantOffer> {
-        self.world.villager_offers(self.villager).map(<[MerchantOffer]>::to_vec).unwrap_or_default()
-    }
-
-    fn max_stack(&self, item: &str) -> i32 {
-        self.world.trades.as_ref().map_or(64, |book| book.max_stack(item))
-    }
-
-    fn trade_updated(&mut self, valid: bool) {
-        self.world.villager_trade_updated(self.villager, valid);
-    }
-
-    fn trade(&mut self, index: usize) {
-        self.world.villager_notify_trade(self.villager, index);
-    }
 }
 
 impl EntityWorld {
@@ -122,7 +99,6 @@ impl EntityWorld {
         if let Some(entity) = self.villager_mut(id) {
             entity.trading_player = Some(player);
         }
-        self.merchant_menus.insert(player, MerchantMenu::new(id));
         VillagerUse::Success
     }
 
@@ -213,17 +189,47 @@ impl EntityWorld {
         std::mem::take(&mut self.trade_experience)
     }
 
-    /// A player's open trading screen.
-    pub fn merchant_menu(&self, player: u64) -> Option<&MerchantMenu> {
-        self.merchant_menus.get(&player)
+    /// The villager trading with `player` (`getTradingPlayer`), if any.
+    pub fn trading_villager(&self, player: u64) -> Option<u64> {
+        self.villagers.iter().find(|e| e.trading_player == Some(player)).map(|e| e.id)
     }
 
-    /// `AbstractVillager.stillValid` for a player's screen: the villager
-    /// still trades with them, lives, and is within their reach plus four
-    /// (seven blocks from `eyes` to its box).
-    pub fn merchant_still_valid(&self, player: u64, eyes: DVec3) -> bool {
-        let Some(menu) = self.merchant_menus.get(&player) else { return false };
-        let Some(e) = self.villagers.iter().find(|e| e.id == menu.villager) else { return false };
+    /// What a villager shows its trader (`ClientboundMerchantOffersPacket`,
+    /// as `openTradingScreen` and `updateSpecialPrices` send it): its
+    /// offers (made if need be), level and experience; a villager shows
+    /// its progress and restocks.
+    pub fn merchant_offers(&mut self, id: u64) -> Option<Offers> {
+        let offers = self.villager_offers(id)?.to_vec();
+        let entity = self.villagers.iter().find(|e| e.id == id)?;
+        let (level, xp) = (entity.villager.level, entity.villager.xp);
+        let mut max_stacks: Vec<(String, i32)> = Vec::new();
+        for offer in &offers {
+            for item in std::iter::once(&offer.buy.id).chain(offer.buy_b.as_ref().map(|b| &b.id)).chain(std::iter::once(&offer.sell.id)) {
+                let max = self.item_max_stack(item);
+                if max != 64 && !max_stacks.iter().any(|(id, _)| id == item) {
+                    max_stacks.push((item.clone(), max));
+                }
+            }
+        }
+        Some(Offers { offers, max_stacks, level, xp, show_progress: true, can_restock: true })
+    }
+
+    /// What a trading screen told its villager, in order: yes or no to its
+    /// payments (`notifyTradeUpdated`) and its trades (`notifyTrade`).
+    pub fn merchant_notify(&mut self, id: u64, events: &[MerchantEvent]) {
+        for event in events {
+            match *event {
+                MerchantEvent::Updated(valid) => self.villager_trade_updated(id, valid),
+                MerchantEvent::Trade(index) => self.villager_notify_trade(id, index),
+            }
+        }
+    }
+
+    /// `AbstractVillager.stillValid` for `player`'s screen: the villager
+    /// still trades with them, lives, and is within their entity reach (3,
+    /// or 5 in creative) and 4 more of `eyes`.
+    pub fn merchant_still_valid(&self, id: u64, player: u64, eyes: DVec3, creative: bool) -> bool {
+        let Some(e) = self.villagers.iter().find(|e| e.id == id) else { return false };
         if e.trading_player != Some(player) || e.villager.health <= 0.0 {
             return false;
         }
@@ -232,50 +238,15 @@ impl EntityWorld {
         let (min, max) = (body.position - DVec3::new(half, 0.0, half), body.position + DVec3::new(half, f64::from(body.height), half));
         let outside = |v: f64, lo: f64, hi: f64| (lo - v).max(v - hi).max(0.0);
         let (dx, dy, dz) = (outside(eyes.x, min.x, max.x), outside(eyes.y, min.y, max.y), outside(eyes.z, min.z, max.z));
-        dx * dx + dy * dy + dz * dz < (3.0 + 4.0) * (3.0 + 4.0)
+        let range = if creative { 5.0 } else { 3.0 } + 4.0;
+        dx * dx + dy * dy + dz * dz < range * range
     }
 
-    /// Runs an operation on a player's trading screen with its villager.
-    fn with_menu(&mut self, player: u64, op: impl FnOnce(&mut MerchantMenu, &mut VillagerMerchant)) {
-        let Some(mut menu) = self.merchant_menus.remove(&player) else { return };
-        let villager = menu.villager;
-        op(&mut menu, &mut VillagerMerchant { world: self, villager });
-        self.merchant_menus.insert(player, menu);
-    }
-
-    /// The trade picked in the list (`ServerboundSelectTradePacket`).
-    pub fn merchant_select(&mut self, player: u64, index: i32, inventory: &mut Inventory) {
-        self.with_menu(player, |menu, merchant| menu.select_trade(index, inventory, merchant));
-    }
-
-    /// A click on the result slot, shift-click or not.
-    pub fn merchant_click_result(&mut self, player: u64, shift: bool, inventory: &mut Inventory) {
-        self.with_menu(player, |menu, merchant| if shift { menu.quick_move_result(inventory, merchant) } else { menu.click_result(inventory, merchant) });
-    }
-
-    /// A click on a payment slot.
-    pub fn merchant_click_payment(&mut self, player: u64, slot: usize, right: bool, shift: bool, inventory: &mut Inventory) {
-        self.with_menu(player, |menu, merchant| menu.click_payment(slot, right, shift, inventory, merchant));
-    }
-
-    /// A shift-click on an inventory slot while trading.
-    pub fn merchant_quick_move_inventory(&mut self, player: u64, index: usize, inventory: &mut Inventory) {
-        if let Some(menu) = self.merchant_menus.get_mut(&player) {
-            menu.quick_move_inventory(index, inventory);
+    /// The trading screen closed (`MerchantMenu.removed`'s
+    /// `setTradingPlayer(null)`), which stops a villager that was trading.
+    pub fn merchant_stop(&mut self, id: u64) {
+        if self.villagers.iter().any(|e| e.id == id && e.trading_player.is_some()) {
+            self.villager_stop_trading(id);
         }
-    }
-
-    /// The trading screen closed (`MerchantMenu.removed`): the cursor and
-    /// payments back to the inventory, the villager done trading. What did
-    /// not fit, to drop.
-    pub fn merchant_close(&mut self, player: u64, inventory: &mut Inventory, selected: usize) -> Vec<ItemStack> {
-        let Some(mut menu) = self.merchant_menus.remove(&player) else { return Vec::new() };
-        let villager = menu.villager;
-        // `setTradingPlayer(null)` stops a villager that was trading.
-        menu.close(inventory, selected, || {
-            if self.villagers.iter().any(|e| e.id == villager && e.trading_player.is_some()) {
-                self.villager_stop_trading(villager);
-            }
-        })
     }
 }

@@ -5,11 +5,12 @@
 //! the carried stack over everything, and the hovered stack's tooltip.
 //! Each kind's window (`MenuScreens.register`'s screen) is a line in
 //! [`layout`]; a kind with more to draw (progress, buttons) adds it in
-//! [`Gui::menu_extras`].
+//! [`Gui::menu_extras`], and what it shows over everything (its buttons'
+//! tooltips) in [`Gui::menu_overlays`].
 use minecraft_terrain::menus::MenuKind;
 use minecraft_terrain::pack::PackStack;
 use minecraftoss_player::inventory::{Inventory, ItemStack};
-use minecraftoss_player::menu::SlotDef;
+use minecraftoss_player::menu::{Menu, SlotDef};
 
 use super::Gui;
 use crate::font::rgb;
@@ -17,6 +18,10 @@ use crate::render::UiList;
 
 #[path = "screens/furnace.rs"]
 mod furnace;
+#[path = "screens/merchant.rs"]
+mod merchant;
+
+pub use merchant::TradeList;
 
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
@@ -31,6 +36,9 @@ enum TitleX {
     At(f32),
     /// `(imageWidth - font.width(title)) / 2` (`DispenserScreen.init`).
     Centred,
+    /// Centred on this x: `x - font.width(title) / 2`
+    /// (`MerchantScreen.extractLabels`).
+    CentredOn(f32),
 }
 
 /// A kind's window: `imageWidth` and `imageHeight`, the background's
@@ -39,7 +47,7 @@ enum TitleX {
 pub struct Layout {
     pub width: f32,
     pub height: f32,
-    /// The background sprite (a 256 by 256 texture).
+    /// The background sprite (a 256 by 256 texture, or 512 wide).
     background: &'static str,
     /// Its pieces: drawn at (x, y) in the window from its pixels at
     /// (u, v), w by h.
@@ -88,6 +96,14 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::Furnace => Layout::plain("furnace", 166.0, TitleX::Centred),
         MenuKind::BlastFurnace => Layout::plain("blast_furnace", 166.0, TitleX::Centred),
         MenuKind::Smoker => Layout::plain("smoker", 166.0, TitleX::Centred),
+        // `MerchantScreen`: 276 wide, from a 512 by 256 image; the title
+        // centred over the part right of the offers (`49 + imageWidth / 2`).
+        MenuKind::Merchant => Layout {
+            width: 276.0,
+            blits: vec![[0.0, 0.0, 0.0, 0.0, 276.0, 166.0]],
+            inventory_label: (107.0, 72.0),
+            ..Layout::plain("villager", 166.0, TitleX::CentredOn(49.0 + 138.0))
+        },
     }
 }
 
@@ -132,6 +148,11 @@ pub struct MenuView<'a> {
     /// The menu's data values (progress, costs), which the storage kinds
     /// have none of: the kinds that draw them read them in `menu_extras`.
     pub data: &'a [i32],
+    /// The menu as the screen shows it, for what a kind keeps beyond its
+    /// slots (a merchant's offers).
+    pub menu: &'a (dyn Menu + Send),
+    /// The trade list's state (the merchant's screen).
+    pub trades: &'a TradeList,
 }
 
 impl Gui {
@@ -141,6 +162,12 @@ impl Gui {
             ((self.width - layout.width) / 2.0).floor(),
             ((self.height - layout.height) / 2.0).floor(),
         )
+    }
+
+    /// The mouse from a kind's window's corner.
+    pub fn menu_mouse(&self, kind: MenuKind) -> (f32, f32) {
+        let (left, top) = self.menu_corner(&layout(kind));
+        (self.mouse.0 - left, self.mouse.1 - top)
     }
 
     /// The slot under the mouse (`getHoveredSlot`: the first in menu order
@@ -167,12 +194,13 @@ impl Gui {
         for &[x, y, u, v, w, h] in &layout.blits {
             self.sprite_part(ui, layout.background, left + x, top + y, u, v, w, h);
         }
-        self.menu_extras(ui, view, left, top);
+        self.menu_extras(ui, packs, view, left, top);
         // `extractLabels`.
         let label = rgb(LABEL);
         let title_x = match layout.title_x {
             TitleX::At(x) => x,
             TitleX::Centred => ((layout.width - self.font.width(&view.title)) / 2.0).trunc(),
+            TitleX::CentredOn(x) => x - (self.font.width(&view.title) / 2.0).floor(),
         };
         self.text(ui, &view.title, left + title_x, top + 6.0, label, false);
         let inventory = crate::creative::translate(&self.language, "container.inventory", &[]);
@@ -199,6 +227,7 @@ impl Gui {
         if let Some(stack) = view.tooltip.as_ref() {
             self.stack_tooltip(ui, stack, false);
         }
+        self.menu_overlays(ui, view, left, top);
     }
 
     /// `extractSlot`: the empty slot's icon, or its stack (a drag's
@@ -232,7 +261,14 @@ impl Gui {
 
     /// What a kind draws over its background: progress, buttons. One arm
     /// per kind that has any.
-    fn menu_extras(&mut self, ui: &mut UiList, view: &MenuView<'_>, left: f32, top: f32) {
+    fn menu_extras(
+        &mut self,
+        ui: &mut UiList,
+        packs: &PackStack,
+        view: &MenuView<'_>,
+        left: f32,
+        top: f32,
+    ) {
         match view.kind {
             MenuKind::Generic { .. }
             | MenuKind::Generic3x3
@@ -241,6 +277,15 @@ impl Gui {
             MenuKind::Furnace | MenuKind::BlastFurnace | MenuKind::Smoker => {
                 self.furnace_extras(ui, view, left, top)
             }
+            MenuKind::Merchant => self.merchant_extras(ui, packs, view, left, top),
+        }
+    }
+
+    /// What a kind draws over everything: its buttons' tooltips. One arm
+    /// per kind that has any.
+    fn menu_overlays(&mut self, ui: &mut UiList, view: &MenuView<'_>, left: f32, top: f32) {
+        if view.kind == MenuKind::Merchant {
+            self.merchant_tooltips(ui, view, left, top);
         }
     }
 }
@@ -315,6 +360,7 @@ mod tests {
             MenuKind::Furnace,
             MenuKind::BlastFurnace,
             MenuKind::Smoker,
+            MenuKind::Merchant,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

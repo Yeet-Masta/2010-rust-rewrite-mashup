@@ -25,6 +25,13 @@
 //! entity pay the recipes' experience (`awardUsedRecipesAndPopExperience`).
 //! The level's furnaces cook from the recipe book ([`BookCooking`]).
 //!
+//! A villager's trading screen ([`MenuKind::Merchant`]) opens from the
+//! use of the villager (`openTradingScreen`). Its own slots are the menu's
+//! (`MerchantContainer`), and it shows the villager's offers, which it reads
+//! before and after every batch and tick: what the inputs told the villager
+//! (its yes and no, the trades) is told it then, and the screen is sent the
+//! offers with its slots ([`MenuExtra::Merchant`]).
+//!
 //! A container generation left with a loot table is filled from it as it
 //! opens (`unpackLootTable`), each half of a double chest in turn, with the
 //! player's luck, which is always 0 here (no luck effects).
@@ -36,6 +43,7 @@ use crate::server::ServerSim;
 use crate::stacks::{self, LevelStack, PlayerStack};
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::BlockStateId;
+use minecraftoss_entities::merchant::{MerchantMenu, Offers};
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_player::inventory::Inventory;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
@@ -74,6 +82,8 @@ pub enum MenuKind {
     BlastFurnace,
     /// `smoker` (`SmokerMenu`).
     Smoker,
+    /// `merchant` (`MerchantMenu`): a villager's trades.
+    Merchant,
 }
 
 impl MenuKind {
@@ -92,6 +102,7 @@ impl MenuKind {
             Self::Furnace => "minecraft:furnace",
             Self::BlastFurnace => "minecraft:blast_furnace",
             Self::Smoker => "minecraft:smoker",
+            Self::Merchant => "minecraft:merchant",
         }
     }
 
@@ -106,6 +117,7 @@ impl MenuKind {
             Self::Furnace => Box::new(FurnaceMenu::new(CookingKind::Furnace, own)),
             Self::BlastFurnace => Box::new(FurnaceMenu::new(CookingKind::BlastFurnace, own)),
             Self::Smoker => Box::new(FurnaceMenu::new(CookingKind::Smoker, own)),
+            Self::Merchant => Box::new(MerchantMenu::new(own)),
         }
     }
 }
@@ -157,7 +169,34 @@ pub struct MenuOpen {
 /// Kind-specific state for a screen. The storage menus have none; kinds
 /// that do add a variant.
 #[derive(Clone, Debug, PartialEq)]
-pub enum MenuExtra {}
+pub enum MenuExtra {
+    /// The trader's offers, level and experience
+    /// (`ClientboundMerchantOffersPacket`).
+    Merchant(Offers),
+}
+
+impl MenuExtra {
+    /// A client's copy of the menu takes the server's state (its own slots
+    /// loaded first).
+    pub fn sync(&self, menu: &mut (dyn Menu + Send)) {
+        match self {
+            Self::Merchant(offers) => {
+                if let Some(menu) = merchant_mut(menu) {
+                    menu.sync(offers.clone());
+                }
+            }
+        }
+    }
+}
+
+/// The trading menu behind a menu, if it is one.
+pub fn merchant(menu: &(dyn Menu + Send)) -> Option<&MerchantMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
+fn merchant_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut MerchantMenu> {
+    menu.as_any_mut()?.downcast_mut()
+}
 
 /// A menu's state for the client, after a batch, an opening, or a tick
 /// that changed what it shows.
@@ -237,6 +276,8 @@ struct OpenMenu {
     seq: u32,
     /// The own slots and data as the client last heard of them.
     sent: (Vec<Option<PlayerStack>>, Vec<i32>),
+    /// The kind's extra as the client last heard of it.
+    sent_extra: Option<MenuExtra>,
     /// `stillValid` failed: the container is closed, and the client was
     /// asked to close its screen.
     closing: bool,
@@ -252,6 +293,8 @@ enum Source {
     /// The player's ender inventory, through the ender chest at a position
     /// (`PlayerEnderChestContainer.activeChest`).
     EnderChest(LevelPos),
+    /// The menu's own container, trading with this villager.
+    Merchant(u64),
 }
 
 impl Source {
@@ -260,14 +303,16 @@ impl Source {
         match self {
             Self::Container(c) => c.positions(),
             Self::EnderChest(pos) => vec![pos],
+            Self::Merchant(_) => Vec::new(),
         }
     }
 
     /// The menu's block, where its `ContainerLevelAccess` acts: the used
-    /// block, the first half of a double chest.
-    fn block(self) -> LevelPos {
+    /// block, the first half of a double chest. A trading screen has none.
+    fn block(self) -> Option<LevelPos> {
         match self {
-            Self::Container(ContainerRef::Single(pos, _) | ContainerRef::Double(pos, _)) | Self::EnderChest(pos) => pos,
+            Self::Container(ContainerRef::Single(pos, _) | ContainerRef::Double(pos, _)) | Self::EnderChest(pos) => Some(pos),
+            Self::Merchant(_) => None,
         }
     }
 }
@@ -483,6 +528,11 @@ impl ServerSim {
         self.menus.open.as_ref().map(|open| (open.id, open.kind))
     }
 
+    /// Whether the menu open now trades with this villager.
+    pub(crate) fn trades_with(&self, villager: u64) -> bool {
+        self.menus.open.as_ref().is_some_and(|open| matches!(open.source, Source::Merchant(v) if v == villager))
+    }
+
     /// Whether using a block in this state opens a menu (the client then
     /// sends the use with the player, and swings).
     pub fn opens_menu(&self, state: BlockStateId) -> bool {
@@ -505,22 +555,8 @@ impl ServerSim {
         let Some(target) = self.menu_target(block, at) else { return (result, Vec::new()) };
         // `openMenu` runs, and the block counts the use.
         result.stats.push((minecraftoss_player::statistics::CUSTOM.to_owned(), format!("minecraft:{}", target.stat), 1));
-        let mut updates = Vec::new();
         let mut inventory = std::mem::take(&mut player.inventory);
-        if let Some(open) = self.menus.open.take() {
-            let before = Snapshot::of(&mut inventory);
-            let mut random = self.menus.random.clone();
-            let mut cx = context(&mut inventory, &mut random, &player);
-            let mut update = MenuUpdate { id: open.id, ack: open.seq, closed: true, ..MenuUpdate::default() };
-            let block = open.source.block();
-            self.finish_close(open, &mut cx);
-            update.thrown = std::mem::take(&mut cx.thrown);
-            self.menu_effects(&mut cx, Some(block), player.feet);
-            drop(cx);
-            self.menus.random = random;
-            before.answer(&mut inventory, &mut update);
-            updates.push(update);
-        }
+        let mut updates: Vec<MenuUpdate> = self.close_for_open(&mut inventory, &player).into_iter().collect();
         // `BaseContainerBlockEntity.createMenu`: a lock the hand does not
         // open refuses, with a message and a click.
         let held = inventory.slots.get(player.selected).and_then(Option::as_ref);
@@ -544,7 +580,7 @@ impl ServerSim {
         let mut menu = target.kind.menu(own);
         self.load_data(menu.as_mut(), target.source);
         let sent = (menu.own().items().to_vec(), menu.data());
-        let open = OpenMenu { id: self.menus.counter, kind: target.kind, menu, source: target.source, seq: 0, sent: sent.clone(), closing: false, creative: player.creative };
+        let open = OpenMenu { id: self.menus.counter, kind: target.kind, menu, source: target.source, seq: 0, sent: sent.clone(), sent_extra: None, closing: false, creative: player.creative };
         // The menu's `startOpen`.
         for p in target.source.positions() {
             self.level.start_open(p, interaction_range(player.creative));
@@ -554,6 +590,75 @@ impl ServerSim {
         self.menus.open = Some(open);
         result.opened = true;
         (result, updates)
+    }
+
+    /// `openMenu` closes the menu open first (`closeContainer`), against the
+    /// copy of the inventory the opening came with: the update that closes
+    /// it, with its player part.
+    fn close_for_open(&mut self, inventory: &mut Inventory, player: &PlayerContext) -> Option<MenuUpdate> {
+        let open = self.menus.open.take()?;
+        let before = Snapshot::of(inventory);
+        let mut random = self.menus.random.clone();
+        let mut cx = context(inventory, &mut random, player);
+        let mut update = MenuUpdate { id: open.id, ack: open.seq, closed: true, ..MenuUpdate::default() };
+        let block = open.source.block();
+        self.finish_close(open, &mut cx);
+        update.thrown = std::mem::take(&mut cx.thrown);
+        self.menu_effects(&mut cx, block, player.feet);
+        drop(cx);
+        self.menus.random = random;
+        before.answer(inventory, &mut update);
+        Some(update)
+    }
+
+    /// `Merchant.openTradingScreen` for a villager the player now trades
+    /// with (`Villager.startTrading`), titled with its name (its
+    /// profession's): the menu open before closes, and the screen opens with
+    /// the villager's offers. Returns the menu updates it made.
+    pub(crate) fn open_merchant(&mut self, villager: u64, inventory: &mut Inventory, player: &PlayerContext) -> Vec<MenuUpdate> {
+        let mut updates: Vec<MenuUpdate> = self.close_for_open(inventory, player).into_iter().collect();
+        let (Some(offers), Some(entity)) = (self.mobs.merchant_offers(villager), self.mobs.villagers().iter().find(|e| e.id == villager)) else { return updates };
+        let profession = entity.villager.profession.id();
+        let (namespace, path) = profession.split_once(':').unwrap_or(("minecraft", profession));
+        let title = translated(&format!("entity.{namespace}.villager.{path}"));
+        self.menus.counter = self.menus.counter % 100 + 1;
+        let mut menu = MerchantMenu::new(Vec::new());
+        menu.set_offers(offers);
+        let sent = (menu.own().items().to_vec(), menu.data());
+        let extra = Some(MenuExtra::Merchant(menu.offers().clone()));
+        let kind = MenuKind::Merchant;
+        let open = OpenMenu { id: self.menus.counter, kind, menu: Box::new(menu), source: Source::Merchant(villager), seq: 0, sent: sent.clone(), sent_extra: extra.clone(), closing: false, creative: player.creative };
+        updates.push(MenuUpdate { id: open.id, open: Some(MenuOpen { kind, title }), slots: sent.0, data: sent.1, extra, ..MenuUpdate::default() });
+        self.menus.open = Some(open);
+        updates
+    }
+
+    /// A trading screen and its villager: what the inputs told the villager
+    /// is told it (`notifyTradeUpdated`, `notifyTrade`), with the statistic
+    /// a trade counts (`TRADED_WITH_VILLAGER`) and the orbs it dropped; then
+    /// the menu takes the villager's offers as they now are. When they
+    /// changed otherwise (a new level's offers or a restock, through
+    /// `updateSpecialPrices`), the result is read for them
+    /// (`updateSellItem`).
+    fn merchant_sync(&mut self, open: &mut OpenMenu, stats: &mut Vec<(String, String, i32)>) {
+        let Source::Merchant(villager) = open.source else { return };
+        let Some(menu) = merchant_mut(open.menu.as_mut()) else { return };
+        let events = menu.take_events();
+        let trades = events.iter().filter(|e| matches!(e, minecraftoss_entities::merchant::MerchantEvent::Trade(_))).count();
+        stats.extend((0..trades).map(|_| (minecraftoss_player::statistics::CUSTOM.to_owned(), "minecraft:traded_with_villager".to_owned(), 1)));
+        self.mobs.merchant_notify(villager, &events);
+        self.spawn_trade_experience();
+        let Some(offers) = self.mobs.merchant_offers(villager) else { return };
+        if *menu.offers() != offers {
+            menu.set_offers(offers);
+            menu.update_sell_item();
+            self.mobs.merchant_notify(villager, &menu.take_events());
+        }
+    }
+
+    /// The kind's extra for the screen, as the menu has it now.
+    fn extra(open: &OpenMenu) -> Option<MenuExtra> {
+        merchant(open.menu.as_ref()).map(|menu| MenuExtra::Merchant(menu.offers().clone()))
     }
 
     /// The menu a block opens, by its `useWithoutItem` and
@@ -620,12 +725,13 @@ impl ServerSim {
         let mut random = self.menus.random.clone();
         let mut cx = context(&mut inventory, &mut random, &player);
         let mut update = MenuUpdate { id, ack: seq, ..MenuUpdate::default() };
-        let block = self.menus.open.as_ref().filter(|open| open.id == id).map(|open| open.source.block());
+        let block = self.menus.open.as_ref().filter(|open| open.id == id).and_then(|open| open.source.block());
         match self.menus.open.take() {
             Some(mut open) if open.id == id && !open.closing => {
                 open.creative = player.creative;
                 open.seq = seq;
                 self.reload(&mut open);
+                self.merchant_sync(&mut open, &mut update.stats);
                 let valid = self.still_valid(&open, player.eye);
                 let closing = inputs.contains(&MenuInput::Close);
                 for input in inputs.iter().take_while(|input| **input != MenuInput::Close) {
@@ -635,6 +741,7 @@ impl ServerSim {
                 }
                 self.write_back(&mut open, &cx.block_requests);
                 self.answer_requests(&open, &mut cx, player.feet);
+                self.merchant_sync(&mut open, &mut update.stats);
                 if closing {
                     self.finish_close(open, &mut cx);
                     update.closed = true;
@@ -642,7 +749,9 @@ impl ServerSim {
                     self.reload(&mut open);
                     update.slots = open.menu.own().items().to_vec();
                     update.data = open.menu.data();
+                    update.extra = Self::extra(&open);
                     open.sent = (update.slots.clone(), update.data.clone());
+                    open.sent_extra = update.extra.clone();
                     self.menus.open = Some(open);
                 }
             }
@@ -713,8 +822,12 @@ impl ServerSim {
         }
     }
 
-    /// The container's `stopOpen`, each half of a double chest in turn.
+    /// The container's `stopOpen`, each half of a double chest in turn; a
+    /// trading screen's villager stops trading (`setTradingPlayer(null)`).
     fn stop_open(&mut self, open: &OpenMenu) {
+        if let Source::Merchant(villager) = open.source {
+            self.mobs.merchant_stop(villager);
+        }
         for p in open.source.positions() {
             self.level.stop_open(p);
         }
@@ -728,12 +841,16 @@ impl ServerSim {
                 self.level.container_items(c).iter().map(|stack| stacks::to_player(stack, |id| items.max_stack(id))).collect()
             }
             Source::EnderChest(_) => self.menus.ender.clone(),
+            Source::Merchant(_) => Vec::new(),
         }
     }
 
     /// The menu reads its storage again (what hoppers and dispensers did),
     /// and its data values.
     fn reload(&self, open: &mut OpenMenu) {
+        if let Source::Merchant(_) = open.source {
+            return;
+        }
         let items = self.source_items(open.source);
         open.menu.own_mut().load(items);
         self.load_data(open.menu.as_mut(), open.source);
@@ -788,6 +905,7 @@ impl ServerSim {
                 }
                 self.menus.ender_changed = true;
             }
+            Source::Merchant(_) => {}
         }
     }
 
@@ -795,6 +913,9 @@ impl ServerSim {
     /// shows is the one it opened (`Container.stillValidBlockEntity`) and
     /// within reach of the eye; for the ender inventory, its active chest.
     fn still_valid(&self, open: &OpenMenu, eye: [f64; 3]) -> bool {
+        if let Source::Merchant(villager) = open.source {
+            return self.mobs.merchant_still_valid(villager, 0, glam::DVec3::from_array(eye), open.creative);
+        }
         open.source.positions().into_iter().all(|p| self.level.block_entity_still_there(p) && within_reach(p, eye, open.creative))
     }
 
@@ -841,8 +962,11 @@ impl ServerSim {
             return None;
         }
         self.reload(open);
+        let mut stats = Vec::new();
+        self.merchant_sync(open, &mut stats);
         let shown = (open.menu.own().items().to_vec(), open.menu.data());
-        let changed = shown != open.sent;
+        let extra = Self::extra(open);
+        let changed = shown != open.sent || extra != open.sent_extra;
         let eye = players.iter().find(|p| p.id == 0).map(|p| (p.position + glam::DVec3::Y * f64::from(p.eye_height)).to_array());
         let valid = eye.is_none_or(|eye| self.still_valid(open, eye));
         if !valid {
@@ -853,7 +977,8 @@ impl ServerSim {
             return None;
         }
         open.sent = shown.clone();
-        Some(MenuUpdate { id: open.id, ack: open.seq, slots: shown.0, data: shown.1, closing: !valid, ..MenuUpdate::default() })
+        open.sent_extra = extra.clone();
+        Some(MenuUpdate { id: open.id, ack: open.seq, slots: shown.0, data: shown.1, extra, closing: !valid, ..MenuUpdate::default() })
     }
 }
 

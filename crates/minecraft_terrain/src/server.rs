@@ -46,7 +46,7 @@ pub struct ServerSim {
     pub(crate) level: Level<'static>,
     states: Arc<BlockStates>,
     /// Mobs, ticked after the level each tick.
-    mobs: minecraftoss_entities::world::EntityWorld,
+    pub(crate) mobs: minecraftoss_entities::world::EntityWorld,
     /// Each block state as mobs read it.
     mob_tables: crate::server_mobs::MobTables,
     /// The tag each mob was loaded or spawned from, by entity ID: saving
@@ -66,8 +66,6 @@ pub struct ServerSim {
     explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// The player's `takeXpDelay`: ticks until it can take another orb.
     take_xp_delay: i32,
-    /// The client was asked to close its trading screen.
-    merchant_closing: bool,
     /// The block entities of chunks unloaded lately, by chunk, with the
     /// count of handled commands whose output carried their last changes
     /// (`u64::MAX` until it is sent): a chunk the client sends back before
@@ -88,8 +86,6 @@ pub struct MobResult {
     /// The acting player's inventory slots the action changed, with what
     /// they now hold.
     pub slots: Vec<(usize, Option<minecraftoss_player::inventory::ItemStack>)>,
-    /// A trading screen the action opened (`openTradingScreen`).
-    pub merchant: Option<MerchantView>,
     /// The action was a use, not a hit.
     pub used: bool,
     /// The mob took the action; a use it passed on goes on to use the item
@@ -99,49 +95,6 @@ pub struct MobResult {
     pub attack: Option<(u64, minecraftoss_entities::world::AttackResult)>,
     /// Entity events the action made (hearts).
     pub events: Vec<(u64, u8)>,
-}
-
-/// A player's trading screen as the client shows it: the villager's
-/// offers, profession, level and experience
-/// (`ClientboundMerchantOffersPacket`) and the menu's slots.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MerchantView {
-    pub villager: u64,
-    pub profession: &'static str,
-    pub level: i32,
-    pub xp: i32,
-    pub offers: Vec<minecraftoss_entities::trading::MerchantOffer>,
-    pub payment: [Option<minecraftoss_player::inventory::ItemStack>; 2],
-    pub result: Option<minecraftoss_player::inventory::ItemStack>,
-    pub future_xp: i32,
-    /// Items' maximum stack sizes the offers name, for the client's
-    /// prices.
-    pub max_stacks: Vec<(String, i32)>,
-}
-
-/// What the player does on the trading screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MerchantOp {
-    /// An offer picked in the list.
-    Select(i32),
-    /// A payment slot clicked (shift: moved back).
-    Payment { slot: usize, right: bool, shift: bool },
-    /// The result clicked (shift: traded as often as it goes).
-    Result { shift: bool },
-    Close,
-}
-
-/// A trading screen's new state after an operation, or its closing
-/// (`view` none), with the acting player's inventory slots it changed and
-/// the cursor.
-#[derive(Clone, Debug)]
-pub struct MerchantUpdate {
-    pub view: Option<MerchantView>,
-    pub slots: Vec<(usize, Option<minecraftoss_player::inventory::ItemStack>)>,
-    pub cursor: Option<minecraftoss_player::inventory::ItemStack>,
-    /// The server asks the client to close the screen (the villager went
-    /// away or stopped trading); the client answers with `Close`.
-    pub closing: bool,
 }
 
 /// An item entity on the server, as the client shows it. Components travel
@@ -236,7 +189,6 @@ impl ServerSim {
             dormant: Vec::new(),
             explosions: Vec::new(),
             take_xp_delay: 0,
-            merchant_closing: false,
             unloaded_block_entities: std::collections::HashMap::new(),
             menus: crate::menus::Menus::default(),
         }
@@ -269,8 +221,10 @@ impl ServerSim {
 
     /// A player's hit (`attack`, with what the player brings to it) or item
     /// use on a mob, with a copy of the player's inventory. Drops enter the
-    /// level as item entities.
-    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) -> MobResult {
+    /// level as item entities. Returns what the action did, and the menu
+    /// updates it made: a use that starts a villager trading opens its
+    /// trading screen.
+    pub fn mob_action(&mut self, hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, infinite: bool) -> (MobResult, Vec<crate::menus::MenuUpdate>) {
         let before = inventory.slots.clone();
         let mut actor = crate::mob_actions::Actor {
             inventory: &mut inventory,
@@ -300,76 +254,19 @@ impl ServerSim {
             .map(|(slot, (now, _))| (slot, now.clone()))
             .collect();
         self.spawn_trade_experience();
-        MobResult { sounds: outcome.sounds, slots, merchant: self.merchant_view(0), used, handled: outcome.handled, attack: outcome.attack, events: outcome.events }
-    }
-
-    /// The player's trading screen as the client shows it.
-    pub fn merchant_view(&mut self, player: u64) -> Option<MerchantView> {
-        let menu = self.mobs.merchant_menu(player)?.clone();
-        let offers = self.mobs.villager_offers(menu.villager).map(<[_]>::to_vec).unwrap_or_default();
-        let villager = self.mobs.villagers().iter().find(|e| e.id == menu.villager)?;
-        let mut max_stacks = Vec::new();
-        for offer in &offers {
-            for id in std::iter::once(&offer.buy.id).chain(offer.buy_b.as_ref().map(|b| &b.id)).chain(std::iter::once(&offer.sell.id)) {
-                if !max_stacks.iter().any(|(item, _): &(String, i32)| item == id) {
-                    max_stacks.push((id.clone(), self.mobs.item_max_stack(id)));
-                }
+        // `Villager.startTrading`'s `openTradingScreen`.
+        let mut menu = Vec::new();
+        if let minecraftoss_entities::world::MobHit::Villager(id) = hit {
+            if self.mobs.trading_villager(0) == Some(id) && !self.trades_with(id) {
+                let player = crate::menus::PlayerContext { selected, creative: infinite, ..crate::menus::PlayerContext::default() };
+                menu = self.open_merchant(id, &mut inventory, &player);
             }
         }
-        Some(MerchantView {
-            villager: menu.villager,
-            profession: villager.villager.profession.id(),
-            level: villager.villager.level,
-            xp: villager.villager.xp,
-            offers,
-            payment: menu.payment.clone(),
-            result: menu.result.clone(),
-            future_xp: menu.future_xp,
-            max_stacks,
-        })
-    }
-
-    /// An operation on the player's trading screen, with a copy of the
-    /// player's inventory (and the hotbar slot selected): the screen's new
-    /// state, the slots it changed and the cursor. Closing returns the
-    /// payments and the cursor to the inventory; what does not fit drops
-    /// at the player's feet.
-    pub fn merchant(&mut self, op: MerchantOp, mut inventory: minecraftoss_player::inventory::Inventory, selected: usize, feet: [f64; 3]) -> MerchantUpdate {
-        let before = inventory.slots.clone();
-        match op {
-            MerchantOp::Select(index) => self.mobs.merchant_select(0, index, &mut inventory),
-            MerchantOp::Payment { slot, right, shift } => self.mobs.merchant_click_payment(0, slot, right, shift, &mut inventory),
-            MerchantOp::Result { shift } => self.mobs.merchant_click_result(0, shift, &mut inventory),
-            MerchantOp::Close => {
-                for stack in self.mobs.merchant_close(0, &mut inventory, selected) {
-                    self.level.spawn_at_location(feet, crate::stacks::to_level(&stack));
-                }
-                self.merchant_closing = false;
-            }
-        }
-        self.spawn_trade_experience();
-        let slots = inventory.slots.iter().zip(&before).enumerate().filter(|(_, (now, was))| now != was).map(|(slot, (now, _))| (slot, now.clone())).collect();
-        MerchantUpdate { view: self.merchant_view(0), slots, cursor: inventory.cursor.clone(), closing: false }
-    }
-
-    /// `ServerPlayer.tick`'s `stillValid` check on an open trading screen:
-    /// once the villager is out of reach, dead or done trading, the client
-    /// is asked (once) to close it.
-    fn check_merchant(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) -> Option<MerchantUpdate> {
-        if self.merchant_closing || self.mobs.merchant_menu(0).is_none() {
-            return None;
-        }
-        let player = players.iter().find(|p| p.id == 0)?;
-        let eyes = player.position + glam::DVec3::Y * f64::from(player.eye_height);
-        if self.mobs.merchant_still_valid(0, eyes) {
-            return None;
-        }
-        self.merchant_closing = true;
-        Some(MerchantUpdate { view: None, slots: Vec::new(), cursor: None, closing: true })
+        (MobResult { sounds: outcome.sounds, slots, used, handled: outcome.handled, attack: outcome.attack, events: outcome.events }, menu)
     }
 
     /// The orbs trades dropped, each whole into the level.
-    fn spawn_trade_experience(&mut self) {
+    pub(crate) fn spawn_trade_experience(&mut self) {
         for (position, value) in self.mobs.take_trade_experience() {
             self.level.spawn_experience_orb(position.to_array(), value);
         }
@@ -992,7 +889,6 @@ pub enum Command {
     /// inventory.
     MobAction { hit: minecraftoss_entities::world::MobHit, attack: Option<minecraftoss_entities::world::PlayerAttack>, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, infinite: bool },
     /// An operation on the player's trading screen.
-    Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
     Tick(Box<TickInput>),
     /// Before the client saves: the entities are saved (the autosave), and
@@ -1073,8 +969,6 @@ pub struct Output {
     pub mobs: Option<Box<minecraftoss_entities::world::EntityWorld>>,
     /// What the player's mob actions did, in order.
     pub mob_results: Vec<MobResult>,
-    /// The trading screen's updates, in order.
-    pub merchant: Vec<MerchantUpdate>,
     /// The answers to the uses that carried the player, in order.
     pub use_results: Vec<crate::menus::UseResult>,
     /// Menu updates, in order: answers to uses and batches, and ticks'
@@ -1293,12 +1187,6 @@ impl ServerHandle {
         self.send(Command::LootTables { jar, seed });
     }
 
-    /// An operation on the player's trading screen, with a copy of the
-    /// player's inventory.
-    pub fn merchant(&mut self, op: MerchantOp, inventory: &minecraftoss_player::inventory::Inventory, selected: usize, feet: [f64; 3]) {
-        self.send(Command::Merchant { op, inventory: Box::new(inventory.clone()), selected, feet });
-    }
-
     /// Summons a still experience orb worth `value`.
     pub fn summon_orb(&mut self, position: [f64; 3], value: i32) {
         self.send(Command::SummonOrb { position, value });
@@ -1423,10 +1311,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }
                 Command::MobAction { hit, attack, inventory, selected, infinite } => {
-                    out.mob_results.push(sim.mob_action(hit, attack, *inventory, selected, infinite));
-                }
-                Command::Merchant { op, inventory, selected, feet } => {
-                    out.merchant.push(sim.merchant(op, *inventory, selected, feet));
+                    let (result, menu) = sim.mob_action(hit, attack, *inventory, selected, infinite);
+                    out.mob_results.push(result);
+                    out.menu.extend(menu);
                 }
                 Command::Flush => {
                     sim.ticks_since_save = 0;
@@ -1470,7 +1357,6 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.mobs.set_player_main_hand(0, held.as_deref());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
                     sim.spawn_trade_experience();
-                    out.merchant.extend(sim.check_merchant(&input.mob_players));
                     out.menu.extend(sim.menu_tick(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
                     out.player_splashes.extend(sim.mobs.take_player_splashes());
@@ -2002,18 +1888,26 @@ mod tests {
         assert!(gossip.iter().any(|g| g.0 == about), "gossip about the other villager");
     }
 
-    /// Using a farmer opens its trades; picking one moves the wheat in,
-    /// shift-clicking the result trades until the wheat runs short (levelling
-    /// the farmer up and dropping experience), and closing gives the rest
-    /// back.
+    /// Using a farmer opens its trading screen with its offers; picking a
+    /// trade moves the wheat in, taking the result pays for it (levelling
+    /// the farmer up, with its next level's offers, and dropping
+    /// experience), a shift-click trades until the wheat runs short, and
+    /// closing gives the rest back and ends the trading.
     #[test]
     fn players_trade_with_villagers() {
+        use crate::menus::{ContainerInput, MenuExtra, MenuInput, MenuKind, MenuUpdate, PlayerContext};
         use minecraftoss_player::inventory::{Inventory, ItemStack};
         let Ok(paths) = DataPaths::discover() else { return };
         let Ok(registries) = Registries::load(&paths) else { return };
-        let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar");
-        if !jar.exists() || registries.entities.is_none() {
+        let jar = [
+            std::env::var_os("MINECRAFTOSS_ROOT").map(|root| std::path::PathBuf::from(root).join("client.jar")),
+            Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../harness/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-1fad6b3808/26.3/minecraft-common-1fad6b3808-26.3.jar")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|jar| jar.exists());
+        let Some(jar) = jar else { return };
+        if registries.entities.is_none() {
             return;
         }
         let registries = Arc::new(registries);
@@ -2028,36 +1922,62 @@ mod tests {
         server.summon("minecraft:villager", [0.5, 100.0, 0.5], Some(&nbt), 0.0).unwrap();
         let id = server.mobs.villagers()[0].id;
         let mut inventory = Inventory::default();
-        let mut wheat = ItemStack::new("minecraft:wheat", 50);
-        wheat.max = 64;
-        inventory.slots[9] = Some(wheat);
-        let result = server.mob_action(minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false);
-        let view = result.merchant.expect("the trading screen opens");
-        assert_eq!((view.profession, view.level, view.offers.len()), ("minecraft:farmer", 1, 1));
-        let apply = |inventory: &mut Inventory, update: &MerchantUpdate| {
-            for (slot, stack) in &update.slots {
+        inventory.slots[9] = Some(ItemStack::new("minecraft:wheat", 50));
+        let (result, updates) = server.mob_action(minecraftoss_entities::world::MobHit::Villager(id), None, inventory.clone(), 0, false);
+        assert!(result.handled);
+        let [opened] = &updates[..] else { panic!("the trading screen opens: {updates:?}") };
+        let open = opened.open.clone().expect("a screen");
+        assert_eq!(open.kind, MenuKind::Merchant);
+        assert_eq!(open.title, serde_json::json!({ "translate": "entity.minecraft.villager.farmer" }));
+        let Some(MenuExtra::Merchant(offers)) = &opened.extra else { panic!("with its offers") };
+        assert_eq!((offers.level, offers.xp, offers.offers.len(), offers.show_progress, offers.can_restock), (1, 8, 1, true, true));
+        assert_eq!(server.mobs.villagers()[0].trading_player, Some(0));
+        // A batch with the player beside the villager, and its answer's
+        // player part written back.
+        let mut seq = 0;
+        let mut batch = |server: &mut ServerSim, inventory: &mut Inventory, inputs: &[MenuInput]| -> MenuUpdate {
+            seq += 1;
+            let player = PlayerContext { inventory: inventory.clone(), eye: [0.5, 101.62, 2.5], feet: [0.5, 100.0, 2.5], ..PlayerContext::default() };
+            let update = server.menu_batch(opened.id, seq, inputs, player);
+            for (slot, stack) in &update.player {
                 inventory.slots[*slot] = stack.clone();
             }
-            inventory.cursor = update.cursor.clone();
+            if let Some(cursor) = update.cursor.clone() {
+                inventory.cursor = cursor;
+            }
+            update
         };
-        let update = server.merchant(MerchantOp::Select(0), inventory.clone(), 0, [0.0; 3]);
-        apply(&mut inventory, &update);
-        let view = update.view.expect("still open");
-        assert_eq!(view.payment[0].as_ref().map(|s| s.count), Some(50), "the wheat moved in");
-        assert_eq!(view.result.as_ref().map(|s| s.id.as_str()), Some("minecraft:emerald"));
-        let update = server.merchant(MerchantOp::Result { shift: true }, inventory.clone(), 0, [0.0; 3]);
-        apply(&mut inventory, &update);
-        let view = update.view.expect("still open");
-        assert_eq!(view.payment[0].as_ref().map(|s| s.count), Some(10), "two trades of twenty");
-        assert_eq!(inventory.count("minecraft:emerald"), 2);
-        assert_eq!((view.level, view.xp), (2, 12), "the first trade levelled the farmer up");
-        assert!(view.offers.len() > 1, "with its next level's offers");
-        assert!(server.level.experience_total() > 0, "trades dropped experience");
-        let update = server.merchant(MerchantOp::Close, inventory.clone(), 0, [0.0; 3]);
-        apply(&mut inventory, &update);
-        assert!(update.view.is_none(), "closed");
+        let count = |update: &MenuUpdate, slot: usize| update.slots[slot].as_ref().map(|s| s.count);
+        let update = batch(&mut server, &mut inventory, &[MenuInput::SelectTrade(0)]);
+        assert_eq!(count(&update, 0), Some(50), "the wheat moved in");
+        assert!(inventory.slots[9].is_none());
+        assert_eq!(update.slots[2].as_ref().map(|s| s.id.as_str()), Some("minecraft:emerald"));
+        let update = batch(&mut server, &mut inventory, &[MenuInput::Click { slot: 2, button: 0, kind: ContainerInput::Pickup }]);
+        assert_eq!(inventory.cursor.as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:emerald", 1)));
+        assert_eq!(count(&update, 0), Some(30), "twenty paid");
+        let villager = &server.mobs.villagers()[0];
+        assert_eq!((villager.villager.level, villager.villager.xp), (2, 10), "the trade levelled the farmer up");
+        assert_eq!(villager.offers.as_ref().map(|o| o[0].uses), Some(1));
+        let Some(MenuExtra::Merchant(offers)) = &update.extra else { panic!("the offers again") };
+        assert_eq!((offers.level, offers.xp, offers.offers[0].uses), (2, 10, 1));
+        assert!(offers.offers.len() > 1, "with its next level's offers");
+        assert!(update.stats.iter().any(|(_, key, _)| key == "minecraft:traded_with_villager"));
+        assert!(server.level.experience_total() > 0, "the trade dropped experience");
+        // Shift-clicking trades once more: ten wheat are too few for a third.
+        let update = batch(&mut server, &mut inventory, &[MenuInput::Click { slot: 2, button: 0, kind: ContainerInput::QuickMove }]);
+        assert_eq!(count(&update, 0), Some(10));
+        assert!(update.slots[2].is_none());
+        assert_eq!(inventory.count("minecraft:emerald"), 2, "one in the inventory, one carried");
+        assert!(inventory.slots.iter().flatten().any(|s| s.id == "minecraft:emerald"));
+        let villager = &server.mobs.villagers()[0];
+        assert_eq!((villager.villager.xp, villager.offers.as_ref().map(|o| o[0].uses)), (12, Some(2)));
+        let update = batch(&mut server, &mut inventory, &[MenuInput::Close]);
+        assert!(update.closed);
         assert_eq!(inventory.count("minecraft:wheat"), 10, "the rest came back");
-        assert!(server.mobs.villagers()[0].trading_player.is_none());
+        assert!(inventory.cursor.is_none(), "and the carried emerald");
+        assert_eq!(inventory.count("minecraft:emerald"), 2);
+        assert!(server.mobs.villagers()[0].trading_player.is_none(), "the villager is done trading");
+        assert!(server.open_menu().is_none());
     }
 
     /// A villager claims the bed and bell placed near it by day, and sleeps
@@ -2530,7 +2450,7 @@ mod tests {
         let mut inventory = minecraftoss_player::inventory::Inventory::default();
         inventory.recipes = recipes;
         inventory.slots[0] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:wheat", 3));
-        let fed = server.mob_action(hit, None, inventory.clone(), 0, false);
+        let (fed, _) = server.mob_action(hit, None, inventory.clone(), 0, false);
         assert_eq!(fed.slots.len(), 1, "one wheat is used: {:?}", fed.slots);
         assert_eq!(fed.slots[0].1.as_ref().map(|s| s.count), Some(2));
         assert!(server.mobs.cow_mut(cow).unwrap().cow.in_love > 0, "the cow falls in love");
@@ -2551,7 +2471,7 @@ mod tests {
                 can_critical: false,
                 can_sweep: false,
             };
-            let result = server.mob_action(hit, Some(attack), inventory.clone(), 0, false);
+            let (result, _) = server.mob_action(hit, Some(attack), inventory.clone(), 0, false);
             sounds.extend(result.sounds.into_iter().map(|s| s.event).filter(|s| s.starts_with("entity.cow")));
             for _ in 0..11 {
                 server.tick_mobs(&[], true);

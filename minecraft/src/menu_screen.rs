@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use minecraft_terrain::menus::{
-    ContainerInput, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext,
+    ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, merchant,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
@@ -23,7 +23,7 @@ use minecraftoss_player::rng::LegacyRandom;
 use serde_json::Value;
 
 use super::{Game, Input, Key};
-use crate::gui::{Gui, MenuSlotView, MenuView, Screen, SlotDrag};
+use crate::gui::{Gui, MenuSlotView, MenuView, Screen, SlotDrag, TradeList};
 
 /// `MouseHandler.DOUBLE_CLICK_THRESHOLD_MS`.
 const DOUBLE_CLICK_MS: u128 = 250;
@@ -86,6 +86,10 @@ pub(super) struct ClientMenu {
     slots: Vec<Option<ItemStack>>,
     /// The data values as of the last update.
     data: Vec<i32>,
+    /// The kind's extra as of the last update that had one.
+    extra: Option<MenuExtra>,
+    /// The trading screen's list.
+    trades: TradeList,
     /// The inventory and carried stack as the screen shows them: the last
     /// answer's, with the inputs since.
     shown: Inventory,
@@ -127,6 +131,8 @@ impl ClientMenu {
             menu,
             slots: update.slots.clone(),
             data: update.data.clone(),
+            extra: update.extra.clone(),
+            trades: TradeList::default(),
             shown: game.entities.inventory.clone(),
             selected: game.entities.selected,
             creative: game.creative,
@@ -205,6 +211,9 @@ impl ClientMenu {
         }
         self.slots = update.slots;
         self.data = update.data;
+        if update.extra.is_some() {
+            self.extra = update.extra;
+        }
         self.predict(inventory);
         if update.closing {
             Updated::Closing
@@ -223,6 +232,9 @@ impl ClientMenu {
     /// has not answered yet.
     fn predict(&mut self, inventory: &Inventory) {
         self.menu.own_mut().load(self.slots.clone());
+        if let Some(extra) = &self.extra {
+            extra.sync(self.menu.as_mut());
+        }
         self.shown = inventory.clone();
         let pending: Vec<MenuInput> = self
             .in_flight
@@ -538,6 +550,8 @@ impl ClientMenu {
             tooltip,
             inventory: &self.shown,
             data: &self.data,
+            menu: self.menu.as_ref(),
+            trades: &self.trades,
         }
     }
 }
@@ -724,6 +738,15 @@ impl Game {
             return;
         };
         let (hovered, outside) = gui.menu_slot_at(menu.kind, menu.menu.slots());
+        // The trading screen's list: the wheel scrolls it, and a held
+        // scroller follows the mouse (`mouseScrolled`, `mouseDragged`).
+        let offers = merchant(menu.menu.as_ref()).map(|trader| trader.offers().offers.len());
+        let (mx, my) = gui.menu_mouse(menu.kind);
+        if let Some(offers) = offers {
+            menu.trades
+                .wheel(super::take_notches(&mut input.scroll), offers);
+            menu.trades.drag(my, offers);
+        }
         if menu.quick.button.is_some() {
             menu.drag_over(gui.mouse, hovered);
         } else {
@@ -731,8 +754,17 @@ impl Game {
         }
         for (button, pressed) in clicks {
             if pressed {
-                menu.press(button, hovered, outside, input.shift);
+                // Its buttons take a press before the slots: one picks its
+                // offer, and the payments are filled for it.
+                let taken = offers
+                    .and_then(|offers| menu.trades.press(mx, my, button == Mouse::Left, offers));
+                match taken {
+                    Some(Some(index)) => menu.send(MenuInput::SelectTrade(index)),
+                    Some(None) => {}
+                    None => menu.press(button, hovered, outside, input.shift),
+                }
             } else {
+                menu.trades.release();
                 menu.release(button, hovered, outside, input.shift);
             }
         }
@@ -756,7 +788,12 @@ impl Game {
     pub(super) fn menu_view(&self, gui: &Gui) -> Option<MenuView<'_>> {
         let menu = self.menu.as_ref().filter(|menu| !menu.closed)?;
         let (hovered, _) = gui.menu_slot_at(menu.kind, menu.menu.slots());
-        let title = crate::creative::text(gui.language(), &menu.title);
+        // A trader's name comes with its level.
+        let title = match merchant(menu.menu.as_ref()) {
+            Some(trader) => TradeList::title(&menu.title, trader.offers()),
+            None => menu.title.clone(),
+        };
+        let title = crate::creative::text(gui.language(), &title);
         Some(menu.view(title, hovered))
     }
 
@@ -779,9 +816,13 @@ mod tests {
 
     /// A chest's screen over an inventory, as an opening makes it.
     fn chest(own: Vec<Option<ItemStack>>, inventory: Inventory) -> ClientMenu {
-        let kind = MenuKind::Generic { rows: 3 };
         let mut own = own;
         own.resize(27, None);
+        screen(MenuKind::Generic { rows: 3 }, own, inventory)
+    }
+
+    /// A screen of a kind over an inventory.
+    fn screen(kind: MenuKind, own: Vec<Option<ItemStack>>, inventory: Inventory) -> ClientMenu {
         ClientMenu {
             id: 1,
             kind,
@@ -789,6 +830,8 @@ mod tests {
             menu: kind.menu(own.clone()),
             slots: own,
             data: Vec::new(),
+            extra: None,
+            trades: TradeList::default(),
             shown: inventory,
             selected: 0,
             creative: false,
@@ -1219,5 +1262,74 @@ mod tests {
         assert!(menu.item(0).is_none());
         assert_eq!(menu.item(1).map(|s| s.id.as_str()), Some("minecraft:dirt"));
         assert_eq!(menu.shown.cursor.as_ref().map(|s| s.count), Some(4));
+    }
+
+    #[test]
+    fn a_picked_trade_fills_the_payments_on_the_copies() {
+        use minecraftoss_entities::merchant::Offers;
+        use minecraftoss_entities::trading::{ItemCost, MerchantOffer, TradeItem};
+        let offer = MerchantOffer {
+            buy: ItemCost {
+                id: "minecraft:wheat".into(),
+                count: 20,
+                components: None,
+            },
+            buy_b: None,
+            sell: TradeItem {
+                id: "minecraft:emerald".into(),
+                count: 1,
+                components: Default::default(),
+            },
+            uses: 0,
+            max_uses: 16,
+            reward_exp: true,
+            special_price: 0,
+            demand: 0,
+            price_multiplier: 0.05,
+            xp: 2,
+        };
+        let offers = Offers {
+            offers: vec![offer],
+            level: 1,
+            show_progress: true,
+            can_restock: true,
+            ..Offers::default()
+        };
+        let mut inventory = Inventory::default();
+        inventory.slots[9] = Some(stack("minecraft:wheat", 25));
+        let mut menu = screen(MenuKind::Merchant, vec![None; 3], inventory.clone());
+        menu.extra = Some(MenuExtra::Merchant(offers.clone()));
+        menu.predict(&inventory);
+        // `postButtonClick`: the pick is worked out at once, and sent.
+        menu.send(MenuInput::SelectTrade(0));
+        assert_eq!(menu.queued, [MenuInput::SelectTrade(0)]);
+        assert_eq!(menu.item(0).map(|s| s.count), Some(25));
+        assert_eq!(
+            menu.item(2).map(|s| s.id.as_str()),
+            Some("minecraft:emerald")
+        );
+        assert!(menu.shown.slots[9].is_none());
+        let trader = merchant(menu.menu.as_ref()).expect("a trading menu");
+        assert_eq!(trader.future_xp(), 2);
+        // The server's answer: its offers come with its slots.
+        menu.in_flight = Some((1, std::mem::take(&mut menu.queued)));
+        let mut answered = inventory.clone();
+        answered.slots[9] = None;
+        let update = MenuUpdate {
+            id: 1,
+            ack: 1,
+            slots: vec![
+                Some(stack("minecraft:wheat", 25)),
+                None,
+                Some(stack("minecraft:emerald", 1)),
+            ],
+            extra: Some(MenuExtra::Merchant(Offers { xp: 9, ..offers })),
+            cursor: Some(None),
+            ..MenuUpdate::default()
+        };
+        assert_eq!(menu.update(update, &answered), Updated::Shown);
+        let trader = merchant(menu.menu.as_ref()).expect("a trading menu");
+        assert_eq!((trader.offers().xp, trader.future_xp()), (9, 2));
+        assert_eq!(menu.item(0).map(|s| s.count), Some(25));
     }
 }

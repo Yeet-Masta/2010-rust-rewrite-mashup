@@ -15,7 +15,7 @@ use crate::render::{Renderer, TextureId, UiList};
 
 #[path = "menu_gui.rs"]
 mod menu_gui;
-pub use menu_gui::{MenuSlotView, MenuView, SlotDrag};
+pub use menu_gui::{MenuSlotView, MenuView, SlotDrag, TradeList};
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
 /// item and its variants.
@@ -248,6 +248,53 @@ const SPRITES: &[(&str, &str, f32)] = &[
     (
         "smoker_burn_progress",
         "gui/sprites/container/smoker/burn_progress",
+        0.0,
+    ),
+    // The trading screen (`MerchantScreen`).
+    ("villager", "gui/container/villager", 0.0),
+    (
+        "villager_out_of_stock",
+        "gui/sprites/container/villager/out_of_stock",
+        0.0,
+    ),
+    (
+        "villager_experience_bar_background",
+        "gui/sprites/container/villager/experience_bar_background",
+        0.0,
+    ),
+    (
+        "villager_experience_bar_current",
+        "gui/sprites/container/villager/experience_bar_current",
+        0.0,
+    ),
+    (
+        "villager_experience_bar_result",
+        "gui/sprites/container/villager/experience_bar_result",
+        0.0,
+    ),
+    (
+        "villager_scroller",
+        "gui/sprites/container/villager/scroller",
+        0.0,
+    ),
+    (
+        "villager_scroller_disabled",
+        "gui/sprites/container/villager/scroller_disabled",
+        0.0,
+    ),
+    (
+        "villager_trade_arrow",
+        "gui/sprites/container/villager/trade_arrow",
+        0.0,
+    ),
+    (
+        "villager_trade_arrow_out_of_stock",
+        "gui/sprites/container/villager/trade_arrow_out_of_stock",
+        0.0,
+    ),
+    (
+        "villager_discount_strikethrough",
+        "gui/sprites/container/villager/discount_strikethrough",
         0.0,
     ),
 ];
@@ -668,16 +715,22 @@ impl Gui {
         let own = stack.count.to_string();
         let count = count.or_else(|| (stack.count != 1).then_some((own.as_str(), WHITE)));
         if let Some((count, colour)) = count {
-            let width = self.font.width(count);
-            self.text(
-                ui,
-                count,
-                x + 19.0 - 2.0 - width,
-                y + 6.0 + 3.0,
-                colour,
-                true,
-            );
+            self.item_count(ui, count, x, y, colour);
         }
+    }
+
+    /// `itemDecorations`' count for an item at (x, y), right-aligned on its
+    /// corner.
+    fn item_count(&self, ui: &mut UiList, count: &str, x: f32, y: f32, colour: [f32; 4]) {
+        let width = self.font.width(count);
+        self.text(
+            ui,
+            count,
+            x + 19.0 - 2.0 - width,
+            y + 6.0 + 3.0,
+            colour,
+            true,
+        );
     }
 
     /// The in-game HUD.
