@@ -258,11 +258,11 @@ impl ClientMenu {
             return;
         }
         let size = self.quick.slots.len();
-        let place = menu::quick_craft_place_count(size, self.quick.kind, &carried);
         let mut remainder = i32::from(carried.count);
         for index in self.quick.slots.clone() {
             let carry = self.item(index).map_or(0, |stack| i32::from(stack.count));
             let max = i32::from(carried.max).min(self.max_stack(index, &carried));
+            let place = menu::quick_craft_place_count(size, self.quick.kind, &carried);
             remainder -= (place + carry).min(max) - carry;
         }
         self.quick.remainder = remainder;
@@ -281,27 +281,29 @@ impl ClientMenu {
         }
     }
 
-    /// `extractSlot`'s check as it draws: a slot of the drag that can no
-    /// longer take the carried stack leaves it.
+    /// `extractSlot`'s check as it draws the slots in menu order: a slot of
+    /// the drag that can no longer take the carried stack leaves it, until
+    /// one is left, which stays whatever it holds (and is not drawn).
     fn prune_drag(&mut self) {
         let Some(carried) = self.shown.cursor.clone() else {
             return;
         };
-        if self.quick.button.is_none() || self.quick.slots.len() < 2 {
+        if self.quick.button.is_none() {
             return;
         }
-        let slots = self.quick.slots.clone();
-        let kept: Vec<usize> = slots
-            .iter()
-            .copied()
-            .filter(|&index| {
-                menu::can_item_quick_replace(self.item(index), &carried, true)
-                    && self.menu.can_drag_to(index)
-            })
-            .collect();
-        if kept != slots {
-            self.quick.slots = kept;
-            self.recalculate_remainder();
+        for index in 0..self.menu.slots().len() {
+            if self.quick.slots.len() <= 1 {
+                return;
+            }
+            let Some(at) = self.quick.slots.iter().position(|&slot| slot == index) else {
+                continue;
+            };
+            if !menu::can_item_quick_replace(self.item(index), &carried, true)
+                || !self.menu.can_drag_to(index)
+            {
+                self.quick.slots.remove(at);
+                self.recalculate_remainder();
+            }
         }
     }
 
@@ -858,6 +860,46 @@ mod tests {
         );
         assert_eq!(menu.item(1).map(|s| s.count), Some(64));
         assert_eq!(menu.shown.cursor.as_ref().map(|s| s.count), Some(2));
+    }
+
+    #[test]
+    fn a_drag_whose_slots_all_fill_keeps_its_last_slot() {
+        // Two hoppers fill both dragged slots with other items in one tick:
+        // the drag loses them one at a time in menu order down to the last
+        // (`extractSlot`), and the release still sends it, which places
+        // nothing.
+        let mut inventory = Inventory::default();
+        inventory.cursor = Some(stack("minecraft:stone", 10));
+        for button in [Mouse::Left, Mouse::Right] {
+            let mut menu = chest(Vec::new(), inventory.clone());
+            menu.skip_next_release = false;
+            menu.press(button, Some(0), false, false);
+            menu.drag_over((1.0, 0.0), Some(0));
+            menu.drag_over((2.0, 0.0), Some(1));
+            let mut slots = vec![
+                Some(stack("minecraft:dirt", 1)),
+                Some(stack("minecraft:sand", 1)),
+            ];
+            slots.resize(27, None);
+            menu.slots = slots;
+            menu.predict(&inventory);
+            menu.prune_drag();
+            assert_eq!(menu.quick.slots, [1]);
+            let view = menu.view(String::new(), None);
+            assert_eq!(view.slots[1].drag, SlotDrag::Hidden);
+            assert_eq!(view.carried.as_ref().map(|s| s.count), Some(10));
+            menu.release(button, Some(1), false, false);
+            assert_eq!(
+                menu.queued,
+                [MenuInput::Drag {
+                    button: button.button(),
+                    slots: vec![1]
+                }]
+            );
+            assert_eq!(menu.shown.cursor.as_ref().map(|s| s.count), Some(10));
+            assert_eq!(menu.item(0).map(|s| s.id.as_str()), Some("minecraft:dirt"));
+            assert_eq!(menu.item(1).map(|s| s.id.as_str()), Some("minecraft:sand"));
+        }
     }
 
     #[test]

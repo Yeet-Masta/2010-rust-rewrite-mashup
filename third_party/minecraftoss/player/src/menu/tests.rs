@@ -1101,6 +1101,17 @@ fn a_drag_respects_each_slot_and_what_it_takes() {
     assert_eq!(cx.inventory.cursor, None);
 }
 
+#[test]
+fn the_place_count_is_floored_float_division() {
+    // `Mth.floor((float)count / size)`: shares round down, and a share of
+    // no slots is as many as an int holds (a float infinity), not a crash.
+    assert_eq!(quick_craft_place_count(3, 0, &st("stone", 10)), 3);
+    assert_eq!(quick_craft_place_count(0, 0, &st("stone", 10)), i32::MAX);
+    assert_eq!(quick_craft_place_count(0, 0, &st("stone", 0)), 0);
+    assert_eq!(quick_craft_place_count(0, 1, &st("stone", 10)), 1);
+    assert_eq!(quick_craft_place_count(0, 2, &st("stone", 10)), 64);
+}
+
 // PICKUP_ALL.
 
 #[test]

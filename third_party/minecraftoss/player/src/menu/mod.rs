@@ -788,10 +788,11 @@ fn quick_craft_accepts<M: Menu + ?Sized>(
 }
 
 /// `AbstractContainerMenu.getQuickCraftPlaceCount`: what a drag puts in each
-/// of `size` slots (the screen's preview shows the same).
+/// of `size` slots (the screen's preview shows the same). The share is
+/// floored float division, as vanilla's, so no `size` divides by zero.
 pub fn quick_craft_place_count(size: usize, kind: i32, stack: &ItemStack) -> i32 {
     match kind {
-        0 => i32::from(stack.count) / size as i32,
+        0 => (f32::from(stack.count) / size as f32).floor() as i32,
         1 => 1,
         2 => i32::from(stack.max),
         _ => i32::from(stack.count),
