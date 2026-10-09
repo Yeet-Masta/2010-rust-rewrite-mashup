@@ -20,8 +20,30 @@ pub enum PlayerEdit {
     Break,
 }
 
+/// Who made a player's edit, for what the level does with it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditBy {
+    /// The stack the block was placed from (`BlockItem.place`): a
+    /// container takes its components (`updateBlockEntityComponents`).
+    Placing(minecraftoss_player::inventory::ItemStack),
+    /// The player who broke the block (`ServerPlayerGameMode.destroyBlock`).
+    Breaking(Breaker),
+}
+
+/// A player breaking a block, as its drops read it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Breaker {
+    /// The stack in hand (`getMainHandItem`), for the loot's tool tests.
+    pub tool: Option<minecraftoss_player::inventory::ItemStack>,
+    /// `hasCorrectToolForDrops`: the block drops its loot.
+    pub harvests: bool,
+    /// `preventsBlockDrops` (creative): no loot, but a shulker box that
+    /// holds something drops itself (`ShulkerBoxBlock.playerWillDestroy`).
+    pub creative: bool,
+}
+
 pub struct ServerSim {
-    level: Level<'static>,
+    pub(crate) level: Level<'static>,
     states: Arc<BlockStates>,
     /// Mobs, ticked after the level each tick.
     mobs: minecraftoss_entities::world::EntityWorld,
@@ -39,7 +61,7 @@ pub struct ServerSim {
     shearing_loot: Option<minecraftoss_entities::loot::ShearingLootBook>,
     /// Spawned or loaded mobs the entity world does not simulate yet, each
     /// with its riders, and the tag that saves them unchanged.
-    dormant: Vec<(Vec<CensusMob>, minecraftoss_core::nbt::Tag)>,
+    pub(crate) dormant: Vec<(Vec<CensusMob>, minecraftoss_core::nbt::Tag)>,
     /// Creeper blasts since the client last heard of them.
     explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// The player's `takeXpDelay`: ticks until it can take another orb.
@@ -52,6 +74,8 @@ pub struct ServerSim {
     /// it has applied that output comes with stale block entities, and
     /// takes these instead.
     unloaded_block_entities: std::collections::HashMap<ChunkPos, (u64, BlockEntityMap)>,
+    /// The player's open menu, its ender inventory and container counter.
+    pub(crate) menus: crate::menus::Menus,
 }
 
 /// A chunk's block entities by position, as saved.
@@ -214,6 +238,7 @@ impl ServerSim {
             take_xp_delay: 0,
             merchant_closing: false,
             unloaded_block_entities: std::collections::HashMap::new(),
+            menus: crate::menus::Menus::default(),
         }
     }
 
@@ -678,6 +703,22 @@ impl ServerSim {
         self.level.take_block_entity_changes()
     }
 
+    /// The block events the clients hear of since the last call, for the
+    /// players within 64 blocks (`PlayerList.broadcast`).
+    pub fn take_block_events(&mut self) -> Vec<BlockEventView> {
+        let players = self.level.players.clone();
+        let events = self.level.take_sent_block_events();
+        let blocks = &self.level.registries().blocks;
+        events
+            .into_iter()
+            .filter(|e| {
+                let at = [f64::from(e.pos.x) + 0.5, f64::from(e.pos.y) + 0.5, f64::from(e.pos.z) + 0.5];
+                players.iter().any(|p| (0..3).map(|a| (p[a] - at[a]).powi(2)).sum::<f64>() < 64.0 * 64.0)
+            })
+            .map(|e| BlockEventView { pos: (e.pos.x, e.pos.y, e.pos.z), block: blocks.block(e.block).name.to_string(), a: e.a, b: e.b })
+            .collect()
+    }
+
     /// The output carrying the changes taken so far is sent, `handled`
     /// commands in.
     fn block_entities_sent(&mut self, handled: u64) {
@@ -701,6 +742,41 @@ impl ServerSim {
     /// Applies a player's edit that the client scene already shows.
     pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         self.player_edit_block(pos, Scene::block(scene, pos), edit);
+    }
+
+    /// A player's edit to `block` (`None` for air) at a position, with who
+    /// made it: a container placed from a stack takes its components, and
+    /// a container broken drops what its loot makes of its block entity (a
+    /// shulker box itself, with what it holds and its name).
+    pub fn player_edit_block_by(&mut self, pos: BlockPos, block: Option<&Block>, edit: PlayerEdit, by: Option<&EditBy>) {
+        let at = minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2);
+        let old = self.level.block(at);
+        match by {
+            Some(EditBy::Breaking(breaker)) if edit == PlayerEdit::Break => {
+                // `destroyBlock`: `playerWillDestroy`, the block's removal,
+                // then `playerDestroy`'s drops, with the block entity as it
+                // was.
+                let entity = self.level.container_components(at);
+                self.level.player_will_destroy(at, breaker.creative);
+                self.player_edit_block(pos, block, edit);
+                let removed = self.level.block(at) != old;
+                if removed && !breaker.creative && breaker.harvests && self.level.store_of(old).is_some() {
+                    let tool = breaker.tool.as_ref().map_or_else(crate::stacks::LevelStack::empty, crate::stacks::to_level);
+                    self.level.player_destroy_drops(old, at, tool, entity);
+                }
+            }
+            Some(EditBy::Placing(stack)) if edit == PlayerEdit::Place => {
+                self.player_edit_block(pos, block, edit);
+                // `BlockItem.place`: the block placed is the item's.
+                let blocks = &self.level.registries().blocks;
+                let placed = self.level.block(at);
+                if blocks.block_by_name(&stack.id) == Some(blocks.block_of(placed)) {
+                    let components = stack.components.as_ref().and_then(crate::stacks::components_tag);
+                    self.level.apply_container_components(at, components.as_ref());
+                }
+            }
+            _ => self.player_edit_block(pos, block, edit),
+        }
     }
 
     /// A player's edit to `block` (`None` for air) at a position.
@@ -887,9 +963,17 @@ pub enum Command {
     /// of the outputs up to `applied` handled commands.
     LoadChunk { chunk: Arc<Chunk>, applied: u64 },
     UnloadChunk(ChunkPos),
-    /// A block the client set, as the client scene now shows it.
-    PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
-    UseBlock { pos: BlockPos, facing: &'static str },
+    /// A block the client set, as the client scene now shows it, and who
+    /// set it.
+    PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit, by: Option<EditBy> },
+    /// A use of a block; with the player, it may open a menu, and is
+    /// answered in `Output.use_results`.
+    UseBlock { pos: BlockPos, facing: &'static str, player: Option<Box<crate::menus::PlayerContext>> },
+    /// A batch of inputs on the open menu `id`, the `seq`-th (counting from
+    /// 1), with the player as it was when sent.
+    Menu { id: u8, seq: u32, inputs: Vec<crate::menus::MenuInput>, player: Box<crate::menus::PlayerContext> },
+    /// The player's ender inventory as saved, at world load.
+    SetEnderItems(Vec<Option<minecraftoss_player::inventory::ItemStack>>),
     BoneMeal { pos: BlockPos, face: &'static str },
     Attack(BlockPos),
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
@@ -960,6 +1044,17 @@ pub struct MovingBlockView {
     pub progress: f32,
 }
 
+/// A block event the client hears of: event `a` with value `b` for the
+/// block (by id) at a position. Chests, ender chests and shulker boxes use
+/// event 1 for their openers' count: a lid is open above 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockEventView {
+    pub pos: BlockPos,
+    pub block: String,
+    pub a: i32,
+    pub b: i32,
+}
+
 /// What the server thread sends back after handling commands.
 #[derive(Default)]
 pub struct Output {
@@ -978,6 +1073,16 @@ pub struct Output {
     pub mob_results: Vec<MobResult>,
     /// The trading screen's updates, in order.
     pub merchant: Vec<MerchantUpdate>,
+    /// The answers to the uses that carried the player, in order.
+    pub use_results: Vec<crate::menus::UseResult>,
+    /// Menu updates, in order: answers to uses and batches, and ticks'
+    /// changes (their `ack` never goes down).
+    pub menu: Vec<crate::menus::MenuUpdate>,
+    /// Sounds the level played (containers opening and closing), in order.
+    pub sounds: Vec<minecraftoss_world::level::openers::LevelSound>,
+    /// Block events for the clients within 64 blocks
+    /// (`ClientboundBlockEventPacket`): the containers' lids.
+    pub block_events: Vec<BlockEventView>,
     /// Mobs' hits on the players, in order.
     pub player_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     /// Splash potions that broke near players, in order.
@@ -1010,9 +1115,13 @@ pub struct ServerHandle {
     commands: Option<std::sync::mpsc::Sender<Command>>,
     outputs: std::sync::mpsc::Receiver<Output>,
     states: Arc<BlockStates>,
-    /// Per block state: whether the level acts on a use or an attack.
+    /// Per block state: whether the level acts on a use or an attack,
+    /// whether a use opens a menu, and whether the server makes the drops
+    /// when a player breaks it.
     uses: Arc<Vec<bool>>,
     attacks: Arc<Vec<bool>>,
+    menus: Arc<Vec<bool>>,
+    server_drops: Arc<Vec<bool>>,
     sent: u64,
     /// The commands handled as of the last output polled: the caller
     /// applies each polled output's block entities to its chunks before it
@@ -1029,13 +1138,27 @@ impl ServerHandle {
         let count = sim.level.registries().blocks.state_count();
         let uses: Vec<bool> = (0..count).map(|i| sim.level.handles_use(BlockStateId(i as u16))).collect();
         let attacks: Vec<bool> = (0..count).map(|i| sim.level.handles_attack(BlockStateId(i as u16))).collect();
+        let menus: Vec<bool> = (0..count).map(|i| sim.opens_menu(BlockStateId(i as u16))).collect();
+        let server_drops: Vec<bool> = (0..count).map(|i| sim.level.store_of(BlockStateId(i as u16)).is_some()).collect();
         let (commands, receiver) = std::sync::mpsc::channel::<Command>();
         let (sender, outputs) = std::sync::mpsc::channel::<Output>();
         let thread = std::thread::Builder::new()
             .name("Server thread".into())
             .spawn(move || server_loop(sim, receiver, sender))
             .expect("server thread starts");
-        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, applied: 0, waited: Vec::new(), thread: Some(thread) }
+        Self {
+            commands: Some(commands),
+            outputs,
+            states,
+            uses: Arc::new(uses),
+            attacks: Arc::new(attacks),
+            menus: Arc::new(menus),
+            server_drops: Arc::new(server_drops),
+            sent: 0,
+            applied: 0,
+            waited: Vec::new(),
+            thread: Some(thread),
+        }
     }
 
     fn send(&mut self, command: Command) {
@@ -1066,7 +1189,26 @@ impl ServerHandle {
 
     pub fn player_edit(&mut self, scene: &HandcraftedScene, pos: BlockPos, edit: PlayerEdit) {
         let block = Scene::block(scene, pos).cloned();
-        self.send(Command::PlayerEdit { pos, block, edit });
+        self.send(Command::PlayerEdit { pos, block, edit, by: None });
+    }
+
+    /// A block the player placed from `stack` (`BlockItem.place`), as the
+    /// scene now shows it: a container placed takes the stack's components
+    /// (a shulker box's contents, a custom name).
+    pub fn player_place(&mut self, scene: &HandcraftedScene, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) {
+        let block = Scene::block(scene, pos).cloned();
+        self.send(Command::PlayerEdit { pos, block, edit: PlayerEdit::Place, by: Some(EditBy::Placing(stack.clone())) });
+    }
+
+    /// The block `broken` the player broke at `pos`, as the scene now shows
+    /// the position. True when the server makes the block's drops (the
+    /// containers, whose loot reads their block entity): the client then
+    /// drops none of its own.
+    pub fn player_break(&mut self, scene: &HandcraftedScene, pos: BlockPos, broken: &Block, breaker: Breaker) -> bool {
+        let block = Scene::block(scene, pos).cloned();
+        let server_drops = self.states.state_of(broken).is_some_and(|s| self.server_drops.get(usize::from(s.0)).copied().unwrap_or(false));
+        self.send(Command::PlayerEdit { pos, block, edit: PlayerEdit::Break, by: Some(EditBy::Breaking(breaker)) });
+        server_drops
     }
 
     fn state_in(&self, scene: &HandcraftedScene, pos: BlockPos) -> Option<BlockStateId> {
@@ -1078,9 +1220,35 @@ impl ServerHandle {
     pub fn use_block(&mut self, scene: &HandcraftedScene, pos: BlockPos, facing: &'static str) -> bool {
         let handled = self.state_in(scene, pos).is_some_and(|s| self.uses.get(usize::from(s.0)).copied().unwrap_or(false));
         if handled {
-            self.send(Command::UseBlock { pos, facing });
+            self.send(Command::UseBlock { pos, facing, player: None });
         }
         handled
+    }
+
+    /// Whether using the block the scene shows at `pos` opens a menu (a
+    /// chest, a barrel, a hopper...): the client then sends the use with
+    /// the player ([`Self::use_block_with`]), swings, and places nothing.
+    pub fn opens_menu(&self, scene: &HandcraftedScene, pos: BlockPos) -> bool {
+        self.state_in(scene, pos).is_some_and(|s| self.menus.get(usize::from(s.0)).copied().unwrap_or(false))
+    }
+
+    /// A use of the block at `pos` with the player: it opens the block's
+    /// menu if its rules allow. Always answered, in `Output.use_results`,
+    /// with the opening (and the closing of a menu open before) in
+    /// `Output.menu`.
+    pub fn use_block_with(&mut self, pos: BlockPos, facing: &'static str, player: crate::menus::PlayerContext) {
+        self.send(Command::UseBlock { pos, facing, player: Some(Box::new(player)) });
+    }
+
+    /// A batch of inputs on the open menu `id` (its `seq`, from 1), with the
+    /// player as it is now; answered in `Output.menu`.
+    pub fn menu(&mut self, id: u8, seq: u32, inputs: Vec<crate::menus::MenuInput>, player: crate::menus::PlayerContext) {
+        self.send(Command::Menu { id, seq, inputs, player: Box::new(player) });
+    }
+
+    /// The player's ender inventory as saved, at world load.
+    pub fn set_ender_items(&mut self, items: Vec<Option<minecraftoss_player::inventory::ItemStack>>) {
+        self.send(Command::SetEnderItems(items));
     }
 
     /// Bone meal on a clicked face; whether it was used arrives in an output.
@@ -1214,10 +1382,17 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.load_chunk(&chunk);
                 }
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
-                Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
-                Command::UseBlock { pos, facing } => {
+                Command::PlayerEdit { pos, block, edit, by } => sim.player_edit_block_by(pos, block.as_ref(), edit, by.as_ref()),
+                Command::UseBlock { pos, facing, player: Some(player) } => {
+                    let (result, updates) = sim.use_block_with(pos, facing, *player);
+                    out.use_results.push(result);
+                    out.menu.extend(updates);
+                }
+                Command::UseBlock { pos, facing, player: None } => {
                     sim.use_block(pos, facing);
                 }
+                Command::Menu { id, seq, inputs, player } => out.menu.push(sim.menu_batch(id, seq, &inputs, *player)),
+                Command::SetEnderItems(items) => sim.set_ender_items(items),
                 Command::BoneMeal { pos, face } => {
                     if sim.bone_meal(pos, face) {
                         out.bone_meal_used.push(pos);
@@ -1263,6 +1438,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         natural.spawn_mobs = input.spawn_mobs;
                     }
                     sim.prepare_spawning(&input.mob_players);
+                    sim.prepare_menus(&input.mob_players);
                     sim.tick();
                     out.moving_blocks = Some(sim.moving_blocks());
                     let mobs_started = std::time::Instant::now();
@@ -1283,6 +1459,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
                     sim.spawn_trade_experience();
                     out.merchant.extend(sim.check_merchant(&input.mob_players));
+                    out.menu.extend(sim.menu_tick(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());
                     out.player_splashes.extend(sim.mobs.take_player_splashes());
                     out.potion_breaks.extend(sim.mobs.take_potion_breaks());
@@ -1315,6 +1492,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         }
         out.changes = sim.take_changes();
         out.block_entities = sim.take_block_entity_changes();
+        out.sounds = sim.level.take_sounds();
+        out.block_events = sim.take_block_events();
         sim.block_entities_sent(handled);
         out.handled = handled;
         if outputs.send(out).is_err() {

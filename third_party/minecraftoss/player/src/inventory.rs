@@ -190,6 +190,11 @@ impl Inventory {
             .collect()
     }
 
+    /// The recipes unlocked so far, in the order they were.
+    pub fn unlock_sequence(&self) -> &[String] {
+        &self.unlock_sequence
+    }
+
     pub fn recipe_display_order(&self, id: &str) -> Option<(usize, usize)> {
         self.recipe_display_order_map().get(id).copied()
     }

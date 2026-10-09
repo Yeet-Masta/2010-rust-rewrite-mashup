@@ -57,6 +57,8 @@ pub enum Kind {
     /// Other simulated item containers (chests, barrels, shulker boxes,
     /// dispensers and droppers).
     Container,
+    /// `TrappedChestBlock`: a container whose openers are its signal.
+    TrappedChest,
     /// `DispenserBlock` and `DropperBlock`.
     Dispenser { dropper: bool },
     /// `CopperBulbBlock`.
@@ -102,6 +104,7 @@ impl Kinds {
             ("DetectorRailBlock", Kind::Rail { straight: true, powered: false }),
             ("RailBlock", Kind::Rail { straight: false, powered: false }),
             ("HopperBlock", Kind::Hopper),
+            ("TrappedChestBlock", Kind::TrappedChest),
             ("ChestBlock", Kind::Container),
             ("BarrelBlock", Kind::Container),
             ("ShulkerBoxBlock", Kind::Container),
@@ -290,6 +293,8 @@ impl Level<'_> {
             Some(Kind::RedstoneBlock) => 15,
             Some(Kind::DaylightDetector) => self.int_prop(state, "power"),
             Some(Kind::PressurePlate) => self.plate_signal(state),
+            // `TrappedChestBlock.ownSignal`: its openers, up to 15.
+            Some(Kind::TrappedChest) => self.opener_count(pos).clamp(0, 15),
             _ => 0,
         }
     }
@@ -369,6 +374,14 @@ impl Level<'_> {
             Some(Kind::PressurePlate) => {
                 if direction == Direction::Up {
                     self.plate_signal(state)
+                } else {
+                    0
+                }
+            }
+            // `TrappedChestBlock.getDirectSignal`: the block below.
+            Some(Kind::TrappedChest) => {
+                if direction == Direction::Up {
+                    self.state_signal(state, pos, direction)
                 } else {
                     0
                 }
@@ -610,7 +623,7 @@ impl Level<'_> {
                 self.update_neighbors_at(pos.below(), block);
             }
             // `Containers.updateNeighboursAfterDestroy`.
-            Kind::Hopper | Kind::Container | Kind::Dispenser { .. } => self.update_neighbour_for_output_signal(pos, block),
+            Kind::Hopper | Kind::Container | Kind::TrappedChest | Kind::Dispenser { .. } => self.update_neighbour_for_output_signal(pos, block),
             Kind::Observer => {
                 if self.flag(state, "powered") && self.has_block_tick_at(pos, block) {
                     let off = self.with_bool(state, "powered", false);

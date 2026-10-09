@@ -1380,8 +1380,13 @@ impl Game {
             .map(|(pos, block)| (*pos, Some(block.clone())))
             .collect();
         self.world.set_blocks(&changes);
-        for (pos, _) in &placed.blocks {
-            self.entities.edited(&self.world.scene, *pos, true);
+        for (i, (pos, _)) in placed.blocks.iter().enumerate() {
+            // The block the item places takes its components.
+            if i == 0 {
+                self.entities.placed(&self.world.scene, *pos, stack);
+            } else {
+                self.entities.edited(&self.world.scene, *pos, true);
+            }
         }
         let (pos, block) = &placed.blocks[0];
         if let Some(kind) = self.world.scene.sound_type(block) {
@@ -1454,8 +1459,21 @@ impl Game {
                     .is_some_and(|b| b.id == broken.block.id)
         });
         self.world.set_blocks(&gone);
+        let selected = self.entities.selected;
+        let breaker = minecraft_terrain::server::Breaker {
+            tool: self.entities.inventory.slots[selected].clone(),
+            harvests: broken.harvests,
+            creative: self.creative,
+        };
+        let mut server_drops = false;
         for (at, _) in &gone {
-            self.entities.edited(&self.world.scene, *at, false);
+            if *at == pos {
+                server_drops =
+                    self.entities
+                        .broke(&self.world.scene, pos, &broken.block, breaker.clone());
+            } else {
+                self.entities.edited(&self.world.scene, *at, false);
+            }
         }
         if let Some(kind) = self.world.scene.sound_type(&broken.block) {
             self.play(
@@ -1468,7 +1486,9 @@ impl Game {
         if self.creative {
             return;
         }
-        self.entities.drop_loot(pos, broken.drops);
+        if !server_drops {
+            self.entities.drop_loot(pos, broken.drops);
+        }
         self.player.survival.food.add_exhaustion(0.005);
         let selected = self.entities.selected;
         let tool = self.entities.inventory.slots[selected]

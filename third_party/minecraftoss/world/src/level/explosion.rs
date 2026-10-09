@@ -290,6 +290,7 @@ impl Level<'_> {
                 tool: Some(Stack::empty()),
                 this_entity: ex.source.is_some(),
                 explosion_radius: (ex.interaction == BlockInteraction::DestroyWithDecay).then_some(ex.radius),
+                block_entity: self.container_components(pos),
                 ..LootParams::default()
             };
             // `spawnAfterBreak` without the player experience hack: no draws.

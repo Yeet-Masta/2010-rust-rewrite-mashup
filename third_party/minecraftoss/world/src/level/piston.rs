@@ -386,23 +386,27 @@ impl Level<'_> {
         }
     }
 
-    /// `ServerLevel.runBlockEvents`.
+    /// `ServerLevel.runBlockEvents`: the events whose `triggerEvent` says
+    /// so are kept for the clients.
     pub(super) fn run_block_events(&mut self) {
         while let Some(event) = self.block_events.pop_front() {
             let state = self.block(event.pos);
-            if self.block_id(state) == event.block {
-                self.trigger_event(state, event.pos, event.a, event.b);
+            if self.block_id(state) == event.block && self.trigger_event(state, event.pos, event.a, event.b) {
+                self.sent_block_events.push(super::openers::SentBlockEvent { pos: event.pos, block: event.block, a: event.a, b: event.b });
             }
         }
     }
 
-    /// `BlockBehaviour.triggerEvent`.
-    fn trigger_event(&mut self, state: BlockStateId, pos: BlockPos, a: i32, b: i32) {
+    /// `BlockBehaviour.triggerEvent`: whether the clients hear of it. Only
+    /// the containers' lids are sent so far; the clients draw pistons from
+    /// the moving blocks.
+    fn trigger_event(&mut self, state: BlockStateId, pos: BlockPos, a: i32, b: i32) -> bool {
         match self.redstone_kind(state) {
             Some(Kind::Piston { sticky }) => self.piston_trigger_event(state, pos, a, b, sticky),
             Some(Kind::NoteBlock) => self.note_block_event(state),
-            _ => {}
+            _ => return self.container_trigger_event(state, pos, a, b),
         }
+        false
     }
 
     /// `PistonBaseBlock.triggerEvent`.
@@ -641,6 +645,8 @@ impl Level<'_> {
                     self.hopper_tick(pos);
                 } else if self.redstone_kind(state) == Some(Kind::DaylightDetector) {
                     self.daylight_tick(pos);
+                } else if self.is_a(state, "ShulkerBoxBlock") {
+                    self.shulker_tick(pos);
                 }
             }
             i += 1;

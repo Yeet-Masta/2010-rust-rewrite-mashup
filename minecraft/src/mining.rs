@@ -175,6 +175,8 @@ pub struct Broken {
     pub pos: BlockPos,
     pub block: Block,
     pub hardness: f32,
+    /// The held item could harvest it (`hasCorrectToolForDrops`).
+    pub harvests: bool,
     pub drops: Vec<ItemStack>,
 }
 
@@ -279,6 +281,7 @@ impl Mining {
                     pos,
                     block,
                     hardness: dig.hardness,
+                    harvests: dig.harvests,
                     drops: Vec::new(),
                 }),
                 hit: None,
@@ -324,6 +327,7 @@ impl Mining {
                 pos,
                 block,
                 hardness: dig.hardness,
+                harvests: dig.harvests,
                 drops,
             }),
             hit: None,

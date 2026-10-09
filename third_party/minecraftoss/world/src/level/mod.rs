@@ -19,6 +19,7 @@ pub mod grow;
 pub mod plants;
 pub mod bonemeal;
 pub mod fluid;
+pub mod openers;
 pub mod physics;
 pub mod piston;
 pub mod rail;
@@ -123,6 +124,23 @@ pub struct Level<'a> {
     pub moving: piston::MovingBlocks,
     /// `ServerLevel.blockEvents`.
     block_events: VecDeque<piston::BlockEvent>,
+    /// Block events run since last taken that the clients hear of.
+    sent_block_events: Vec<openers::SentBlockEvent>,
+    /// Sounds played since last taken.
+    sounds: Vec<openers::LevelSound>,
+    /// The players with a menu open on block containers, for the openers'
+    /// rechecks.
+    pub container_users: Vec<openers::ContainerUser>,
+    /// The containers' `ContainerOpenersCounter`s (not saved).
+    openers: HashMap<BlockPos, openers::Openers>,
+    /// Shulker boxes' open counts and lids (not saved).
+    shulker_lids: HashMap<BlockPos, openers::ShulkerLid>,
+    /// Block entities a menu shows, each with whether it was removed since
+    /// it was watched (`Container.stillValidBlockEntity`'s identity test).
+    watched_block_entities: HashMap<BlockPos, bool>,
+    /// The boxes of the cats in their sitting pose (`Cat.isInSittingPose`),
+    /// which block the chests under them.
+    pub sitting_cats: Vec<physics::Aabb>,
     /// `ServerLevel.handlingTick`: scheduled ticks and block events running.
     handling_tick: bool,
     /// `#minecraft:rails`.
@@ -241,6 +259,13 @@ impl<'a> Level<'a> {
             torch_toggles: Vec::new(),
             moving: piston::MovingBlocks::default(),
             block_events: VecDeque::new(),
+            sent_block_events: Vec::new(),
+            sounds: Vec::new(),
+            container_users: Vec::new(),
+            openers: HashMap::new(),
+            shulker_lids: HashMap::new(),
+            watched_block_entities: HashMap::new(),
+            sitting_cats: Vec::new(),
             handling_tick: false,
             rails_tag: lib.registries.block_tags.require("minecraft:rails").expect("tag exists"),
             hopper_ticked: HashMap::new(),
@@ -299,6 +324,9 @@ impl<'a> Level<'a> {
         self.random_counts.remove(&pos);
         self.lazy_light.get_mut().remove(&pos);
         let chunk = self.chunks.remove(&pos)?;
+        for &(x, y, z) in chunk.block_entities.entities.keys() {
+            self.block_entity_removed(BlockPos::new(x, y, z));
+        }
         let ticking: Vec<BlockPos> = self.moving.live_positions().filter(|p| p.chunk() == pos).collect();
         for at in ticking {
             self.moving.unbind(at);
@@ -493,6 +521,7 @@ impl<'a> Level<'a> {
             chunk.block_entities.entities.remove(&(pos.x, pos.y, pos.z));
             chunk.block_entities.pending.remove(&(pos.x, pos.y, pos.z));
             self.block_entities_changed.insert((pos.x, pos.y, pos.z));
+            self.block_entity_removed(pos);
         }
         self.changed.insert((pos.x, pos.y, pos.z));
         self.block_log.push((pos.x, pos.y, pos.z));
@@ -905,7 +934,9 @@ impl<'a> Level<'a> {
 
     /// `BlockBehaviour.tick`.
     fn tick_block(&mut self, state: BlockStateId, pos: BlockPos) {
-        if let Some(kind) = self.redstone_kind(state) {
+        if self.is_a(state, "ChestBlock") || self.is_a(state, "BarrelBlock") || self.is_a(state, "EnderChestBlock") {
+            self.recheck_openers(pos, state);
+        } else if let Some(kind) = self.redstone_kind(state) {
             self.redstone_tick(kind, state, pos);
         } else if self.is_a(state, "FireBlock") {
             self.fire_tick(state, pos);

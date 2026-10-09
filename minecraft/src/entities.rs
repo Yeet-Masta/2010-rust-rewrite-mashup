@@ -504,6 +504,25 @@ impl Entities {
         );
     }
 
+    /// A block the player placed from `stack`: a container takes the
+    /// stack's components (a shulker box's contents, a name).
+    pub fn placed(&mut self, scene: &HandcraftedScene, pos: (i32, i32, i32), stack: &ItemStack) {
+        self.server.player_place(scene, pos, stack);
+    }
+
+    /// The block `broken` the player broke at `pos`, and how: true when the
+    /// server makes its drops (containers, whose loot reads what they hold),
+    /// so the client drops none of its own.
+    pub fn broke(
+        &mut self,
+        scene: &HandcraftedScene,
+        pos: (i32, i32, i32),
+        broken: &minecraft_terrain::scene::Block,
+        breaker: minecraft_terrain::server::Breaker,
+    ) -> bool {
+        self.server.player_break(scene, pos, broken, breaker)
+    }
+
     /// A mob of `kind` (`cow`, `zombie`) at a point, as a spawn egg makes one.
     pub fn summon(&mut self, kind: &str, at: [f64; 3]) {
         self.server.summon(format!("minecraft:{kind}"), at, None);

@@ -29,6 +29,9 @@ pub struct LootParams {
     /// `EXPLOSION_RADIUS`.
     pub explosion_radius: Option<f32>,
     pub luck: f32,
+    /// `BLOCK_ENTITY`, as the components it gives (`collectComponents`):
+    /// saved component NBT by component id.
+    pub block_entity: Option<crate::nbt::Tag>,
 }
 
 /// Parsed loot tables and predicates, loaded on first use.
@@ -643,11 +646,29 @@ impl Context<'_> {
                     stack.count = stack.count.min(max as i32);
                 }
             }
-            // Components copied from a block entity or state: the copies are
-            // cosmetic for drops without either.
+            // `CopyComponentsFunction` from the block entity broken: the
+            // included components it has, less the excluded ones. Other
+            // sources, and block states, are cosmetic for drops without them.
             "copy_components" | "copy_state" => {
                 if self.params.block_state.is_none() {
                     return Err(format!("{kind} without a block"));
+                }
+                let from_block_entity = function.get("source").and_then(Json::as_str) == Some("block_entity");
+                if let (true, Some(crate::nbt::Tag::Compound(source))) = (kind.ends_with("copy_components") && from_block_entity, &self.params.block_entity) {
+                    let names = |field: &str| function.get(field).and_then(Json::as_array).map(|ids| ids.iter().filter_map(Json::as_str).map(id_of).collect::<Vec<_>>());
+                    let (include, exclude) = (names("include"), names("exclude"));
+                    for (key, value) in source {
+                        let id = id_of(key);
+                        if include.as_ref().is_some_and(|ids| !ids.contains(&id)) || exclude.as_ref().is_some_and(|ids| ids.contains(&id)) {
+                            continue;
+                        }
+                        let mut patch = match stack.components.take() {
+                            Some(crate::nbt::Tag::Compound(map)) => map,
+                            _ => Default::default(),
+                        };
+                        patch.insert(key.clone(), value.clone());
+                        stack.components = Some(crate::nbt::Tag::Compound(patch));
+                    }
                 }
             }
             other => return Err(format!("loot function {other} is not supported")),

@@ -180,6 +180,14 @@ fn restore_booleans(components: &mut Value) {
     }
 }
 
+/// A text component as the level saves it (a block entity's
+/// `CustomName`) as the JSON the client reads, its style's booleans back.
+pub fn text_json(tag: &Tag) -> Value {
+    let mut json = tag_json(tag);
+    restore_text(&mut json);
+    json
+}
+
 /// A component patch as the level saves it; none when it is empty, as
 /// `ItemStack.MAP_CODEC` leaves an empty patch out.
 pub fn components_tag(components: &Value) -> Option<Tag> {

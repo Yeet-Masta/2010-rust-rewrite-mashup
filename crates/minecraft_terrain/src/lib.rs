@@ -21,6 +21,7 @@ pub mod terrain;
 pub mod texture_mips;
 pub mod audio;
 pub mod server;
+pub mod menus;
 pub mod server_mobs;
 pub mod stacks;
 pub mod mob_actions;

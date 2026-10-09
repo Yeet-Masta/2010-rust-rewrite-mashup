@@ -29,11 +29,13 @@ fn experience_range(name: &str) -> Option<(i32, i32)> {
 
 impl Level<'_> {
     /// `Block.dropResources(state, level, pos, blockEntity, breaker, tool)`
-    /// with an empty tool and no breaker.
+    /// with an empty tool and no breaker, the block entity at `pos` if it
+    /// is still there.
     pub(super) fn drop_resources(&mut self, state: BlockStateId, pos: BlockPos) {
         let params = LootParams {
             origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
             tool: Some(Stack::empty()),
+            block_entity: self.container_components(pos),
             ..LootParams::default()
         };
         let registries = self.lib.registries.clone();
@@ -47,6 +49,46 @@ impl Level<'_> {
             Err(e) => self.unsupported.push(format!("drops of {}: {e}", self.name(state))),
         }
         self.spawn_after_break(state, pos);
+    }
+
+    /// `Block.playerDestroy`'s drops for a block a player broke and could
+    /// harvest: its loot with the player's tool and the block entity it had
+    /// (its components, as [`Self::container_components`] gave them before
+    /// the block went).
+    pub fn player_destroy_drops(&mut self, state: BlockStateId, pos: BlockPos, tool: Stack, block_entity: Option<minecraftoss_core::nbt::Tag>) {
+        let params = LootParams {
+            origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
+            tool: Some(tool),
+            this_entity: true,
+            block_entity,
+            ..LootParams::default()
+        };
+        let registries = self.lib.registries.clone();
+        match registries.loot.block_drops(&registries, state, &params, &mut self.random_sequences, &mut self.random) {
+            Ok(stacks) => {
+                for stack in stacks {
+                    self.pop_resource(pos, stack);
+                }
+            }
+            Err(e) => self.unsupported.push(format!("drops of {}: {e}", self.name(state))),
+        }
+    }
+
+    /// `playerWillDestroy` before a player's break: a creative player's
+    /// shulker box that holds something drops itself, with its contents
+    /// and name (`ShulkerBoxBlock`; loot tables are not unpacked).
+    pub fn player_will_destroy(&mut self, pos: BlockPos, creative: bool) {
+        let state = self.block(pos);
+        if !creative || self.store_of(state) != Some(super::container::Store::ShulkerBox) {
+            return;
+        }
+        let empty = self.block_container_items(pos).is_none_or(|items| items.iter().all(Stack::is_empty));
+        if empty {
+            return;
+        }
+        let mut stack = Stack::new(self.name(state), 1);
+        stack.components = self.container_components(pos).filter(|c| c.as_compound().is_some_and(|map| !map.is_empty()));
+        self.spawn_popped_item([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5], stack);
     }
 
     /// `Block.popResource`: an item entity near the block's centre.
@@ -84,6 +126,7 @@ impl Level<'_> {
             origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
             tool: Some(Stack::empty()),
             this_entity: true,
+            block_entity: self.container_components(pos),
             ..LootParams::default()
         };
         let registries = self.lib.registries.clone();

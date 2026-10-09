@@ -14,6 +14,7 @@ use super::Level;
 use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::{BlockPos, BlockStateId};
+use std::collections::BTreeMap;
 
 pub use minecraftoss_core::item::ItemStack as Stack;
 
@@ -28,7 +29,8 @@ pub enum Store {
 }
 
 impl Store {
-    fn size(self) -> usize {
+    /// `getContainerSize`.
+    pub fn size(self) -> usize {
         match self {
             Self::Hopper => 5,
             Self::Dispenser => 9,
@@ -46,7 +48,8 @@ pub enum ContainerRef {
 }
 
 impl ContainerRef {
-    fn size(self) -> usize {
+    /// `getContainerSize`: 54 for a double chest.
+    pub fn size(self) -> usize {
         match self {
             Self::Single(_, store) => store.size(),
             Self::Double(..) => 54,
@@ -67,7 +70,9 @@ impl ContainerRef {
         }
     }
 
-    fn positions(self) -> Vec<BlockPos> {
+    /// The block entities behind it: a double chest's first half, then its
+    /// second.
+    pub fn positions(self) -> Vec<BlockPos> {
         match self {
             Self::Single(pos, _) => vec![pos],
             Self::Double(first, second) => vec![first, second],
@@ -76,7 +81,9 @@ impl ContainerRef {
 }
 
 impl Level<'_> {
-    pub(super) fn store_of(&self, state: BlockStateId) -> Option<Store> {
+    /// The block entity that holds a block's items, for the simulated
+    /// containers.
+    pub fn store_of(&self, state: BlockStateId) -> Option<Store> {
         let blocks = &self.registries().blocks;
         let info = blocks.block(blocks.block_of(state));
         if info.is_a("ChestBlock") {
@@ -94,7 +101,8 @@ impl Level<'_> {
         }
     }
 
-    pub(super) fn block_entity(&self, pos: BlockPos) -> Option<&Tag> {
+    /// The saved tag of the block entity at a position.
+    pub fn block_entity(&self, pos: BlockPos) -> Option<&Tag> {
         self.chunk(pos.chunk())?.block_entities.entities.get(&(pos.x, pos.y, pos.z))
     }
 
@@ -105,10 +113,16 @@ impl Level<'_> {
         Some(tag)
     }
 
-    /// `ChestBlock.isChestBlockedAt` (cats are not simulated).
+    /// `ChestBlock.isChestBlockedAt`: a redstone conductor above, or a cat
+    /// sitting in the block's space above.
     fn chest_blocked(&self, pos: BlockPos) -> bool {
         let above = self.block(pos.above());
-        self.registries().blocks.is(above, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR)
+        if self.registries().blocks.is(above, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR) {
+            return true;
+        }
+        let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+        let space = super::physics::Aabb::new(x, y + 1.0, z, x + 1.0, y + 2.0, z + 1.0);
+        self.sitting_cats.iter().any(|cat| cat.intersects(&space))
     }
 
     /// `HopperBlockEntity.getBlockContainer` / `ChestBlock.getContainer`.
@@ -181,6 +195,18 @@ impl Level<'_> {
         let store = self.store_of(self.block(pos))?;
         self.block_entity(pos)?;
         Some(self.read_items(pos, store.size()))
+    }
+
+    /// Every slot of a container, a double chest's first half first.
+    pub fn container_items(&self, c: ContainerRef) -> Vec<Stack> {
+        match c {
+            ContainerRef::Single(pos, store) => self.read_items(pos, store.size()),
+            ContainerRef::Double(first, second) => {
+                let mut items = self.read_items(first, 27);
+                items.extend(self.read_items(second, 27));
+                items
+            }
+        }
     }
 
     pub fn container_item(&self, c: ContainerRef, slot: usize) -> Stack {
@@ -293,6 +319,94 @@ impl Level<'_> {
         total /= c.size() as f32;
         // `Mth.lerpDiscrete(total, 0, 15)`.
         (total * 14.0).floor() as i32 + i32::from(total > 0.0)
+    }
+
+    // ---- item components ----------------------------------------------------------
+
+    /// `BlockEntity.collectComponents` for a container's block entity: the
+    /// components it keeps, with `BaseContainerBlockEntity`'s and
+    /// `RandomizableContainerBlockEntity`'s own (`custom_name`, `lock`,
+    /// `container` and `container_loot`), as saved component NBT. Empty
+    /// contents are left out: they are every container item's default, so
+    /// a copy of them is no change.
+    pub fn container_components(&self, pos: BlockPos) -> Option<Tag> {
+        let store = self.store_of(self.block(pos))?;
+        let entity = self.block_entity(pos)?;
+        let mut components = match entity.get("components") {
+            Some(Tag::Compound(kept)) => kept.clone(),
+            _ => BTreeMap::new(),
+        };
+        if let Some(name) = entity.get("CustomName") {
+            components.insert("minecraft:custom_name".to_owned(), name.clone());
+        }
+        if let Some(lock) = entity.get("lock") {
+            components.insert("minecraft:lock".to_owned(), lock.clone());
+        }
+        // `ItemContainerContents.fromItems`, saved as its slots.
+        let slots: Vec<Tag> = self.read_items(pos, store.size()).iter().enumerate().filter(|(_, stack)| !stack.is_empty()).map(|(slot, stack)| container_slot(slot, stack)).collect();
+        if !slots.is_empty() {
+            components.insert("minecraft:container".to_owned(), Tag::List(slots));
+        }
+        if let Some(table) = entity.get("LootTable") {
+            let mut loot = BTreeMap::from([("loot_table".to_owned(), table.clone())]);
+            if let Some(seed) = entity.get("LootTableSeed").and_then(Tag::as_i64).filter(|&seed| seed != 0) {
+                loot.insert("seed".to_owned(), Tag::Long(seed));
+            }
+            components.insert("minecraft:container_loot".to_owned(), Tag::Compound(loot));
+        }
+        Some(Tag::Compound(components))
+    }
+
+    /// `BlockEntity.applyComponentsFromItemStack` for a container placed
+    /// from an item whose component patch is `components` (saved NBT): the
+    /// item's name, lock and contents replace the block entity's
+    /// (`BaseContainerBlockEntity.applyImplicitComponents`), its loot table
+    /// is taken if it has one, and the rest of the patch is kept as the
+    /// block entity's `components`. The block entity is then changed
+    /// (`setChanged`).
+    pub fn apply_container_components(&mut self, pos: BlockPos, components: Option<&Tag>) {
+        let Some(store) = self.store_of(self.block(pos)) else { return };
+        if self.block_entity(pos).is_none() {
+            return;
+        }
+        let patch = components.and_then(Tag::as_compound);
+        let get = |id: &str| patch.and_then(|patch| patch.get(id));
+        // `ItemContainerContents.copyInto`: every slot, empty where the
+        // item has nothing.
+        let mut items = vec![Stack::empty(); store.size()];
+        for (index, stack) in get("minecraft:container").and_then(Tag::as_list).into_iter().flatten().filter_map(from_container_slot) {
+            if let Some(slot) = items.get_mut(index) {
+                *slot = stack;
+            }
+        }
+        let name = get("minecraft:custom_name").cloned();
+        let lock = get("minecraft:lock").cloned();
+        let loot = get("minecraft:container_loot").and_then(|loot| Some((loot.get("loot_table")?.clone(), loot.get("seed").and_then(Tag::as_i64).unwrap_or(0))));
+        // `applyComponents`: the patch less what the block entity read, and
+        // less its removals.
+        const READ: [&str; 6] = ["minecraft:custom_name", "minecraft:lock", "minecraft:container", "minecraft:container_loot", "minecraft:block_entity_data", "minecraft:block_state"];
+        let kept: BTreeMap<String, Tag> = patch.into_iter().flatten().filter(|(id, _)| !READ.contains(&id.as_str()) && !id.starts_with('!')).map(|(id, value)| (id.clone(), value.clone())).collect();
+        if let Some(Tag::Compound(entity)) = self.block_entity_mut(pos) {
+            match name {
+                Some(name) => entity.insert("CustomName".to_owned(), name),
+                None => entity.remove("CustomName"),
+            };
+            match lock {
+                Some(lock) => entity.insert("lock".to_owned(), lock),
+                None => entity.remove("lock"),
+            };
+            if let Some((table, seed)) = loot {
+                entity.insert("LootTable".to_owned(), table);
+                if seed != 0 {
+                    entity.insert("LootTableSeed".to_owned(), Tag::Long(seed));
+                } else {
+                    entity.remove("LootTableSeed");
+                }
+            }
+            entity.insert("components".to_owned(), Tag::Compound(kept));
+        }
+        self.write_items(pos, &items);
+        self.block_entity_changed(pos);
     }
 
     // ---- hoppers -----------------------------------------------------------------
@@ -481,7 +595,37 @@ impl Level<'_> {
 
     pub(super) fn has_ticker(&self, state: BlockStateId) -> bool {
         self.is_hopper(state)
+            || self.store_of(state) == Some(Store::ShulkerBox)
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }
+}
+
+/// A slot of the `container` component (`ItemContainerContents.Slot`): its
+/// index and the stack as an `ItemStackTemplate`, the count left out at 1.
+fn container_slot(slot: usize, stack: &Stack) -> Tag {
+    let mut item = BTreeMap::from([("id".to_owned(), Tag::String(stack.id.clone()))]);
+    if stack.count != 1 {
+        item.insert("count".to_owned(), Tag::Int(stack.count));
+    }
+    if let Some(components) = &stack.components {
+        item.insert("components".to_owned(), components.clone());
+    }
+    Tag::Compound(BTreeMap::from([("slot".to_owned(), Tag::Int(slot as i32)), ("item".to_owned(), Tag::Compound(item))]))
+}
+
+/// A `container` component slot read back: its index and stack (the item
+/// may be its id alone).
+fn from_container_slot(slot: &Tag) -> Option<(usize, Stack)> {
+    let index = usize::try_from(slot.get("slot")?.as_i64()?).ok()?;
+    let item = slot.get("item")?;
+    let stack = match item.as_str() {
+        Some(id) => Stack::new(id, 1),
+        None => {
+            let mut stack = Stack::new(item.get("id")?.as_str()?, item.get("count").and_then(Tag::as_i64).unwrap_or(1) as i32);
+            stack.components = item.get("components").filter(|c| c.as_compound().is_some_and(|map| !map.is_empty())).cloned();
+            stack
+        }
+    };
+    Some((index, stack))
 }
