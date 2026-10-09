@@ -5,6 +5,7 @@
 //! and leave with it. They tick only inside the entity-ticking range.
 
 use crate::scene::Block;
+use crate::stacks::{json_tag, tag_json};
 use crate::terrain::BlockStates;
 use glam::DVec3;
 use minecraftoss_entities::zombie::ZombieKind;
@@ -150,17 +151,8 @@ impl MobWorld<'_> {
     }
 }
 
-/// A level stack's components as JSON: the JSON text the server keeps for
-/// stacks it made, or saved NBT.
-fn stack_components(stack: &minecraftoss_core::item::ItemStack) -> Option<serde_json::Value> {
-    match stack.components.as_ref()? {
-        Tag::String(json) => serde_json::from_str(json).ok(),
-        tag => Some(tag_json(tag)),
-    }
-}
-
 fn world_item(id: i32, pos: [f64; 3], stack: &minecraftoss_core::item::ItemStack, pickup_delay: i32) -> minecraftoss_player::WorldItem {
-    minecraftoss_player::WorldItem { id, position: DVec3::from_array(pos), item: stack.id.clone(), count: stack.count, components: stack_components(stack), pickup_delay }
+    minecraftoss_player::WorldItem { id, position: DVec3::from_array(pos), item: stack.id.clone(), count: stack.count, components: stack.components.as_ref().and_then(crate::stacks::components_json), pickup_delay }
 }
 
 impl PlayerWorld for MobWorld<'_> {
@@ -177,9 +169,7 @@ impl PlayerWorld for MobWorld<'_> {
     }
 
     fn spawn_item(&mut self, position: DVec3, stack: &minecraftoss_player::inventory::ItemStack, velocity: DVec3, pickup_delay: i32) {
-        let mut level_stack = minecraftoss_core::item::ItemStack::new(&stack.id, i32::from(stack.count));
-        level_stack.components = stack.components.as_ref().map(|c| Tag::String(c.to_string()));
-        self.level.borrow_mut().spawn_item_with(position.to_array(), level_stack, velocity.to_array(), pickup_delay, 0);
+        self.level.borrow_mut().spawn_item_with(position.to_array(), crate::stacks::to_level(stack), velocity.to_array(), pickup_delay, 0);
     }
 
     fn schedule_block_tick(&mut self, (x, y, z): (i32, i32, i32), delay: i32) {
@@ -211,9 +201,7 @@ impl PlayerWorld for MobWorld<'_> {
     }
 
     fn spawn_popped_item(&mut self, position: DVec3, stack: &minecraftoss_player::inventory::ItemStack) {
-        let mut level_stack = minecraftoss_core::item::ItemStack::new(&stack.id, i32::from(stack.count));
-        level_stack.components = stack.components.as_ref().map(|c| Tag::String(c.to_string()));
-        self.level.borrow_mut().spawn_popped_item(position.to_array(), level_stack);
+        self.level.borrow_mut().spawn_popped_item(position.to_array(), crate::stacks::to_level(stack));
     }
 
     fn block_drops(&self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) -> Vec<minecraftoss_player::inventory::ItemStack> {
@@ -221,13 +209,8 @@ impl PlayerWorld for MobWorld<'_> {
         let Some(state) = self.states.state_of(&Block { id, properties: block.properties.clone() }) else { return Vec::new() };
         let mut level = self.level.borrow_mut();
         let drops = level.mob_block_drops(state, minecraftoss_core::BlockPos::new(x, y, z));
-        drops
-            .into_iter()
-            .map(|s| {
-                let max = level.lib.registries.items.max_stack(&s.id).clamp(1, 99) as u8;
-                minecraftoss_player::inventory::ItemStack { id: s.id.clone(), count: s.count.clamp(0, 255) as u8, max, components: stack_components(&s) }
-            })
-            .collect()
+        let items = &level.lib.registries.items;
+        drops.iter().filter_map(|s| crate::stacks::to_player(s, |id| items.max_stack(id))).collect()
     }
 
     fn biome(&self, (x, y, z): (i32, i32, i32)) -> Option<String> {
@@ -806,7 +789,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // stack added) and `FoodLevel`.
             for (saved, max) in tag.get("Inventory").and_then(Tag::as_list).into_iter().flatten().zip(maxes) {
                 if let (Some(item), Some(count)) = (text(saved, "id"), int(saved, "count").or(Some(1))) {
-                    let components = saved.get("components").map(tag_json);
+                    let components = saved.get("components").and_then(crate::stacks::components_json);
                     let stack = minecraftoss_player::inventory::ItemStack { id: item.to_owned(), count: count.clamp(1, 99) as u8, max, components };
                     entity.inventory.add(stack);
                 }
@@ -815,7 +798,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // What it holds is its main hand.
             entity.held_item = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|item| {
                 let id = text(item, "id")?.to_owned();
-                let components = item.get("components").map(tag_json).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+                let components = item.get("components").and_then(crate::stacks::components_json).and_then(|v| v.as_object().cloned()).unwrap_or_else(serde_json::Map::new);
                 Some(minecraftoss_entities::trading::TradeItem { id, count: int(item, "count").unwrap_or(1), components })
             });
             // `Mob.readAdditionalSaveData`: false unless saved (village
@@ -897,43 +880,6 @@ fn offers_tag(offers: &[minecraftoss_entities::trading::MerchantOffer]) -> Tag {
         })
         .collect();
     Tag::Compound([("Recipes".to_owned(), Tag::List(recipes))].into_iter().collect())
-}
-
-/// NBT as the JSON the item and offer codecs read (numbers keep their
-/// value; bytes stand for booleans too).
-fn tag_json(tag: &Tag) -> serde_json::Value {
-    use serde_json::Value;
-    match tag {
-        Tag::Byte(v) => Value::from(*v),
-        Tag::Short(v) => Value::from(*v),
-        Tag::Int(v) => Value::from(*v),
-        Tag::Long(v) => Value::from(*v),
-        Tag::Float(v) => Value::from(f64::from(*v)),
-        Tag::Double(v) => Value::from(*v),
-        Tag::ByteArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
-        Tag::String(s) => Value::from(s.clone()),
-        Tag::List(list) => Value::Array(list.iter().map(tag_json).collect()),
-        Tag::Compound(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), tag_json(v))).collect()),
-        Tag::IntArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
-        Tag::LongArray(a) => Value::Array(a.iter().map(|&v| Value::from(v)).collect()),
-    }
-}
-
-/// JSON as NBT: whole numbers as ints, others as doubles, booleans as
-/// bytes.
-fn json_tag(value: &serde_json::Value) -> Tag {
-    use serde_json::Value;
-    match value {
-        Value::Object(map) => Tag::Compound(map.iter().map(|(k, v)| (k.clone(), json_tag(v))).collect()),
-        Value::Array(list) => Tag::List(list.iter().map(json_tag).collect()),
-        Value::String(s) => Tag::String(s.clone()),
-        Value::Bool(b) => Tag::Byte(i8::from(*b)),
-        Value::Number(n) => match n.as_i64() {
-            Some(v) => Tag::Int(v as i32),
-            None => Tag::Double(n.as_f64().unwrap_or(0.0)),
-        },
-        Value::Null => Tag::Compound(Default::default()),
-    }
 }
 
 /// A saved effect (`MobEffectInstance.CODEC`: its ID, level, time, flags
@@ -1193,8 +1139,8 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
                 .flatten()
                 .map(|s| {
                     let mut stack = vec![("id".to_owned(), Tag::String(s.id.clone())), ("count".to_owned(), Tag::Int(i32::from(s.count)))];
-                    if let Some(components) = &s.components {
-                        stack.push(("components".to_owned(), json_tag(components)));
+                    if let Some(components) = s.components.as_ref().and_then(crate::stacks::components_tag) {
+                        stack.push(("components".to_owned(), components));
                     }
                     Tag::Compound(stack.into_iter().collect())
                 })
@@ -1306,7 +1252,12 @@ pub fn load_level_entity(level: &mut Level<'static>, tag: &Tag) -> bool {
             let Some(item) = tag.get("Item") else { return true };
             let (Some(id), count) = (text(item, "id"), int(item, "count").unwrap_or(1)) else { return true };
             let mut stack = minecraftoss_core::item::ItemStack::new(id, count);
-            stack.components = item.get("components").cloned();
+            stack.components = match item.get("components") {
+                // Saved before components were kept as NBT: their JSON text.
+                Some(Tag::String(json)) => serde_json::from_str::<serde_json::Value>(json).ok().as_ref().and_then(crate::stacks::components_tag),
+                Some(tag) => tag.as_compound().is_some_and(|m| !m.is_empty()).then(|| tag.clone()),
+                None => None,
+            };
             level.spawn_item_with(pos.to_array(), stack, motion, int(tag, "PickupDelay").unwrap_or(0), int(tag, "Age").unwrap_or(0));
             true
         }

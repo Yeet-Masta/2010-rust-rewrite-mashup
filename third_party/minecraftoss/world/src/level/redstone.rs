@@ -245,9 +245,12 @@ impl Level<'_> {
         tag.and_then(|t| t.get("OutputSignal")).and_then(Tag::as_i64).unwrap_or(0) as i32
     }
 
+    /// Sets `OutputSignal`; an unchanged value is no change to save.
     fn set_comparator_output(&mut self, pos: BlockPos, value: i32) {
-        let key = (pos.x, pos.y, pos.z);
-        if let Some(Tag::Compound(map)) = self.chunks.get_mut(&pos.chunk()).and_then(|c| c.block_entities.entities.get_mut(&key)) {
+        if self.block_entity(pos).and_then(|t| t.get("OutputSignal")).and_then(Tag::as_i64) == Some(i64::from(value)) {
+            return;
+        }
+        if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
             map.insert("OutputSignal".to_owned(), Tag::Int(value));
         }
     }

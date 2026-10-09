@@ -98,8 +98,11 @@ impl Level<'_> {
         self.chunk(pos.chunk())?.block_entities.entities.get(&(pos.x, pos.y, pos.z))
     }
 
-    fn block_entity_mut(&mut self, pos: BlockPos) -> Option<&mut Tag> {
-        self.chunks.get_mut(&pos.chunk())?.block_entities.entities.get_mut(&(pos.x, pos.y, pos.z))
+    /// A block entity to change: the change is noted for the chunk's save.
+    pub(super) fn block_entity_mut(&mut self, pos: BlockPos) -> Option<&mut Tag> {
+        let tag = self.chunks.get_mut(&pos.chunk())?.block_entities.entities.get_mut(&(pos.x, pos.y, pos.z))?;
+        self.block_entities_changed.insert((pos.x, pos.y, pos.z));
+        Some(tag)
     }
 
     /// `ChestBlock.isChestBlockedAt` (cats are not simulated).
@@ -298,20 +301,27 @@ impl Level<'_> {
         self.block_entity(pos).and_then(|t| t.get("TransferCooldown")).and_then(Tag::as_i64).unwrap_or(-1) as i32
     }
 
+    /// Sets `TransferCooldown`; an unchanged value is no change to save.
     fn set_hopper_cooldown(&mut self, pos: BlockPos, value: i32) {
+        if self.block_entity(pos).is_none() || self.hopper_cooldown(pos) == value {
+            return;
+        }
         if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
             map.insert("TransferCooldown".to_owned(), Tag::Int(value));
         }
     }
 
-    /// `HopperBlockEntity.pushItemsTick`.
+    /// `HopperBlockEntity.pushItemsTick`. The cooldown counts down, and at
+    /// zero or below is zero while the hopper tries to move (the count
+    /// below zero is never read, so an idle hopper's stays put).
     pub(super) fn hopper_tick(&mut self, pos: BlockPos) {
         let cooldown = self.hopper_cooldown(pos) - 1;
-        self.set_hopper_cooldown(pos, cooldown);
         self.hopper_ticked.insert(pos, self.game_time);
         if cooldown <= 0 {
             self.set_hopper_cooldown(pos, 0);
             self.hopper_try_move(pos);
+        } else {
+            self.set_hopper_cooldown(pos, cooldown);
         }
     }
 

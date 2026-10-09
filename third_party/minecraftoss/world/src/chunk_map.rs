@@ -35,7 +35,8 @@ use minecraftoss_generator::feature::{Decoration, Library, Region};
 use minecraftoss_generator::structure::beardifier::Beardifier;
 use minecraftoss_generator::structure::Structures;
 use minecraftoss_generator::terrain::{NeighborBiomes, TerrainGenerator};
-use std::collections::{HashMap, HashSet};
+use minecraftoss_core::nbt::Tag;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
@@ -249,7 +250,16 @@ struct Evicted {
     status: ChunkStatus,
     /// Block changes not yet written into it (see `ChunkMap::edits`); the
     /// saver or a reload writes them, off the thread that dropped it.
-    edits: Arc<Vec<(BlockPos, BlockStateId)>>,
+    edits: Arc<Edits>,
+}
+
+/// Changes to a FULL chunk not yet written into it: block states in the
+/// order they were set, then block entities, each position's last write
+/// winning (`None` removes it).
+#[derive(Clone, Default)]
+struct Edits {
+    blocks: Vec<(BlockPos, BlockStateId)>,
+    block_entities: BTreeMap<(i32, i32, i32), Option<Tag>>,
 }
 
 impl Evicted {
@@ -282,11 +292,12 @@ pub struct ChunkMap {
     /// How long the last tick's steps took, in milliseconds (profiling):
     /// tracking, collecting, waiting for the world lock, scheduling, sending.
     pub last_tick_ms: [f64; 7],
-    /// Block changes to FULL chunks not yet written into them. A sent chunk
-    /// is shared with the client and the level, so writing each tick's
-    /// changes would copy it every tick; instead they wait here and are
-    /// written in one copy when the chunk is sent again, dropped or saved.
-    edits: HashMap<ChunkPos, Vec<(BlockPos, BlockStateId)>>,
+    /// Block and block entity changes to FULL chunks not yet written into
+    /// them. A sent chunk is shared with the client and the level, so
+    /// writing each tick's changes would copy it every tick; instead they
+    /// wait here and are written in one copy when the chunk is sent again,
+    /// dropped or saved.
+    edits: HashMap<ChunkPos, Edits>,
     /// Chunks changed since they were last saved, for a quick autosave.
     unsaved: HashSet<ChunkPos>,
 }
@@ -743,7 +754,7 @@ impl ChunkMap {
                     Slot::Final(chunk) => (chunk, ChunkStatus::Full),
                     Slot::Out { .. } => continue,
                 };
-                let edits = Arc::new(self.edits.remove(&pos).unwrap_or_default());
+                let edits = Arc::new(self.edits.remove(&pos).unwrap_or_else(Edits::default));
                 evicted.insert(pos, Evicted { chunk, status, edits });
             }
             drop(evicted);
@@ -759,7 +770,21 @@ impl ChunkMap {
         for &(pos, state) in edits {
             let chunk = pos.chunk();
             if self.chunks.contains_key(&chunk) {
-                self.edits.entry(chunk).or_default().push((pos, state));
+                self.edits.entry(chunk).or_default().blocks.push((pos, state));
+                self.unsaved.insert(chunk);
+            }
+        }
+    }
+
+    /// Sets block entities in FULL chunks, as the level saves them
+    /// (`saveWithFullMetadata`; `None` where one was removed), so the chunks
+    /// save them and carry them when sent again. Chunks the client has not
+    /// been sent are left alone.
+    pub fn set_block_entities(&mut self, changes: impl IntoIterator<Item = (BlockPos, Option<Tag>)>) {
+        for (pos, tag) in changes {
+            let chunk = pos.chunk();
+            if self.chunks.contains_key(&chunk) {
+                self.edits.entry(chunk).or_default().block_entities.insert((pos.x, pos.y, pos.z), tag);
                 self.unsaved.insert(chunk);
             }
         }
@@ -967,14 +992,15 @@ fn saver(shared: &Shared) {
     }
 }
 
-/// Block changes written into a chunk, with its heightmaps.
-fn apply_edits(chunk: &mut Chunk, edits: &[(BlockPos, BlockStateId)], registries: &minecraftoss_core::Registries) {
+/// Block changes written into a chunk, with its heightmaps, then its block
+/// entities' changes.
+fn apply_edits(chunk: &mut Chunk, edits: &Edits, registries: &minecraftoss_core::Registries) {
     // The light no longer matches the blocks: it is solved again from them
     // (as the level does) rather than sent stale.
-    if !edits.is_empty() {
+    if !edits.blocks.is_empty() {
         chunk.light = None;
     }
-    for &(pos, state) in edits {
+    for &(pos, state) in &edits.blocks {
         if pos.y < chunk.min_y() || pos.y >= chunk.min_y() + chunk.height() {
             continue;
         }
@@ -983,6 +1009,19 @@ fn apply_edits(chunk: &mut Chunk, edits: &[(BlockPos, BlockStateId)], registries
         for kind in HeightmapKind::FINAL {
             chunk.update_heightmap(kind, x, pos.y, z, state, registries);
         }
+    }
+    apply_block_entity_edits(&mut chunk.block_entities, &edits.block_entities);
+}
+
+/// Block entity changes written into a chunk's store: a live block entity
+/// replaces any packed tag left at its position.
+fn apply_block_entity_edits(store: &mut minecraftoss_core::chunk::BlockEntityStore, edits: &BTreeMap<(i32, i32, i32), Option<Tag>>) {
+    for (&pos, tag) in edits {
+        store.pending.remove(&pos);
+        match tag {
+            Some(tag) => store.entities.insert(pos, tag.clone()),
+            None => store.entities.remove(&pos),
+        };
     }
 }
 
@@ -1252,4 +1291,33 @@ fn generate_terrain(shared: &Shared, worldgen: &WorldGen, pos: ChunkPos) -> Chun
     generator.build_terrain_with(&mut chunk, &neighbors, &possible, beardifier);
     stage_times::add(stage_times::TERRAIN_BUILD, building);
     chunk
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tag(id: &str, cooldown: i32) -> Tag {
+        Tag::Compound([("id".to_owned(), Tag::String(id.to_owned())), ("TransferCooldown".to_owned(), Tag::Int(cooldown))].into_iter().collect())
+    }
+
+    /// Each position's last block entity write wins, a write replaces the
+    /// packed tag there, and a removal takes both away.
+    #[test]
+    fn block_entity_edits_replace_and_remove() {
+        let mut store = minecraftoss_core::chunk::BlockEntityStore::default();
+        store.pending.insert((1, 64, 1), tag("minecraft:chest", 0));
+        store.entities.insert((2, 64, 2), tag("minecraft:hopper", 3));
+        store.pending.insert((3, 64, 3), tag("minecraft:barrel", 0));
+        let mut edits = Edits::default();
+        edits.block_entities.insert((1, 64, 1), Some(tag("minecraft:chest", 1)));
+        edits.block_entities.insert((2, 64, 2), Some(tag("minecraft:hopper", 7)));
+        edits.block_entities.insert((2, 64, 2), Some(tag("minecraft:hopper", 8)));
+        edits.block_entities.insert((3, 64, 3), None);
+        apply_block_entity_edits(&mut store, &edits.block_entities);
+        assert_eq!(store.entities.get(&(1, 64, 1)), Some(&tag("minecraft:chest", 1)));
+        assert_eq!(store.entities.get(&(2, 64, 2)), Some(&tag("minecraft:hopper", 8)));
+        assert!(store.pending.is_empty(), "{:?}", store.pending);
+        assert_eq!(store.entities.len(), 2);
+    }
 }
