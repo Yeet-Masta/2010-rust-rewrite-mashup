@@ -5,12 +5,13 @@
 //!
 //! One batch of inputs is with the server at a time, with a copy of the
 //! inventory taken as it is sent, and the inventory changes only from the
-//! answers: pickups, uses and drops wait for them (`inventory_busy`), so
-//! each copy is the inventory as the server last left it. Meanwhile the
-//! screen shows what the inputs do as the same menu engine works it out on
-//! copies, as vanilla's client clicks its own menu before it sends a click
-//! (`handleContainerInput`); each update from the server starts the copies
-//! over.
+//! answers: pickups wait while a batch is out (`pickups_wait`), uses and
+//! drops while the menu is open (`inventory_busy`), so each copy is the
+//! inventory as the server last left it. Meanwhile the screen shows what
+//! the inputs do as the same menu engine works it out on copies, as
+//! vanilla's client clicks its own menu before it sends a click
+//! (`handleContainerInput`); each update from the server, and each pickup
+//! between batches, starts the copies over.
 use std::time::Instant;
 
 use minecraft_terrain::menus::{
@@ -210,6 +211,12 @@ impl ClientMenu {
         } else {
             Updated::Shown
         }
+    }
+
+    /// Whether inputs are with the server, or queued for it: the inventory
+    /// waits for their answer.
+    fn waits(&self) -> bool {
+        self.in_flight.is_some() || !self.queued.is_empty()
     }
 
     /// The copies again: the last update's, with every input the server
@@ -565,6 +572,24 @@ impl Game {
         self.menu.is_some() || self.use_pending.is_some()
     }
 
+    /// Whether a copy of the inventory is with the server, or about to go,
+    /// whose answer is written over the inventory: a batch of the menu's,
+    /// or a use of a menu block. Pickups wait for the answer; between
+    /// batches they go into the inventory, and the open screen shows them,
+    /// as vanilla's `ItemEntity.playerTouch` fills the inventory whatever
+    /// screen is open.
+    pub(super) fn pickups_wait(&self) -> bool {
+        self.use_pending.is_some() || self.menu.as_ref().is_some_and(ClientMenu::waits)
+    }
+
+    /// The inventory changed outside the menu's answers (a pickup): the
+    /// open screen shows it.
+    pub(super) fn inventory_changed(&mut self) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.predict(&self.entities.inventory);
+        }
+    }
+
     /// A menu update from the server, in order.
     pub(super) fn menu_update(&mut self, update: MenuUpdate) {
         // The player's part, on the answer to a batch: what it changed in
@@ -655,17 +680,37 @@ impl Game {
 
     /// Before the world saves for good or the player dies: the menu closes
     /// on the server, and its answer is in (the carried stack back in the
-    /// inventory, a barrel shut), and a use waiting on the server is
-    /// answered.
+    /// inventory, a barrel shut), a use waiting on the server is answered,
+    /// and everything else is taken in ([`Game::catch_up`]).
     pub(super) fn settle_menu(&mut self) {
         for _ in 0..8 {
             if !self.inventory_busy() {
-                return;
+                break;
             }
             self.close_menu();
             self.flush_menu();
             let events = self.entities.wait();
             self.handle_events(events, false);
+        }
+        self.catch_up();
+    }
+
+    /// Everything sent to the server is answered and taken in: the menu's
+    /// batches (the open menu stays open), a use, and the stacks the server
+    /// let the player pick up, which go into the inventory now (what no
+    /// longer fits drops at the feet). Before a save, so the player saves
+    /// as of the world saved with it, and before the inventory drops at
+    /// death, which holds what was picked up before it.
+    pub(super) fn catch_up(&mut self) {
+        for _ in 0..8 {
+            let events = self.entities.wait();
+            self.handle_events(events, false);
+            if !self.pickups_wait() {
+                break;
+            }
+        }
+        if self.entities.take_pickups(self.player.pos) {
+            self.inventory_changed();
         }
     }
 
@@ -1136,6 +1181,29 @@ mod tests {
             ..MenuUpdate::default()
         };
         assert_eq!(menu.update(closed, &Inventory::default()), Updated::Closed);
+    }
+
+    #[test]
+    fn between_batches_a_pickup_shows_at_once() {
+        // `ItemEntity.playerTouch` fills the inventory whatever screen is
+        // open: with no batch out the open chest's inventory rows show what
+        // the player picked up.
+        let mut menu = chest(
+            vec![Some(stack("minecraft:stone", 4))],
+            Inventory::default(),
+        );
+        assert!(!menu.waits());
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(stack("minecraft:bone", 3));
+        menu.predict(&inventory);
+        assert_eq!(menu.item(27 + 27).map(|s| s.id.as_str()), Some("minecraft:bone"));
+        assert_eq!(menu.item(0).map(|s| s.count), Some(4));
+        // A click makes the inventory wait for its answer, while queued and
+        // while with the server.
+        menu.press(Mouse::Left, Some(0), false, false);
+        assert!(menu.waits());
+        menu.in_flight = Some((1, std::mem::take(&mut menu.queued)));
+        assert!(menu.waits());
     }
 
     #[test]

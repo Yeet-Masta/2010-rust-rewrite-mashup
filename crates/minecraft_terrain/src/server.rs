@@ -1338,9 +1338,10 @@ impl ServerHandle {
 
     /// Blocks until the server has handled every command sent so far (a
     /// capture's settle ticks, each answered before the next), keeping the
-    /// outputs for the next [`Self::poll`].
+    /// outputs for the next [`Self::poll`]. Returns at once when the last
+    /// output taken already answered them all.
     pub fn wait_idle(&mut self) {
-        while self.waited.last().is_none_or(|out| out.handled < self.sent) {
+        while self.waited.last().map_or(self.applied, |out| out.handled) < self.sent {
             match self.outputs.recv() {
                 Ok(out) => self.waited.push(out),
                 Err(_) => break,
@@ -2897,6 +2898,26 @@ mod tests {
     /// heard of the last changes takes the server's own; one sent again
     /// while loaded keeps the level's; and a chunk loads with the block
     /// entities its blocks take.
+    #[test]
+    fn waiting_with_every_command_answered_returns_at_once() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut handle = ServerHandle::spawn(ServerSim::new(worldgen, states, "minecraft:overworld"));
+        handle.flush();
+        assert!(!handle.poll().is_empty(), "the flush was answered");
+        // Nothing is outstanding and nothing is kept: a wait returns rather
+        // than wait for an output that never comes.
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            handle.wait_idle();
+            let _ = done.send(handle.poll().len());
+        });
+        assert_eq!(waited.recv_timeout(std::time::Duration::from_secs(20)), Ok(0));
+    }
+
     #[test]
     fn chest_items_keep_their_components_across_reloads() {
         let Ok(paths) = DataPaths::discover() else { return };

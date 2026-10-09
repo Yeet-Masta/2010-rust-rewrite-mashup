@@ -82,6 +82,8 @@ pub struct Events {
     pub menu: Vec<MenuUpdate>,
     /// The answers to uses of blocks that open menus.
     pub use_results: Vec<UseResult>,
+    /// Stacks the server let the player pick up went into the inventory.
+    pub picked_up: bool,
 }
 
 pub struct Entities {
@@ -264,75 +266,20 @@ impl Entities {
         }
     }
 
-    fn server_items_tick(&mut self, feet: DVec3) {
+    /// Whether stacks the server let the player pick up went into the
+    /// inventory.
+    fn server_items_tick(&mut self, feet: DVec3) -> bool {
         let entities = std::mem::take(&mut self.world_items.entities);
         self.hand_over(&entities);
         let previous: HashMap<u32, ItemEntity> =
             entities.into_iter().map(|e| (e.entity_id, e)).collect();
         let target = feet + DVec3::Y * 0.81;
         self.world_items.tick_pickup_effects(target);
-        let picked = if self.hold_pickups {
-            Vec::new()
-        } else {
-            std::mem::take(&mut self.server_picked)
-        };
-        for (id, position, item, count, components) in picked {
-            let recipes = self.inventory.recipes.clone();
-            let make_stack = |item: &str, count: i32| {
-                let mut stack = ItemStack::new(item, count.clamp(0, 255) as u8);
-                stack.components = components
-                    .as_deref()
-                    .and_then(|c| serde_json::from_str(c).ok());
-                // Its own size limit, which components can set.
-                stack.max =
-                    minecraft_terrain::stacks::max_stack(item, stack.components.as_ref(), |id| {
-                        i32::from(recipes.max_stack(id))
-                    });
-                stack
-            };
-            let taken = match self
-                .inventory
-                .add_item(make_stack(&item, count), self.selected)
-            {
-                None => count,
-                Some(rest) => {
-                    let rest_count = i32::from(rest.count);
-                    self.server.spawn_item(
-                        &item,
-                        rest_count,
-                        components.as_deref(),
-                        feet.to_array(),
-                        [0.0; 3],
-                        0,
-                        0,
-                    );
-                    count - rest_count
-                }
-            };
-            if taken <= 0 {
-                continue;
-            }
-            let transfer = make_stack(&item, taken);
-            let snapshot = previous
-                .get(&(id as u32))
-                .cloned()
-                .unwrap_or_else(|| ItemEntity {
-                    entity_id: id as u32,
-                    stack: transfer.clone(),
-                    position: DVec3::from_array(position),
-                    previous_position: DVec3::from_array(position),
-                    velocity: DVec3::ZERO,
-                    age: 0,
-                    bob_offset: bob_offset(id),
-                    pickup_delay: 0,
-                    on_ground: true,
-                });
-            self.world_items.note_pickup(snapshot, target, transfer);
-        }
+        let picked_up = !self.hold_pickups && self.apply_pickups(feet, &previous);
         let Some(snapshot) = self.server_snapshot.take() else {
             self.world_items.entities = previous.into_values().collect();
             self.world_items.entities.sort_by_key(|e| e.entity_id);
-            return;
+            return picked_up;
         };
         let recipes = self.inventory.recipes.clone();
         self.world_items.entities = snapshot
@@ -373,6 +320,83 @@ impl Entities {
         for (_, entity) in self.server_handed.values() {
             self.world_items.entities.push(entity.clone());
         }
+        picked_up
+    }
+
+    /// Stacks the server let the player pick up go into the inventory, each
+    /// shown flying to the player from where it lay (`previous`); what no
+    /// longer fits drops at the feet. Whether any went in.
+    fn apply_pickups(&mut self, feet: DVec3, previous: &HashMap<u32, ItemEntity>) -> bool {
+        let target = feet + DVec3::Y * 0.81;
+        let mut picked_up = false;
+        for (id, position, item, count, components) in std::mem::take(&mut self.server_picked) {
+            let recipes = self.inventory.recipes.clone();
+            let make_stack = |item: &str, count: i32| {
+                let mut stack = ItemStack::new(item, count.clamp(0, 255) as u8);
+                stack.components = components
+                    .as_deref()
+                    .and_then(|c| serde_json::from_str(c).ok());
+                // Its own size limit, which components can set.
+                stack.max =
+                    minecraft_terrain::stacks::max_stack(item, stack.components.as_ref(), |id| {
+                        i32::from(recipes.max_stack(id))
+                    });
+                stack
+            };
+            let taken = match self
+                .inventory
+                .add_item(make_stack(&item, count), self.selected)
+            {
+                None => count,
+                Some(rest) => {
+                    let rest_count = i32::from(rest.count);
+                    self.server.spawn_item(
+                        &item,
+                        rest_count,
+                        components.as_deref(),
+                        feet.to_array(),
+                        [0.0; 3],
+                        0,
+                        0,
+                    );
+                    count - rest_count
+                }
+            };
+            if taken <= 0 {
+                continue;
+            }
+            picked_up = true;
+            let transfer = make_stack(&item, taken);
+            let snapshot = previous
+                .get(&(id as u32))
+                .cloned()
+                .unwrap_or_else(|| ItemEntity {
+                    entity_id: id as u32,
+                    stack: transfer.clone(),
+                    position: DVec3::from_array(position),
+                    previous_position: DVec3::from_array(position),
+                    velocity: DVec3::ZERO,
+                    age: 0,
+                    bob_offset: bob_offset(id),
+                    pickup_delay: 0,
+                    on_ground: true,
+                });
+            self.world_items.note_pickup(snapshot, target, transfer);
+        }
+        picked_up
+    }
+
+    /// The stacks the server let the player pick up go into the inventory
+    /// now, whatever waits (before a save, or the inventory drops at
+    /// death); what no longer fits drops at the feet. Whether any went in.
+    pub fn take_pickups(&mut self, feet: DVec3) -> bool {
+        let previous: HashMap<u32, ItemEntity> = self
+            .world_items
+            .entities
+            .iter()
+            .map(|e| (e.entity_id, e.clone()))
+            .collect();
+        self.apply_pickups(feet, &previous)
     }
 
     /// An item in a first-person hand under `pose` (the arm's, before the
@@ -694,7 +718,7 @@ impl Entities {
         let mut events = Events::default();
         self.receive(&mut events);
         if ticked {
-            self.server_items_tick(player.feet);
+            events.picked_up = self.server_items_tick(player.feet);
             // `ItemEntity.playerTouch`'s pickup pop.
             for _ in 0..self.world_items.take_pickup_sounds() {
                 let pitch =

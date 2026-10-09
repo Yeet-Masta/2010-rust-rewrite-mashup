@@ -389,8 +389,11 @@ impl Game {
     /// Saves the chunks changed since they were last saved, once the
     /// server has saved its entities and handed over what its block
     /// entities hold now (`Command::Flush`), so containers save with what
-    /// is in them.
+    /// is in them. First everything the server was sent is taken in (a
+    /// menu's answer, pickups), so the player saved after this is the one
+    /// the world saved with: vanilla saves both from one server state.
     fn save_chunks(&mut self) {
+        self.catch_up();
         let block_entities = self.entities.flush();
         self.world.stream.record_block_entities(block_entities);
         self.world.stream.save_edited();
@@ -517,7 +520,7 @@ impl Game {
             hurts: std::mem::take(&mut self.hurts),
         };
         let bright = self.world.sky_light_level() > 11.0;
-        self.entities.hold_pickups = self.inventory_busy();
+        self.entities.hold_pickups = self.pickups_wait();
         let events = self
             .entities
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
@@ -646,6 +649,9 @@ impl Game {
     /// What the server sent back: block and block entity changes, the
     /// mobs' doings, the menu's updates and the uses' answers, sounds.
     fn handle_events(&mut self, events: crate::entities::Events, use_held: bool) {
+        if events.picked_up {
+            self.inventory_changed();
+        }
         self.world.set_blocks(&events.changes);
         // Before another chunk goes to the server, as it expects.
         self.world
