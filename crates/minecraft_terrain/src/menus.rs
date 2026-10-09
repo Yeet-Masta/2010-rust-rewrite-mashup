@@ -30,7 +30,7 @@ use minecraftoss_core::nbt::Tag;
 use minecraftoss_core::BlockStateId;
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_player::inventory::Inventory;
-use minecraftoss_player::menu::{self, ChestMenu, DispenserMenu, HopperMenu, Menu, MenuContext, ShulkerBoxMenu};
+use minecraftoss_player::menu::{self, ChestMenu, DispenserMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::ContainerRef;
@@ -164,6 +164,9 @@ pub struct MenuUpdate {
     pub thrown: Vec<PlayerStack>,
     /// Experience levels the batch spent.
     pub xp_levels: i32,
+    /// The player's enchantment seed, when the batch re-rolled it
+    /// (`Player.onEnchantmentPerformed`).
+    pub enchantment_seed: Option<i32>,
     /// The player's ender inventory (27 slots) after the batch changed it,
     /// for the client to save.
     pub ender: Option<Vec<Option<PlayerStack>>>,
@@ -190,12 +193,15 @@ pub(crate) struct Menus {
     ender_changed: bool,
     /// `Player.random`, which menus draw from.
     random: LegacyRandom,
+    /// The level events the menus made at their blocks since the client
+    /// last heard of them: position, event id.
+    level_events: Vec<(BlockPos, i32)>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed) }
+        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed), level_events: Vec::new() }
     }
 }
 
@@ -232,6 +238,14 @@ impl Source {
         match self {
             Self::Container(c) => c.positions(),
             Self::EnderChest(pos) => vec![pos],
+        }
+    }
+
+    /// The menu's block, where its `ContainerLevelAccess` acts: the used
+    /// block, the first half of a double chest.
+    fn block(self) -> LevelPos {
+        match self {
+            Self::Container(ContainerRef::Single(pos, _) | ContainerRef::Double(pos, _)) | Self::EnderChest(pos) => pos,
         }
     }
 }
@@ -420,8 +434,10 @@ impl ServerSim {
             let mut random = self.menus.random.clone();
             let mut cx = context(&mut inventory, &mut random, &player);
             let mut update = MenuUpdate { id: open.id, ack: open.seq, closed: true, ..MenuUpdate::default() };
+            let block = open.source.block();
             self.finish_close(open, &mut cx);
             update.thrown = std::mem::take(&mut cx.thrown);
+            self.menu_effects(&mut cx, Some(block), player.feet);
             drop(cx);
             self.menus.random = random;
             before.answer(&mut inventory, &mut update);
@@ -514,6 +530,7 @@ impl ServerSim {
         let mut random = self.menus.random.clone();
         let mut cx = context(&mut inventory, &mut random, &player);
         let mut update = MenuUpdate { id, ack: seq, ..MenuUpdate::default() };
+        let block = self.menus.open.as_ref().filter(|open| open.id == id).map(|open| open.source.block());
         match self.menus.open.take() {
             Some(mut open) if open.id == id && !open.closing => {
                 open.creative = player.creative;
@@ -549,9 +566,8 @@ impl ServerSim {
         }
         update.thrown = std::mem::take(&mut cx.thrown);
         update.xp_levels = cx.xp_levels_spent;
-        for amount in std::mem::take(&mut cx.xp_orbs) {
-            self.level.award_experience(player.feet, amount);
-        }
+        update.enchantment_seed = (cx.enchantment_seed != player.enchantment_seed).then_some(cx.enchantment_seed);
+        self.menu_effects(&mut cx, block, player.feet);
         drop(cx);
         self.menus.random = random;
         before.answer(&mut inventory, &mut update);
@@ -560,6 +576,34 @@ impl ServerSim {
             update.ender = Some(self.menus.ender.clone());
         }
         update
+    }
+
+    /// What the inputs did in the world: experience orbs at the player's
+    /// feet or the centre of the menu's block, and the level events and
+    /// sounds at the block (`ContainerLevelAccess.execute`).
+    fn menu_effects(&mut self, cx: &mut MenuContext, block: Option<LevelPos>, feet: [f64; 3]) {
+        for (place, amount) in std::mem::take(&mut cx.xp_orbs) {
+            let at = match place {
+                MenuPlace::Player => Some(feet),
+                MenuPlace::Block => block.map(centre),
+            };
+            if let Some(at) = at {
+                self.level.award_experience(at, amount);
+            }
+        }
+        let events = std::mem::take(&mut cx.level_events);
+        let sounds = std::mem::take(&mut cx.sounds);
+        let Some(pos) = block else { return };
+        self.menus.level_events.extend(events.into_iter().map(|id| ((pos.x, pos.y, pos.z), id)));
+        for (event, volume, pitch) in sounds {
+            self.level.play_sound(event, centre(pos), volume, pitch);
+        }
+    }
+
+    /// The level events the menus made since the last call (position,
+    /// event id), for the client's `LevelEventHandler`.
+    pub fn take_level_events(&mut self) -> Vec<(BlockPos, i32)> {
+        std::mem::take(&mut self.menus.level_events)
     }
 
     /// `doCloseContainer`: the menu's `removed` (the carried stack goes
@@ -1252,6 +1296,27 @@ mod tests {
         }
         assert_eq!(server.level.opener_count(other), 0);
         assert_eq!(server.level.take_sounds().iter().map(|s| s.event).collect::<Vec<_>>(), ["minecraft:block.chest.close"]);
+    }
+
+    #[test]
+    fn menu_effects_happen_at_the_player_or_the_menus_block() {
+        let Some((mut server, _)) = world() else { return };
+        let block = LevelPos::new(3, 70, 5);
+        let feet = [8.5, 64.0, 8.5];
+        let mut inventory = Inventory::default();
+        let mut random = LegacyRandom::new(0);
+        let mut cx = MenuContext::new(&mut inventory, &mut random);
+        // A furnace's output at the player, the grindstone's at its block.
+        cx.xp_orbs = vec![(MenuPlace::Player, 3), (MenuPlace::Block, 7)];
+        cx.level_events = vec![1042];
+        cx.sounds = vec![("minecraft:ui.stonecutter.take_result", 1.0, 1.0)];
+        server.menu_effects(&mut cx, Some(block), feet);
+        let orbs: Vec<([f64; 3], i32)> = server.orbs().iter().map(|orb| (orb.position, orb.value)).collect();
+        assert_eq!(orbs, [(feet, 3), ([3.5, 70.5, 5.5], 7)]);
+        assert_eq!(server.take_level_events(), [((3, 70, 5), 1042)]);
+        let sounds: Vec<(&str, [f64; 3])> = server.level.take_sounds().iter().map(|s| (s.event, s.position)).collect();
+        assert_eq!(sounds, [("minecraft:ui.stonecutter.take_result", [3.5, 70.5, 5.5])]);
+        assert!(cx.xp_orbs.is_empty() && cx.level_events.is_empty() && cx.sounds.is_empty());
     }
 
     #[test]

@@ -236,6 +236,11 @@ impl Menu for TestMenu {
     fn can_take_for_pick_all(&self, _carried: &ItemStack, slot: usize) -> bool {
         slot != OUTPUT
     }
+
+    /// The output is a container of its own, as a result slot is.
+    fn own_container(&self, slot: usize) -> usize {
+        usize::from(slot == OUTPUT)
+    }
 }
 
 // Layouts (the menus' constructors).
@@ -1099,6 +1104,22 @@ fn a_drag_respects_each_slot_and_what_it_takes() {
     assert_eq!(own(&menu, OUTPUT), None);
     assert_eq!(own(&menu, 3), Some(st("glass_bottle", 9)));
     assert_eq!(cx.inventory.cursor, None);
+}
+
+#[test]
+fn slots_share_a_container_as_their_slot_containers_do() {
+    let menu = TestMenu::new(&[]);
+    assert!(same_container(&menu, 0, 3));
+    assert!(!same_container(&menu, 0, OUTPUT));
+    assert!(same_container(&menu, OUTPUT, OUTPUT));
+    // Main and hotbar are one inventory, and not the menu's.
+    assert!(same_container(&menu, PLAYER, PLAYER + 30));
+    assert!(!same_container(&menu, 0, PLAYER));
+    assert!(!same_container(&menu, 0, 999));
+    // A storage menu's slots are one container.
+    let chest = chest(&[]);
+    assert!(same_container(&chest, 0, 26));
+    assert!(!same_container(&chest, 26, 27));
 }
 
 #[test]

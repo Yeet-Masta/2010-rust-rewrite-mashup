@@ -1083,6 +1083,9 @@ pub struct Output {
     /// Block events for the clients within 64 blocks
     /// (`ClientboundBlockEventPacket`): the containers' lids.
     pub block_events: Vec<BlockEventView>,
+    /// `Level.levelEvent`s (`ClientboundLevelEventPacket`): position, event
+    /// id. For now the menus' at their blocks.
+    pub level_events: Vec<(BlockPos, i32)>,
     /// Mobs' hits on the players, in order.
     pub player_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     /// Splash potions that broke near players, in order.
@@ -1495,6 +1498,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         out.block_entities = sim.take_block_entity_changes();
         out.sounds = sim.level.take_sounds();
         out.block_events = sim.take_block_events();
+        out.level_events = sim.take_level_events();
         sim.block_entities_sent(handled);
         out.handled = handled;
         if outputs.send(out).is_err() {

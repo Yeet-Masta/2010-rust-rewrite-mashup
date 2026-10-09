@@ -10,7 +10,8 @@
 //! block storage before applying inputs and write back the ones that changed.
 //! What the menu needs of the player comes in a [`MenuContext`], which also
 //! collects what the inputs produce for the world: stacks thrown, levels
-//! spent and experience to award.
+//! spent, experience to award, and the level events and sounds at the
+//! menu's block.
 //!
 //! Not ported: bundles' click overrides (`tryItemClickBehaviourOverride`),
 //! which no menu here needs yet.
@@ -85,6 +86,18 @@ pub enum MenuInput {
     SlotState { slot: usize, enabled: bool },
     /// `ServerboundContainerClosePacket`: the menu's `removed`.
     Close,
+}
+
+/// Where a menu's effect in the world takes place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuPlace {
+    /// At the player (`player.position()`): a furnace's output experience
+    /// (`AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience`).
+    Player,
+    /// At the centre of the menu's block, the position of its
+    /// `ContainerLevelAccess` (`Vec3.atCenterOf(pos)`): the grindstone's
+    /// experience.
+    Block,
 }
 
 /// What a menu slot shows and changes.
@@ -233,7 +246,9 @@ pub struct MenuContext<'a> {
     pub creative: bool,
     /// `Player.experienceLevel`.
     pub xp_level: i32,
-    /// `Player.enchantmentSeed` (the enchanting table's).
+    /// `Player.enchantmentSeed`, which the enchanting table's offers come
+    /// from. A menu that re-rolls it (`onEnchantmentPerformed`) writes the
+    /// new seed here, for the player to keep.
     pub enchantment_seed: i32,
     /// The randomness menus draw on.
     pub random: &'a mut LegacyRandom,
@@ -241,9 +256,17 @@ pub struct MenuContext<'a> {
     pub thrown: Vec<ItemStack>,
     /// Levels the inputs spent (enchanting, the anvil).
     pub xp_levels_spent: i32,
-    /// Experience to award as orbs at the player, one `ExperienceOrb.award`
-    /// per entry (furnace output, the grindstone).
-    pub xp_orbs: Vec<i32>,
+    /// Experience to award as orbs, one `ExperienceOrb.award` per entry,
+    /// where each says.
+    pub xp_orbs: Vec<(MenuPlace, i32)>,
+    /// `Level.levelEvent(id, pos, 0)` at the menu's block, through its
+    /// access: the anvil's use (1030) and break (1029), the grindstone's
+    /// (1042), the smithing table's (1044).
+    pub level_events: Vec<i32>,
+    /// `Level.playSound(null, pos, event, BLOCKS, volume, pitch)` at the
+    /// menu's block: the stonecutter's, loom's and cartography table's take
+    /// sounds, the enchanting table's use. (event, volume, pitch).
+    pub sounds: Vec<(&'static str, f32, f32)>,
     /// Player slots written during the current input, each with its stack
     /// before the first write.
     touched: Vec<(usize, Option<ItemStack>)>,
@@ -264,6 +287,8 @@ impl<'a> MenuContext<'a> {
             thrown: Vec::new(),
             xp_levels_spent: 0,
             xp_orbs: Vec::new(),
+            level_events: Vec::new(),
+            sounds: Vec::new(),
             touched: Vec::new(),
             written: BTreeSet::new(),
         }
@@ -416,6 +441,28 @@ pub trait Menu {
     /// `canDragTo`: whether a drag may cover `slot`.
     fn can_drag_to(&self, _slot: usize) -> bool {
         true
+    }
+
+    /// Which of the menu's containers the own slot `slot` shows
+    /// (`Slot.container`), numbered from 0. A storage menu has one; a
+    /// workstation keeps its result in a container of its own
+    /// (`CraftingMenu.resultSlots`, `ItemCombinerMenu.resultSlots`).
+    fn own_container(&self, _slot: usize) -> usize {
+        0
+    }
+}
+
+/// `target.container == slot.container`: whether two menu slots show the
+/// same container. The player's slots are all its `Inventory`; the menu's
+/// own are in the containers [`Menu::own_container`] names.
+pub fn same_container<M: Menu + ?Sized>(menu: &M, a: usize, b: usize) -> bool {
+    let (Some(first), Some(second)) = (menu.slots().get(a), menu.slots().get(b)) else {
+        return false;
+    };
+    match (first.at, second.at) {
+        (SlotRef::Player(_), SlotRef::Player(_)) => true,
+        (SlotRef::Own(_), SlotRef::Own(_)) => menu.own_container(a) == menu.own_container(b),
+        _ => false,
     }
 }
 

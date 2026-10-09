@@ -172,6 +172,9 @@ pub struct Game {
     use_pending: Option<BlockPos>,
     /// The player's ender inventory, as the server last sent it, to save.
     ender_items: Vec<Option<ItemStack>>,
+    /// `Player.enchantmentSeed`, saved as `XpSeed`: what the enchanting
+    /// table offers from. A new player's is 0 until a menu re-rolls it.
+    enchantment_seed: i32,
     /// The action bar's message, and the ticks it has left.
     overlay: Option<(serde_json::Value, u32)>,
 }
@@ -249,6 +252,18 @@ impl Game {
         let ender_items = saved
             .as_ref()
             .map_or_else(Vec::new, |saved| saved.ender.clone());
+        // `Player.readAdditionalSaveData`: a saved seed of 0 becomes a
+        // random one.
+        let enchantment_seed = match saved.as_ref().map(|saved| saved.enchantment_seed) {
+            Some(0) => {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos() as u64);
+                minecraftoss_player::rng::LegacyRandom::new(nanos).next_i32()
+            }
+            Some(seed) => seed,
+            None => 0,
+        };
         let mut game = Self {
             world,
             player,
@@ -299,6 +314,7 @@ impl Game {
             menu: None,
             use_pending: None,
             ender_items,
+            enchantment_seed,
             overlay: None,
         };
         // A new world's seed is on disk before any of its chunks.
@@ -436,6 +452,7 @@ impl Game {
             selected: self.entities.selected,
             slots: self.entities.inventory.slots.clone(),
             ender: self.ender_items.clone(),
+            enchantment_seed: self.enchantment_seed,
         };
         match crate::save::write(dir, &saved) {
             Ok(()) => log!("Saved the world to {}", dir.display()),
@@ -701,6 +718,9 @@ impl Game {
         for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
             self.play(&event, Some(at), volume, pitch);
         }
+        for (pos, id) in events.level_events {
+            self.level_event(pos, id);
+        }
         for update in events.menu {
             self.menu_update(update);
         }
@@ -714,6 +734,25 @@ impl Game {
         }
         // An answer may have let the next batch go.
         self.flush_menu();
+    }
+
+    /// `LevelEventHandler.levelEvent` for the events menus make at their
+    /// blocks: the block's sound at its centre, pitched from 0.9 to 1.0.
+    fn level_event(&mut self, pos: BlockPos, id: i32) {
+        let event = match id {
+            1029 => "minecraft:block.anvil.destroy",
+            1030 => "minecraft:block.anvil.use",
+            1042 => "minecraft:block.grindstone.use",
+            1044 => "minecraft:block.smithing_table.use",
+            _ => return,
+        };
+        let pitch = self.sounds.random() * 0.1 + 0.9;
+        let at = DVec3::new(
+            f64::from(pos.0) + 0.5,
+            f64::from(pos.1) + 0.5,
+            f64::from(pos.2) + 0.5,
+        );
+        self.play(event, Some(at), 1.0, pitch);
     }
 
     fn keys(&mut self, input: &mut Input, gui: &Gui) {

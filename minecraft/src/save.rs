@@ -22,6 +22,8 @@ pub struct Saved {
     pub slots: Vec<Option<ItemStack>>,
     /// The ender chest's 27 slots (`EnderItems`), which are the player's.
     pub ender: Vec<Option<ItemStack>>,
+    /// `XpSeed`: the enchantment seed the enchanting table offers from.
+    pub enchantment_seed: i32,
 }
 
 const FILE: &str = "level.json";
@@ -59,6 +61,10 @@ pub fn read(dir: &Path) -> Option<Saved> {
         selected: player["selected"].as_u64().unwrap_or(0).min(8) as usize,
         slots,
         ender,
+        enchantment_seed: player["enchantment_seed"]
+            .as_i64()
+            .and_then(|seed| i32::try_from(seed).ok())
+            .unwrap_or(0),
     })
 }
 
@@ -107,6 +113,7 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             "flying": saved.flying,
             "inventory": inventory,
             "ender_items": slots_json(&saved.ender),
+            "enchantment_seed": saved.enchantment_seed,
         },
     });
     std::fs::create_dir_all(dir)?;
@@ -136,6 +143,7 @@ mod tests {
             selected: 0,
             slots: vec![None; 43],
             ender,
+            enchantment_seed: -1_234_567,
         }
     }
 
@@ -158,5 +166,20 @@ mod tests {
         let old = read(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(old.ender.is_empty());
+    }
+
+    #[test]
+    fn the_enchantment_seed_saves_with_the_player() {
+        let dir = std::env::temp_dir().join(format!("minecraft-seed-{}", std::process::id()));
+        write(&dir, &saved(Vec::new())).unwrap();
+        let loaded = read(&dir).unwrap();
+        assert_eq!(loaded.enchantment_seed, -1_234_567);
+        // A world saved before the seed was kept reads 0, which the game
+        // replaces with a random one (`readAdditionalSaveData`).
+        let value = json!({"seed": 1, "player": {"position": [0, 0, 0], "inventory": []}});
+        std::fs::write(dir.join(FILE), value.to_string()).unwrap();
+        let old = read(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(old.enchantment_seed, 0);
     }
 }

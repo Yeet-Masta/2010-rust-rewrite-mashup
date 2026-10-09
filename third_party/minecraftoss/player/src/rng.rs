@@ -76,6 +76,11 @@ impl LegacyRandom {
         ((upper << 32).wrapping_add(lower)) as u64
     }
 
+    /// `nextInt()`: any int.
+    pub fn next_i32(&mut self) -> i32 {
+        self.bits(32) as i32
+    }
+
     pub fn next_int(&mut self, bound: u32) -> u32 {
         assert!(bound > 0 && bound <= i32::MAX as u32);
         let mask = bound - 1;

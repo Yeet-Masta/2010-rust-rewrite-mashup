@@ -380,9 +380,8 @@ impl ClientMenu {
                 // the clicked slot's container holding what the last one
                 // moved, each worked out before the next is looked at.
                 if let Some(moved) = self.last_quick_moved.clone() {
-                    let clicked = self.menu.slots()[index].at;
                     for target in 0..self.menu.slots().len() {
-                        if same_container(self.menu.slots()[target].at, clicked)
+                        if menu::same_container(self.menu.as_ref(), target, index)
                             && self.item(target).is_some()
                             && self.with(|menu, cx| menu.may_pickup(cx, target))
                             && menu::can_item_quick_replace(self.item(target), &moved, true)
@@ -543,15 +542,6 @@ impl ClientMenu {
     }
 }
 
-/// `target.container == slot.container`: the menu's own slots are one
-/// container, the player's inventory (main and hotbar) another.
-fn same_container(a: SlotRef, b: SlotRef) -> bool {
-    matches!(
-        (a, b),
-        (SlotRef::Own(_), SlotRef::Own(_)) | (SlotRef::Player(_), SlotRef::Player(_))
-    )
-}
-
 impl Game {
     /// What the server reads of the player with a use or a menu batch.
     pub(super) fn player_context(&self) -> PlayerContext {
@@ -562,7 +552,7 @@ impl Game {
             feet: self.player.pos.to_array(),
             creative: self.creative,
             xp_level: self.player.survival.experience_level.min(i32::MAX as u32) as i32,
-            enchantment_seed: 0,
+            enchantment_seed: self.enchantment_seed,
         }
     }
 
@@ -611,6 +601,9 @@ impl Game {
             let levels = u32::try_from(update.xp_levels).unwrap_or(0);
             let survival = &mut self.player.survival;
             survival.experience_level = survival.experience_level.saturating_sub(levels);
+            if let Some(seed) = update.enchantment_seed {
+                self.enchantment_seed = seed;
+            }
         }
         self.throw(update.thrown.clone());
         if let Some(ender) = update.ender.clone() {

@@ -84,6 +84,8 @@ pub struct Events {
     pub use_results: Vec<UseResult>,
     /// Stacks the server let the player pick up went into the inventory.
     pub picked_up: bool,
+    /// `Level.levelEvent`s: position, event id.
+    pub level_events: Vec<((i32, i32, i32), i32)>,
 }
 
 pub struct Entities {
@@ -747,6 +749,7 @@ impl Entities {
             events.bone_meal_used.extend(output.bone_meal_used);
             events.menu.extend(output.menu);
             events.use_results.extend(output.use_results);
+            events.level_events.extend(output.level_events);
             // The level's own sounds: containers opening and closing.
             for sound in &output.sounds {
                 self.sounds.push((
