@@ -22,6 +22,7 @@ pub mod texture_mips;
 pub mod audio;
 pub mod server;
 pub mod server_mobs;
+pub mod stacks;
 pub mod mob_actions;
 pub mod walk_animation;
 pub mod cow_render;

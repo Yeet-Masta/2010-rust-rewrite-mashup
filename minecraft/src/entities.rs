@@ -59,6 +59,10 @@ pub struct PlayerView {
 pub struct Events {
     /// Blocks it changed (crops, doors, creeper blasts, endermen).
     pub changes: Vec<((i32, i32, i32), Option<Block>)>,
+    /// Block entities it created, changed or removed (`None`), as saved,
+    /// for the chunks to keep: they go to the chunk map before another
+    /// chunk is sent.
+    pub block_entities: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     pub hits: Vec<PlayerHit>,
     /// Experience points of orbs the player took.
     pub experience: u32,
@@ -179,6 +183,12 @@ impl Entities {
         self.server.unload_chunk(pos);
     }
 
+    /// Before a save: the server saves its entities and hands over every
+    /// block entity change so far, for the chunks to save with them.
+    pub fn flush(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
+        self.server.flush()
+    }
+
     /// The stack in the selected hotbar slot.
     pub fn held(&self) -> Option<&ItemStack> {
         self.inventory.slots[self.selected].as_ref()
@@ -258,9 +268,11 @@ impl Entities {
                 stack.components = components
                     .as_deref()
                     .and_then(|c| serde_json::from_str(c).ok());
-                if stack.components.is_none() {
-                    stack.max = stack.max.min(recipes.max_stack(item));
-                }
+                // Its own size limit, which components can set.
+                stack.max =
+                    minecraft_terrain::stacks::max_stack(item, stack.components.as_ref(), |id| {
+                        i32::from(recipes.max_stack(id))
+                    });
                 stack
             };
             let taken = match self
@@ -317,9 +329,11 @@ impl Entities {
                     .components
                     .as_deref()
                     .and_then(|c| serde_json::from_str(c).ok());
-                if stack.components.is_none() {
-                    stack.max = stack.max.min(recipes.max_stack(&item.item));
-                }
+                stack.max = minecraft_terrain::stacks::max_stack(
+                    &item.item,
+                    stack.components.as_ref(),
+                    |id| i32::from(recipes.max_stack(id)),
+                );
                 ItemEntity {
                     entity_id: item.id as u32,
                     stack,
@@ -623,6 +637,7 @@ impl Entities {
             }
             self.server_picked.extend(output.picked);
             events.changes.extend(output.changes);
+            events.block_entities.extend(output.block_entities);
             events.bone_meal_used.extend(output.bone_meal_used);
             for summoned in &output.summoned {
                 if let Err(error) = summoned {

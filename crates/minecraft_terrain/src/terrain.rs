@@ -1275,6 +1275,13 @@ impl TerrainStream {
         self.server.set_blocks(&edits);
     }
 
+    /// Hands the integrated server's block entity changes (saved tags,
+    /// `None` where one was removed) to the chunks that are saved and sent
+    /// again.
+    pub fn record_block_entities(&mut self, changes: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>) {
+        self.server.set_block_entities(changes.into_iter().map(|((x, y, z), tag)| (minecraftoss_core::BlockPos::new(x, y, z), tag)));
+    }
+
     /// An edit at these positions: nearby sections rebuild for the player
     /// (`LevelRenderer.setBlockDirty`), and nearby chunks relight; sections
     /// whose light changed rebuild when that finishes.

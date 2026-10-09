@@ -92,6 +92,13 @@ impl MovingBlocks {
     /// `LevelChunk.removeBlockEntity` and `removeBlockEntityTicker`.
     pub fn remove(&mut self, pos: BlockPos) {
         self.entities.remove(&pos);
+        self.unbind(pos);
+    }
+
+    /// `removeBlockEntityTicker` alone (`clearAllBlockEntities` as a chunk
+    /// unloads): the ticker stops, and a moving block's state is kept for
+    /// the chunk's return.
+    pub fn unbind(&mut self, pos: BlockPos) {
         if let Some((pending, index)) = self.live.remove(&pos) {
             if pending {
                 self.pending[index].1 = true;
@@ -99,6 +106,17 @@ impl MovingBlocks {
                 self.tickers[index].1 = true;
             }
         }
+    }
+
+    /// The positions with a live ticker, in no particular order.
+    pub fn live_positions(&self) -> impl Iterator<Item = BlockPos> + '_ {
+        self.live.keys().copied()
+    }
+
+    /// The positions with a live ticker in ticking order: the list, then
+    /// those waiting to join it.
+    pub fn ticking_order(&self) -> Vec<BlockPos> {
+        self.tickers.iter().chain(&self.pending).filter(|(_, removed)| !removed).map(|(pos, _)| *pos).collect()
     }
 }
 

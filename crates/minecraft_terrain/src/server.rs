@@ -46,7 +46,16 @@ pub struct ServerSim {
     take_xp_delay: i32,
     /// The client was asked to close its trading screen.
     merchant_closing: bool,
+    /// The block entities of chunks unloaded lately, by chunk, with the
+    /// count of handled commands whose output carried their last changes
+    /// (`u64::MAX` until it is sent): a chunk the client sends back before
+    /// it has applied that output comes with stale block entities, and
+    /// takes these instead.
+    unloaded_block_entities: std::collections::HashMap<ChunkPos, (u64, BlockEntityMap)>,
 }
+
+/// A chunk's block entities by position, as saved.
+type BlockEntityMap = std::collections::BTreeMap<(i32, i32, i32), minecraftoss_core::nbt::Tag>;
 
 /// What a player's hit or use on a mob did, for the client to present.
 #[derive(Clone, Debug, Default)]
@@ -163,20 +172,6 @@ pub struct ServerTnt {
     pub fuse: i32,
 }
 
-fn stack_of(item: &str, count: i32, components: Option<&str>) -> minecraftoss_core::item::ItemStack {
-    let mut stack = minecraftoss_core::item::ItemStack::new(item, count);
-    stack.components = components.map(|json| minecraftoss_core::nbt::Tag::String(json.to_owned()));
-    stack
-}
-
-fn components_of(stack: &minecraftoss_core::item::ItemStack) -> Option<String> {
-    match &stack.components {
-        Some(minecraftoss_core::nbt::Tag::String(json)) => Some(json.clone()),
-        Some(other) => Some(format!("{other:?}")),
-        None => None,
-    }
-}
-
 impl ServerSim {
     /// A level for a dimension. The world generation data lives as long as
     /// the process (one small leak per world opened).
@@ -218,6 +213,7 @@ impl ServerSim {
             explosions: Vec::new(),
             take_xp_delay: 0,
             merchant_closing: false,
+            unloaded_block_entities: std::collections::HashMap::new(),
         }
     }
 
@@ -265,9 +261,7 @@ impl ServerSim {
             crate::mob_actions::interact(&mut self.mobs, hit, &mut actor)
         };
         for (stack, position) in outcome.drops {
-            let components = stack.components.as_ref().map(|c| c.to_string());
-            let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
-            self.level.spawn_at_location(position.to_array(), stack);
+            self.level.spawn_at_location(position.to_array(), crate::stacks::to_level(&stack));
         }
         for (position, amount) in outcome.experience {
             self.level.award_experience(position.to_array(), amount);
@@ -323,8 +317,7 @@ impl ServerSim {
             MerchantOp::Result { shift } => self.mobs.merchant_click_result(0, shift, &mut inventory),
             MerchantOp::Close => {
                 for stack in self.mobs.merchant_close(0, &mut inventory, selected) {
-                    let components = stack.components.as_ref().map(|c| c.to_string());
-                    self.level.spawn_at_location(feet, stack_of(&stack.id, i32::from(stack.count), components.as_deref()));
+                    self.level.spawn_at_location(feet, crate::stacks::to_level(&stack));
                 }
                 self.merchant_closing = false;
             }
@@ -364,13 +357,24 @@ impl ServerSim {
 
     /// A chunk joins the level with its entities (`EntityStorage`): those
     /// saved for it, or for a chunk the level never saved, the ones
-    /// generation made. A chunk sent again keeps the entities it has.
+    /// generation made. A chunk sent again keeps the entities and block
+    /// entities it has; one that left lately takes back the block entities
+    /// it left with, if the client had not heard of their last changes.
+    /// Then its block entities are made to fit its blocks and tick.
     pub fn load_chunk(&mut self, chunk: &Chunk) {
         let fresh = self.level.chunk(chunk.pos).is_none();
-        self.level.insert_chunk(chunk.clone());
+        let mut joining = chunk.clone();
+        if let Some(loaded) = self.level.chunk(chunk.pos) {
+            joining.block_entities = loaded.block_entities.clone();
+        } else if let Some((_, left)) = self.unloaded_block_entities.remove(&chunk.pos) {
+            joining.block_entities.entities = left;
+            joining.block_entities.pending.clear();
+        }
+        self.level.insert_chunk(joining);
         if !fresh {
             return;
         }
+        self.level.load_block_entities(chunk.pos);
         self.level.schedule_generation_ticks(chunk);
         self.load_pois(chunk);
         let saved = self.storage.as_ref().and_then(|storage| {
@@ -576,9 +580,7 @@ impl ServerSim {
     fn drop_death_loot(&mut self) {
         let (drops, experience) = crate::mob_actions::death_remains(&mut self.mobs, self.entity_loot.as_mut());
         for (stack, position) in drops {
-            let components = stack.components.as_ref().map(|c| c.to_string());
-            let stack = stack_of(&stack.id, i32::from(stack.count), components.as_deref());
-            self.level.spawn_at_location(position.to_array(), stack);
+            self.level.spawn_at_location(position.to_array(), crate::stacks::to_level(&stack));
         }
         for (position, amount) in experience {
             self.level.award_experience(position.to_array(), amount);
@@ -658,11 +660,38 @@ impl ServerSim {
         })
     }
 
-    /// A chunk leaves the level; its entities are saved and taken out.
+    /// A chunk leaves the level; its entities are saved and taken out,
+    /// and its block entities kept until the client has applied their
+    /// changes.
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
         self.save_chunk_entities(pos, true);
-        self.level.remove_chunk(pos);
+        if let Some(chunk) = self.level.remove_chunk(pos) {
+            self.unloaded_block_entities.insert(pos, (u64::MAX, chunk.block_entities.entities));
+        }
         self.mobs.pois.unload_chunk(pos.x, pos.z);
+    }
+
+    /// The block entities created, changed or removed since the last call,
+    /// with their saved tags (`None`: removed), for the chunks the client
+    /// saves.
+    pub fn take_block_entity_changes(&mut self) -> Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)> {
+        self.level.take_block_entity_changes()
+    }
+
+    /// The output carrying the changes taken so far is sent, `handled`
+    /// commands in.
+    fn block_entities_sent(&mut self, handled: u64) {
+        for (sent, _) in self.unloaded_block_entities.values_mut() {
+            if *sent == u64::MAX {
+                *sent = handled;
+            }
+        }
+    }
+
+    /// The client has applied the block entities of every output up to
+    /// `handled` commands: chunks it sends from now on carry them.
+    pub fn block_entities_applied(&mut self, handled: u64) {
+        self.unloaded_block_entities.retain(|_, (sent, _)| *sent > handled);
     }
 
     fn state_of(&self, block: Option<&Block>) -> BlockStateId {
@@ -749,7 +778,7 @@ impl ServerSim {
     /// server, which simulates it from then on; returns its entity ID.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_item(&mut self, item: &str, count: i32, components: Option<&str>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32) -> i32 {
-        self.level.spawn_item_with(position, stack_of(item, count, components), velocity, pickup_delay, age)
+        self.level.spawn_item_with(position, crate::stacks::level_stack(item, count, components), velocity, pickup_delay, age)
     }
 
     /// The server's item entities.
@@ -762,7 +791,7 @@ impl ServerSim {
                 id: e.id,
                 item: d.stack.id.clone(),
                 count: d.stack.count,
-                components: components_of(&d.stack),
+                components: crate::stacks::components_text(&d.stack),
                 position: e.pos,
                 previous_position: e.old_position(),
                 velocity: e.delta,
@@ -804,12 +833,12 @@ impl ServerSim {
     pub fn pickup(&mut self, feet: [f64; 3], mut take: impl FnMut(&str, i32, Option<&str>) -> i32) -> Vec<(i32, [f64; 3], String, i32, Option<String>)> {
         self.level
             .player_touch_items(feet, |stack| {
-                let components = components_of(stack);
+                let components = crate::stacks::components_text(stack);
                 take(&stack.id, stack.count, components.as_deref())
             })
             .into_iter()
             .map(|(id, position, stack)| {
-                let components = components_of(&stack);
+                let components = crate::stacks::components_text(&stack);
                 (id, position, stack.id, stack.count, components)
             })
             .collect()
@@ -854,7 +883,9 @@ impl ServerSim {
 
 /// What the client asks of the integrated server thread, in order.
 pub enum Command {
-    LoadChunk(Arc<Chunk>),
+    /// A chunk the client sends, built after it applied the block entities
+    /// of the outputs up to `applied` handled commands.
+    LoadChunk { chunk: Arc<Chunk>, applied: u64 },
     UnloadChunk(ChunkPos),
     /// A block the client set, as the client scene now shows it.
     PlayerEdit { pos: BlockPos, block: Option<Block>, edit: PlayerEdit },
@@ -878,6 +909,9 @@ pub enum Command {
     Merchant { op: MerchantOp, inventory: Box<minecraftoss_player::inventory::Inventory>, selected: usize, feet: [f64; 3] },
     /// One server tick, with the player's state for it.
     Tick(Box<TickInput>),
+    /// Before the client saves: the entities are saved (the autosave), and
+    /// the output answering it carries every block entity change so far.
+    Flush,
 }
 
 /// The client state a server tick reads.
@@ -931,6 +965,9 @@ pub struct MovingBlockView {
 pub struct Output {
     /// Blocks that changed, with the block now there.
     pub changes: Vec<(BlockPos, Option<Block>)>,
+    /// Block entities created, changed or removed, with their saved tags
+    /// (`None`: removed), for the client's chunks to save and send again.
+    pub block_entities: Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)>,
     /// Entity snapshots, after a tick.
     pub entities: Option<EntitySnapshot>,
     /// Experience orbs the player took: (entity ID, position, value).
@@ -977,6 +1014,10 @@ pub struct ServerHandle {
     uses: Arc<Vec<bool>>,
     attacks: Arc<Vec<bool>>,
     sent: u64,
+    /// The commands handled as of the last output polled: the caller
+    /// applies each polled output's block entities to its chunks before it
+    /// sends another chunk.
+    applied: u64,
     /// Outputs [`Self::wait_idle`] received ahead of the next poll.
     waited: Vec<Output>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -994,7 +1035,7 @@ impl ServerHandle {
             .name("Server thread".into())
             .spawn(move || server_loop(sim, receiver, sender))
             .expect("server thread starts");
-        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, waited: Vec::new(), thread: Some(thread) }
+        Self { commands: Some(commands), outputs, states, uses: Arc::new(uses), attacks: Arc::new(attacks), sent: 0, applied: 0, waited: Vec::new(), thread: Some(thread) }
     }
 
     fn send(&mut self, command: Command) {
@@ -1016,7 +1057,7 @@ impl ServerHandle {
     }
 
     pub fn load_chunk(&mut self, chunk: &Arc<Chunk>) {
-        self.send(Command::LoadChunk(chunk.clone()));
+        self.send(Command::LoadChunk { chunk: chunk.clone(), applied: self.applied });
     }
 
     pub fn unload_chunk(&mut self, pos: ChunkPos) {
@@ -1100,11 +1141,31 @@ impl ServerHandle {
         self.send(Command::MobAction { hit, attack, inventory: Box::new(inventory.clone()), selected, infinite });
     }
 
-    /// Outputs the server has produced since the last call.
+    /// Outputs the server has produced since the last call. The caller
+    /// applies their block entities before it sends another chunk.
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = std::mem::take(&mut self.waited);
         outputs.extend(self.outputs.try_iter());
+        if let Some(last) = outputs.last() {
+            self.applied = last.handled;
+        }
         outputs
+    }
+
+    /// Before a save: the server saves its entities, and once it has
+    /// handled everything sent, the block entity changes so far are
+    /// returned for the chunks to save (the next poll leaves them out).
+    pub fn flush(&mut self) -> Vec<(BlockPos, Option<minecraftoss_core::nbt::Tag>)> {
+        self.send(Command::Flush);
+        self.wait_idle();
+        let mut changes = Vec::new();
+        for output in &mut self.waited {
+            changes.append(&mut output.block_entities);
+        }
+        if let Some(last) = self.waited.last() {
+            self.applied = last.handled;
+        }
+        changes
     }
 
     /// Blocks until the server has handled every command sent so far (a
@@ -1130,12 +1191,12 @@ impl Drop for ServerHandle {
     }
 }
 
+/// The stack an item entity offers the player's inventory, its size limit
+/// from its components or the recipe book's item defaults.
 fn make_stack(recipes: &minecraftoss_player::crafting::RecipeBook, item: &str, count: i32, components: Option<&str>) -> minecraftoss_player::inventory::ItemStack {
     let mut stack = minecraftoss_player::inventory::ItemStack::new(item, count.clamp(0, 255) as u8);
     stack.components = components.and_then(|c| serde_json::from_str(c).ok());
-    if stack.components.is_none() {
-        stack.max = stack.max.min(recipes.max_stack(item));
-    }
+    stack.max = crate::stacks::max_stack(item, stack.components.as_ref(), |id| i32::from(recipes.max_stack(id)));
     stack
 }
 
@@ -1148,7 +1209,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         while let Some(command) = next.take().or_else(|| commands.try_recv().ok()) {
             handled += 1;
             match command {
-                Command::LoadChunk(chunk) => sim.load_chunk(&chunk),
+                Command::LoadChunk { chunk, applied } => {
+                    sim.block_entities_applied(applied);
+                    sim.load_chunk(&chunk);
+                }
                 Command::UnloadChunk(pos) => sim.unload_chunk(pos),
                 Command::PlayerEdit { pos, block, edit } => sim.player_edit_block(pos, block.as_ref(), edit),
                 Command::UseBlock { pos, facing } => {
@@ -1176,6 +1240,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Merchant { op, inventory, selected, feet } => {
                     out.merchant.push(sim.merchant(op, *inventory, selected, feet));
+                }
+                Command::Flush => {
+                    sim.ticks_since_save = 0;
+                    sim.save_all_entities();
                 }
                 Command::Tick(input) => {
                     let started = std::time::Instant::now();
@@ -1246,6 +1314,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
             }
         }
         out.changes = sim.take_changes();
+        out.block_entities = sim.take_block_entity_changes();
+        sim.block_entities_sent(handled);
         out.handled = handled;
         if outputs.send(out).is_err() {
             break;
@@ -2595,5 +2665,203 @@ mod tests {
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);
         assert!((2..=5).contains(&age), "bone meal adds 2 to 5 ages: {age}");
         assert!(!server.bone_meal((8, 200, 8), "up"), "farmland does not take bone meal");
+    }
+
+    /// What the client does with an output: the block changes and the
+    /// block entity changes go to the chunk map, which saves and resends
+    /// its chunks.
+    fn client_applies(server: &mut ServerSim, map: &mut ChunkMap, states: &BlockStates) {
+        let blocks: Vec<(minecraftoss_core::BlockPos, BlockStateId)> = server
+            .take_changes()
+            .into_iter()
+            .map(|((x, y, z), block)| (minecraftoss_core::BlockPos::new(x, y, z), block.and_then(|b| states.state_of(&b)).unwrap_or(BlockStateId::AIR)))
+            .collect();
+        map.set_blocks(&blocks);
+        map.set_block_entities(server.take_block_entity_changes().into_iter().map(|((x, y, z), tag)| (minecraftoss_core::BlockPos::new(x, y, z), tag)));
+    }
+
+    /// What a survival player puts in a chest: an enchanted, renamed sword,
+    /// a potion, dyed leather and a patterned banner, each its item's size
+    /// limit.
+    fn treasures(level: &Level<'static>) -> Vec<minecraftoss_player::inventory::ItemStack> {
+        let items = &level.registries().items;
+        let stack = |id: &str, count: u8, components: serde_json::Value| {
+            let max = crate::stacks::max_stack(id, Some(&components), |id| items.max_stack(id));
+            minecraftoss_player::inventory::ItemStack { id: id.to_owned(), count, max, components: Some(components) }
+        };
+        vec![
+            stack(
+                "minecraft:diamond_sword",
+                1,
+                serde_json::json!({
+                    "minecraft:enchantments": {"minecraft:sharpness": 5, "minecraft:mending": 1},
+                    "minecraft:custom_name": {"text": "Excalibur", "italic": false},
+                    "minecraft:damage": 40,
+                    "minecraft:repair_cost": 1
+                }),
+            ),
+            stack("minecraft:potion", 1, serde_json::json!({"minecraft:potion_contents": {"potion": "minecraft:strong_healing"}})),
+            stack("minecraft:leather_helmet", 1, serde_json::json!({"minecraft:dyed_color": 11546150})),
+            stack("minecraft:white_banner", 3, serde_json::json!({"minecraft:banner_patterns": [{"pattern": "minecraft:rhombus", "color": "blue"}, {"pattern": "minecraft:border", "color": "black"}]})),
+        ]
+    }
+
+    /// The player stacks a container holds, by slot (empty slots left out).
+    fn held(level: &Level<'static>, pos: (i32, i32, i32)) -> Vec<minecraftoss_player::inventory::ItemStack> {
+        let items = &level.registries().items;
+        let stacks = level.block_container_items(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2)).expect("a container");
+        stacks.iter().filter_map(|s| crate::stacks::to_player(s, |id| items.max_stack(id))).collect()
+    }
+
+    /// A chest's items, components and all, go with its chunk to the chunk
+    /// map and come back with it; a chunk the client sends back before it
+    /// heard of the last changes takes the server's own; one sent again
+    /// while loaded keeps the level's; and a chunk loads with the block
+    /// entities its blocks take.
+    #[test]
+    fn chest_items_keep_their_components_across_reloads() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states.clone());
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        server.take_block_entity_changes();
+        let (pos, at, chunk_pos) = ((8, 200, 8), minecraftoss_core::BlockPos::new(8, 200, 8), ChunkPos::new(0, 0));
+        scene.set(pos, Some(Block::new("minecraft:chest")));
+        server.player_edit(&scene, pos, PlayerEdit::Place);
+        let chest = server.level.container_at(at, true).expect("a placed chest holds items");
+        let treasures = treasures(&server.level);
+        for (slot, stack) in treasures.iter().enumerate() {
+            server.level.container_set_item(chest, slot, crate::stacks::to_level(stack));
+        }
+        client_applies(&mut server, &mut map, &states);
+        // Unloaded once the client has heard of everything, and sent back.
+        server.unload_chunk(chunk_pos);
+        server.block_entities_sent(1);
+        server.block_entities_applied(1);
+        assert!(server.unloaded_block_entities.is_empty(), "the client's copy is current");
+        let reloaded = map.chunk(chunk_pos).cloned().expect("a loaded chunk");
+        assert!(reloaded.block_entities.entities.contains_key(&pos), "the chunk map holds the chest");
+        server.load_chunk(&reloaded);
+        assert_eq!(held(&server.level, pos), treasures, "the chest comes back as it was");
+
+        // The client lags: the chest changes and its chunk leaves, and the
+        // chunk comes back before the client applies the output that told
+        // of it.
+        let chest = server.level.container_at(at, true).expect("the chest");
+        server.level.container_set_item(chest, 10, minecraftoss_core::item::ItemStack::new("minecraft:diamond", 7));
+        let stale = map.chunk(chunk_pos).cloned().expect("a loaded chunk");
+        server.unload_chunk(chunk_pos);
+        let left = server.take_block_entity_changes();
+        assert!(left.iter().any(|(p, tag)| *p == pos && tag.is_some()), "the change leaves with its chunk: {left:?}");
+        server.block_entities_sent(5);
+        server.block_entities_applied(4);
+        server.load_chunk(&stale);
+        let items = server.level.block_container_items(at).expect("the chest");
+        assert_eq!((items[10].id.as_str(), items[10].count), ("minecraft:diamond", 7), "the server's own block entities win");
+        assert_eq!(held(&server.level, pos)[..4], treasures[..]);
+
+        // Sent again while loaded, the chunk keeps the level's block entities.
+        server.level.container_set_item(chest, 11, minecraftoss_core::item::ItemStack::new("minecraft:emerald", 2));
+        server.load_chunk(&stale);
+        assert_eq!(server.level.block_container_items(at).expect("the chest")[11].count, 2);
+
+        // A chest saved without its block entity gets one, and a tag where
+        // no entity block stands is dropped.
+        let mut old = (**map.chunk(chunk_pos).expect("a loaded chunk")).clone();
+        old.block_entities.entities.remove(&pos);
+        let furnace = registries.block_entities.as_ref().and_then(|c| c.default_nbt("minecraft:furnace", (9, 200, 9))).expect("a furnace default");
+        old.block_entities.entities.insert((9, 200, 9), furnace);
+        server.unload_chunk(chunk_pos);
+        server.block_entities_sent(9);
+        server.block_entities_applied(9);
+        server.take_block_entity_changes();
+        server.load_chunk(&old);
+        assert!(server.level.container_at(at, true).is_some(), "a placed chest has a container after a reload");
+        let loaded = server.level.chunk(chunk_pos).expect("loaded");
+        assert!(!loaded.block_entities.entities.contains_key(&(9, 200, 9)), "the stray furnace is dropped");
+        let changes = server.take_block_entity_changes();
+        assert!(changes.iter().any(|(p, tag)| *p == (9, 200, 9) && tag.is_none()), "{changes:?}");
+        assert!(changes.iter().any(|(p, tag)| *p == pos && tag.as_ref().and_then(|t| t.get("id")).and_then(minecraftoss_core::nbt::Tag::as_str) == Some("minecraft:chest")), "{changes:?}");
+    }
+
+    /// A hopper between two chests is saved to the region files with what
+    /// it and the chests hold, and in a new session it is ticking again
+    /// (registered as its chunk loads) and moves the items down, their
+    /// components intact.
+    #[test]
+    fn a_saved_hopper_ticks_in_a_new_session() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let dir = std::env::temp_dir().join(format!("minecraftoss-block-entity-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = || minecraftoss_world::storage::ChunkStorage::new(&dir, "minecraft:overworld", registries.clone(), -64, 384);
+        let (top, hopper, bottom, detector) = ((8, 202, 8), (8, 201, 8), (8, 200, 8), (10, 200, 8));
+        let treasures = {
+            let mut map = ChunkMap::with_storage(worldgen.clone(), 2, 4, Some(storage()));
+            let mut server = ServerSim::new(worldgen.clone(), states.clone(), "minecraft:overworld");
+            let mut scene = HandcraftedScene::streamed(states.clone());
+            for x in -1..=1 {
+                for z in -1..=1 {
+                    let chunk = map.load_now(ChunkPos::new(x, z));
+                    server.load_chunk(&chunk);
+                    scene.insert_chunk(chunk);
+                }
+            }
+            for (pos, block) in [(bottom, "minecraft:chest"), (hopper, "minecraft:hopper"), (top, "minecraft:chest"), (detector, "minecraft:daylight_detector")] {
+                scene.set(pos, Some(Block::new(block)));
+                server.player_edit(&scene, pos, PlayerEdit::Place);
+            }
+            let chest = server.level.container_at(minecraftoss_core::BlockPos::new(top.0, top.1, top.2), true).expect("the top chest");
+            let treasures = treasures(&server.level);
+            for (slot, stack) in treasures.iter().enumerate() {
+                server.level.container_set_item(chest, slot, crate::stacks::to_level(stack));
+            }
+            client_applies(&mut server, &mut map, &states);
+            map.save_edited();
+            treasures
+        };
+        // A new session reads the chunk from the region files.
+        let mut map = ChunkMap::with_storage(worldgen.clone(), 2, 4, Some(storage()));
+        let saved = map.load_now(ChunkPos::new(0, 0));
+        for pos in [top, hopper, bottom, detector] {
+            assert!(saved.block_entities.entities.contains_key(&pos), "{pos:?} is saved: {:?}", saved.block_entities.entities.keys().collect::<Vec<_>>());
+        }
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -1..=1 {
+            for z in -1..=1 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        assert_eq!(held(&server.level, top), treasures, "the top chest is read back as it was saved");
+        let ticking = server.level.moving.ticking_order();
+        for pos in [hopper, detector] {
+            assert!(ticking.contains(&minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2)), "{pos:?} ticks: {ticking:?}");
+        }
+        // A hopper moves an item every 8 ticks.
+        for _ in 0..8 * 8 + 16 {
+            server.tick();
+        }
+        let mut moved = held(&server.level, bottom);
+        moved.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut expected = treasures.clone();
+        expected.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(moved, expected, "the hopper moved everything down, components and all");
+        assert!(held(&server.level, top).is_empty() && held(&server.level, hopper).is_empty());
+        drop(map);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

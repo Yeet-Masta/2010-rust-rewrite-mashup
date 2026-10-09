@@ -104,6 +104,12 @@ pub struct Level<'a> {
     /// Every block set, in order, for the points of interest
     /// (`ServerLevel.updatePOIOnBlockStateChange`), until taken.
     block_log: Vec<(i32, i32, i32)>,
+    /// Block entities created, changed or removed since last taken, for
+    /// the chunks the client saves (`LevelChunk.markUnsaved`).
+    block_entities_changed: BTreeSet<(i32, i32, i32)>,
+    /// Changes not yet taken in chunks unloaded since, with what each
+    /// block entity then held.
+    departed_block_entities: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     void_air: BlockStateId,
     /// `#minecraft:washed_away_by_fluids`.
     washed_away: minecraftoss_core::tags::TagId,
@@ -226,6 +232,8 @@ impl<'a> Level<'a> {
             lava_source_conversion: false,
             changed: BTreeSet::new(),
             block_log: Vec::new(),
+            block_entities_changed: BTreeSet::new(),
+            departed_block_entities: Vec::new(),
             void_air: lib.registries.blocks.parse_state("minecraft:void_air").expect("void_air exists"),
             washed_away: lib.registries.block_tags.require("minecraft:washed_away_by_fluids").expect("tag exists"),
             kinds: redstone::Kinds::new(&lib.registries),
@@ -284,11 +292,124 @@ impl<'a> Level<'a> {
         self.chunks.insert(chunk.pos, chunk);
     }
 
-    /// Drops a chunk (unloading); its pending ticks stay queued.
+    /// Drops a chunk (unloading); its pending ticks stay queued. Its block
+    /// entities stop ticking (`LevelChunk.clearAllBlockEntities`), and
+    /// their changes not yet taken leave with what they held.
     pub fn remove_chunk(&mut self, pos: ChunkPos) -> Option<Chunk> {
         self.random_counts.remove(&pos);
         self.lazy_light.get_mut().remove(&pos);
-        self.chunks.remove(&pos)
+        let chunk = self.chunks.remove(&pos)?;
+        let ticking: Vec<BlockPos> = self.moving.live_positions().filter(|p| p.chunk() == pos).collect();
+        for at in ticking {
+            self.moving.unbind(at);
+        }
+        let changed: Vec<(i32, i32, i32)> = self.block_entities_changed.iter().copied().filter(|&(x, _, z)| ChunkPos::new(x >> 4, z >> 4) == pos).collect();
+        for key in changed {
+            self.block_entities_changed.remove(&key);
+            self.departed_block_entities.push((key, chunk.block_entities.entities.get(&key).cloned()));
+        }
+        Some(chunk)
+    }
+
+    /// A chunk that joined the level gets the block entities its blocks
+    /// take (`SerializableChunkData.postLoadChunk`, whose
+    /// `BlockEntity.loadStatic` fails for a type the block does not take;
+    /// `LevelChunk.getBlockEntity` making what is missing): a tag of
+    /// another type is dropped, a packed tag is loaded (a `DUMMY` as the
+    /// block's default), and an entity block without one gets the
+    /// catalog's default. Then the tickers are registered
+    /// (`registerAllBlockEntitiesAfterLevelLoad`, in the order of the
+    /// chunk's block entity `HashMap`). What changed is noted for the save.
+    pub fn load_block_entities(&mut self, pos: ChunkPos) {
+        let lib = self.lib;
+        let blocks = &lib.registries.blocks;
+        let Some(catalog) = lib.registries.block_entities.as_ref() else { return };
+        let Some(chunk) = self.chunks.get_mut(&pos) else { return };
+        let state_at = |chunk: &Chunk, (x, y, z): (i32, i32, i32)| chunk.block((x & 15) as usize, y, (z & 15) as usize);
+        let name_at = |chunk: &Chunk, key: (i32, i32, i32)| blocks.block(blocks.block_of(state_at(chunk, key))).name.as_str();
+        let type_of = |tag: &minecraftoss_core::nbt::Tag| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str).map(str::to_owned);
+        // `BlockEntityType.isValid`: the block takes no block entity, or
+        // one of another type. A block the catalog lacks keeps its tag.
+        let fits = |chunk: &Chunk, key: (i32, i32, i32), kind: Option<&str>| {
+            blocks.is(state_at(chunk, key), flags::HAS_BLOCK_ENTITY) && catalog.type_of(name_at(chunk, key)).is_none_or(|expected| kind == Some(expected))
+        };
+        let mut changed = Vec::new();
+        let mismatched: Vec<(i32, i32, i32)> = chunk.block_entities.entities.iter().filter(|&(&key, tag)| !fits(chunk, key, type_of(tag).as_deref())).map(|(&key, _)| key).collect();
+        for key in mismatched {
+            chunk.block_entities.entities.remove(&key);
+            changed.push(key);
+        }
+        for (key, tag) in std::mem::take(&mut chunk.block_entities.pending) {
+            if chunk.block_entities.entities.contains_key(&key) {
+                continue;
+            }
+            let block = name_at(chunk, key);
+            let kind = type_of(&tag);
+            let entity = if kind.as_deref() == Some("DUMMY") {
+                catalog.default_nbt(block, key)
+            } else if kind.is_some() && fits(chunk, key, kind.as_deref()) {
+                catalog.load_and_save(block, key, &tag).or(Some(tag))
+            } else {
+                None
+            };
+            if let Some(entity) = entity {
+                chunk.block_entities.entities.insert(key, entity);
+            }
+            changed.push(key);
+        }
+        // Only sections holding an entity block are searched.
+        let (min_x, min_z) = (pos.x << 4, pos.z << 4);
+        let mut missing = Vec::new();
+        for (i, section) in chunk.sections().iter().enumerate() {
+            let has_entity = |state: BlockStateId| blocks.is(state, flags::HAS_BLOCK_ENTITY);
+            let maybe = match &section.blocks {
+                minecraftoss_core::palette::PalettedContainer::Single(state) => has_entity(*state),
+                minecraftoss_core::palette::PalettedContainer::Direct(values) => values.iter().any(|&s| has_entity(s)),
+            };
+            if !maybe {
+                continue;
+            }
+            let base_y = (chunk.min_section_y() + i as i32) << 4;
+            for y in 0..16 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        let key = (min_x + x as i32, base_y + y as i32, min_z + z as i32);
+                        if has_entity(section.block(x, y, z)) && !chunk.block_entities.entities.contains_key(&key) {
+                            missing.push(key);
+                        }
+                    }
+                }
+            }
+        }
+        for key in missing {
+            if let Some(nbt) = catalog.default_nbt(name_at(chunk, key), key) {
+                chunk.block_entities.entities.insert(key, nbt);
+                changed.push(key);
+            }
+        }
+        let held = chunk.block_entities.entities.len();
+        let mut tickers: Vec<BlockPos> = chunk.block_entities.entities.keys().map(|&(x, y, z)| BlockPos::new(x, y, z)).collect();
+        // Moving pistons keep their state in the level while unloaded.
+        tickers.extend(self.moving.entities.keys().filter(|p| p.chunk() == pos && !self.chunks[&pos].block_entities.entities.contains_key(&(p.x, p.y, p.z))));
+        tickers.sort_by_key(|p| (p.x, p.y, p.z));
+        let held = held.max(tickers.len());
+        tickers.retain(|&p| self.has_ticker(self.block(p)));
+        for at in piston::java_hash_order(&tickers, held) {
+            self.moving.register(at);
+        }
+        self.block_entities_changed.extend(changed);
+    }
+
+    /// The block entities created, changed or removed since the last call,
+    /// each with its saved tag now (`None`: removed), so the chunks that
+    /// are saved keep them.
+    pub fn take_block_entity_changes(&mut self) -> Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)> {
+        let mut changes = std::mem::take(&mut self.departed_block_entities);
+        for (x, y, z) in std::mem::take(&mut self.block_entities_changed) {
+            let tag = self.chunks.get(&ChunkPos::new(x >> 4, z >> 4)).and_then(|c| c.block_entities.entities.get(&(x, y, z))).cloned();
+            changes.push(((x, y, z), tag));
+        }
+        changes
     }
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
@@ -371,6 +492,7 @@ impl<'a> Level<'a> {
         if remove_block_entity {
             chunk.block_entities.entities.remove(&(pos.x, pos.y, pos.z));
             chunk.block_entities.pending.remove(&(pos.x, pos.y, pos.z));
+            self.block_entities_changed.insert((pos.x, pos.y, pos.z));
         }
         self.changed.insert((pos.x, pos.y, pos.z));
         self.block_log.push((pos.x, pos.y, pos.z));
@@ -440,6 +562,7 @@ impl<'a> Level<'a> {
         }
         if let Some(nbt) = catalog.default_nbt(&name, key) {
             chunk.block_entities.entities.insert(key, nbt);
+            self.block_entities_changed.insert(key);
             if self.has_ticker(state) {
                 self.moving.register(pos);
             }

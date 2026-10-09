@@ -350,9 +350,19 @@ impl Game {
         // with the server's entities.
         self.entities.hand_over_drops();
         if self.save_dir.is_some() {
-            self.world.stream.save_edited();
+            self.save_chunks();
         }
         self.save();
+    }
+
+    /// Saves the chunks changed since they were last saved, once the
+    /// server has saved its entities and handed over what its block
+    /// entities hold now (`Command::Flush`), so containers save with what
+    /// is in them.
+    fn save_chunks(&mut self) {
+        let block_entities = self.entities.flush();
+        self.world.stream.record_block_entities(block_entities);
+        self.world.stream.save_edited();
     }
 
     /// Writes the player beside the world's region files.
@@ -478,6 +488,10 @@ impl Game {
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
         self.world.set_blocks(&events.changes);
+        // Before another chunk goes to the server, as it expects.
+        self.world
+            .stream
+            .record_block_entities(events.block_entities);
         if events.experience > 0 && !self.creative {
             self.player
                 .survival
@@ -921,7 +935,7 @@ impl Game {
         self.ticks += 1;
         // `MinecraftServer.autoSave`: every five minutes.
         if self.ticks.is_multiple_of(6000) && self.save_dir.is_some() {
-            self.world.stream.save_edited();
+            self.save_chunks();
             self.save();
         }
         self.previous = self.player.pos;
