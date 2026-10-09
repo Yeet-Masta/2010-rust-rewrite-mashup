@@ -754,7 +754,7 @@ impl ChunkMap {
                     Slot::Final(chunk) => (chunk, ChunkStatus::Full),
                     Slot::Out { .. } => continue,
                 };
-                let edits = Arc::new(self.edits.remove(&pos).unwrap_or_else(Edits::default));
+                let edits = Arc::new(self.edits.remove(&pos).unwrap_or(Edits { blocks: Vec::new(), block_entities: BTreeMap::new() }));
                 evicted.insert(pos, Evicted { chunk, status, edits });
             }
             drop(evicted);
