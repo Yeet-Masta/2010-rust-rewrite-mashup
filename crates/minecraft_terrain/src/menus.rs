@@ -20,9 +20,12 @@
 //! lid), and the client is asked to send `Close`, whose answer returns the
 //! carried stack.
 //!
+//! A container generation left with a loot table is filled from it as it
+//! opens (`unpackLootTable`), each half of a double chest in turn, with the
+//! player's luck, which is always 0 here (no luck effects).
+//!
 //! Not simulated: piglins angered by an opening, the game events sculk
-//! sensors hear, loot tables unpacked on opening (`unpackLootTable`), and
-//! spectators.
+//! sensors hear, the loot advancement trigger, and spectators.
 
 use crate::server::ServerSim;
 use crate::stacks::{self, LevelStack, PlayerStack};
@@ -451,6 +454,14 @@ impl ServerSim {
             result.overlay = Some(json!({ "translate": "container.isLocked", "with": [target.title] }));
             self.level.play_sound("minecraft:block.chest.locked", target.centre, 1.0, 1.0);
             return (result, updates);
+        }
+        // `RandomizableContainerBlockEntity.createMenu`, and the double
+        // chest's provider for each half in turn: the loot table fills the
+        // container for the player first.
+        if let Source::Container(c) = target.source {
+            for p in c.positions() {
+                self.level.unpack_loot_table(p, Some(0.0));
+            }
         }
         // `nextContainerCounter`.
         self.menus.counter = self.menus.counter % 100 + 1;
@@ -1210,6 +1221,68 @@ mod tests {
         let mut drops: Vec<(String, Option<Tag>)> = server.level.entities.iter().filter_map(|e| e.item_data()).map(|d| (d.stack.id.clone(), d.stack.components.clone())).collect();
         drops.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(drops, [("minecraft:apple".to_owned(), None), ("minecraft:chest".to_owned(), Some(components))]);
+    }
+
+    /// A chest's loot table as generation leaves it (`container_loot` as a
+    /// placed item gives it).
+    fn give_loot(server: &mut ServerSim, pos: BlockPos, table: &str, seed: i64) {
+        let loot = Tag::Compound([("loot_table".to_owned(), Tag::String(table.to_owned())), ("seed".to_owned(), Tag::Long(seed))].into());
+        let components = Tag::Compound([("minecraft:container_loot".to_owned(), loot)].into());
+        server.level.apply_container_components(LevelPos::new(pos.0, pos.1, pos.2), Some(&components));
+    }
+
+    fn has_loot_table(server: &ServerSim, pos: BlockPos) -> bool {
+        server.level.block_entity(LevelPos::new(pos.0, pos.1, pos.2)).and_then(|t| t.get("LootTable")).is_some()
+    }
+
+    /// A chest with a loot table is filled from it as it opens, both halves
+    /// of a double chest, and then keeps its items and no table, so it
+    /// saves as vanilla's does. The seed decides the loot: two chests with
+    /// the same table and seed hold the same.
+    #[test]
+    fn loot_chests_fill_as_they_open() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let (right, left, other) = ((9, 200, 8), (8, 200, 8), (8, 200, 4));
+        place(&mut server, &mut scene, right, Block::new("minecraft:chest").with("facing", "north").with("type", "right"));
+        place(&mut server, &mut scene, left, Block::new("minecraft:chest").with("facing", "north").with("type", "left"));
+        place(&mut server, &mut scene, other, Block::new("minecraft:chest"));
+        give_loot(&mut server, right, "minecraft:chests/simple_dungeon", 1234);
+        give_loot(&mut server, left, "minecraft:chests/simple_dungeon", 5678);
+        give_loot(&mut server, other, "minecraft:chests/simple_dungeon", 1234);
+        let inventory = Inventory::default();
+        let (result, updates) = server.use_block_with(left, "north", player(&inventory));
+        assert!(result.opened);
+        let opening = &updates[0];
+        assert!(opening.slots[..27].iter().any(Option::is_some) && opening.slots[27..].iter().any(Option::is_some), "both halves: {:?}", opening.slots);
+        assert!(!has_loot_table(&server, right) && !has_loot_table(&server, left));
+        assert_eq!(opening.slots[..27], items(&server, right)[..], "the menu shows what the chest holds");
+        let saved = server.take_block_entity_changes();
+        let left_saved = saved.iter().find(|(p, _)| *p == left).and_then(|(_, tag)| tag.as_ref()).expect("the left half saves");
+        assert!(left_saved.get("LootTable").is_none() && left_saved.get("Items").and_then(Tag::as_list).is_some_and(|list| !list.is_empty()));
+        server.menu_batch(opening.id, 1, &[MenuInput::Close], player(&inventory));
+        let (_, updates) = server.use_block_with(other, "north", player(&inventory));
+        assert_eq!(updates[0].slots, items(&server, right), "the same seed, the same loot");
+    }
+
+    /// A loot chest is filled as soon as anything takes from it: a hopper
+    /// below pulls its loot, and a broken one drops it.
+    #[test]
+    fn hoppers_and_breaking_unpack_loot_chests() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let (chest, hopper, broken) = ((8, 201, 8), (8, 200, 8), (4, 200, 8));
+        place(&mut server, &mut scene, hopper, Block::new("minecraft:hopper"));
+        place(&mut server, &mut scene, chest, Block::new("minecraft:chest"));
+        give_loot(&mut server, chest, "minecraft:chests/simple_dungeon", 99);
+        tick(&mut server, FEET);
+        assert!(!has_loot_table(&server, chest));
+        assert!(items(&server, hopper).iter().flatten().map(|s| s.count).sum::<u8>() == 1, "the hopper took one item: {:?}", items(&server, hopper));
+        place(&mut server, &mut scene, broken, Block::new("minecraft:chest"));
+        give_loot(&mut server, broken, "minecraft:chests/simple_dungeon", 99);
+        let before = server.level.entities.iter().filter(|e| e.item_data().is_some()).count();
+        scene.set(broken, None);
+        server.player_edit_block(broken, None, PlayerEdit::Break);
+        let dropped = server.level.entities.iter().filter(|e| e.item_data().is_some()).count() - before;
+        assert!(dropped > 1, "the loot and the chest drop: {dropped}");
     }
 
     /// Walking out of reach closes the chest (its sound and lid) and asks

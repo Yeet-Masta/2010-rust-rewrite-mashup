@@ -166,8 +166,12 @@ impl Level<'_> {
     pub(super) fn pre_remove_side_effects(&mut self, pos: BlockPos, old: BlockStateId) -> Vec<Stack> {
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
-            // Every slot, empty ones included: each draws a position.
-            Some(_) => self.block_container_items(pos).unwrap_or_default(),
+            // Every slot, empty ones included: each draws a position. The
+            // first read unpacks a loot table.
+            Some(_) => {
+                self.unpack_loot_table(pos, None);
+                self.block_container_items(pos).unwrap_or_default()
+            }
             None => {
                 let holds_items = self.block_entity(pos).is_some_and(|t| t.get("Items").is_some() || t.get("item").is_some() || t.get("RecordItem").is_some() || t.get("Book").is_some());
                 if holds_items {

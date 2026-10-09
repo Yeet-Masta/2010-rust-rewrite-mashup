@@ -12,6 +12,8 @@ use std::path::Path;
 pub struct ItemCatalog {
     max_stack: HashMap<String, i32>,
     fuel: HashMap<String, u32>,
+    max_damage: HashMap<String, i32>,
+    enchantable: HashMap<String, i32>,
 }
 
 impl ItemCatalog {
@@ -30,6 +32,12 @@ impl ItemCatalog {
             if item["fuel_component"].as_bool() == Some(true) || item["burn_ticks"].as_u64().is_some_and(|t| t > 0) {
                 catalog.fuel.insert(id.clone(), item["burn_ticks"].as_u64().unwrap_or(0) as u32);
             }
+            if let Some(max) = item["max_damage"].as_i64() {
+                catalog.max_damage.insert(id.clone(), max as i32);
+            }
+            if let Some(value) = item["enchantable"].as_i64() {
+                catalog.enchantable.insert(id.clone(), value as i32);
+            }
         }
         Ok(catalog)
     }
@@ -42,6 +50,18 @@ impl ItemCatalog {
     /// `FuelValues.isFuel` for the default stack.
     pub fn is_fuel(&self, id: &str) -> bool {
         self.fuel.contains_key(id)
+    }
+
+    /// The item's default `max_damage` component: what it takes to break,
+    /// none for an item that does not wear.
+    pub fn max_damage(&self, id: &str) -> Option<i32> {
+        self.max_damage.get(id).copied()
+    }
+
+    /// The item's default `enchantable` component (`Enchantable.value`),
+    /// none for an item no enchanting gives anything.
+    pub fn enchantable(&self, id: &str) -> Option<i32> {
+        self.enchantable.get(id).copied()
     }
 }
 

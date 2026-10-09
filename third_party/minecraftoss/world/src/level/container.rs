@@ -7,7 +7,13 @@
 //! what the chunk saves. Simulated containers: chests (single and double,
 //! trapped and copper), barrels, shulker boxes, hoppers, dispensers and
 //! droppers. Not yet: furnaces, brewing stands, crafters, bookshelves, pots,
-//! shelves, container entities, item entities, and loot table unpacking.
+//! shelves, container entities, item entities.
+//!
+//! A container generation left with a loot table is filled from it the
+//! first time something takes from it, puts into it or opens it
+//! (`RandomizableContainer.unpackLootTable`): a hopper, a dropper, a break,
+//! a player. A comparator reading it does not unpack it yet: it reads it
+//! empty.
 
 use super::redstone::Kind;
 use super::Level;
@@ -177,6 +183,67 @@ impl Level<'_> {
         if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
             map.insert("Items".to_owned(), Tag::List(list));
         }
+    }
+
+    /// `RandomizableContainer.unpackLootTable`: a container that still has
+    /// the loot table generation gave it (`LootTable`, with its
+    /// `LootTableSeed`) is filled from it (`LootTable.fill`) and keeps it no
+    /// more. `opener_luck` is the opening player's luck (`withLuck`, the
+    /// player being `THIS_ENTITY`); none when no player opens it. A table
+    /// the loot engine cannot run is left as it is, and noted, rather than
+    /// fill the container with anything else.
+    pub fn unpack_loot_table(&mut self, pos: BlockPos, opener_luck: Option<f32>) {
+        let Some(entity) = self.block_entity(pos) else { return };
+        let Some(table) = entity.get("LootTable").and_then(Tag::as_str).map(str::to_owned) else { return };
+        let seed = entity.get("LootTableSeed").and_then(Tag::as_i64).unwrap_or(0);
+        let Some(store) = self.store_of(self.block(pos)) else { return };
+        let mut items = self.read_items(pos, store.size());
+        let empty: Vec<usize> = (0..items.len()).filter(|&slot| items[slot].is_empty()).collect();
+        let params = minecraftoss_core::loot::LootParams {
+            // `Vec3.atCenterOf(worldPosition)`.
+            origin: Some([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]),
+            this_entity: opener_luck.is_some(),
+            luck: opener_luck.unwrap_or(0.0),
+            biome: self.biome_id(pos),
+            ..minecraftoss_core::loot::LootParams::default()
+        };
+        let registries = self.lib.registries.clone();
+        let placed = match registries.loot.fill(&registries, &table, &params, seed, &mut self.random_sequences, &mut self.random, &empty) {
+            Ok(placed) => placed,
+            Err(e) => {
+                self.unsupported.push(format!("loot table {table}: {e}"));
+                return;
+            }
+        };
+        if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
+            map.remove("LootTable");
+            map.remove("LootTableSeed");
+        }
+        // `setItem` for each, capped at what the slot holds.
+        for (slot, mut stack) in placed {
+            stack.count = stack.count.min(self.container_max_stack(&stack));
+            items[slot] = stack;
+        }
+        self.write_items(pos, &items);
+        self.block_entity_changed(pos);
+    }
+
+    /// Each block entity of a container unpacks its loot table, with no
+    /// player.
+    pub(super) fn unpack_container(&mut self, c: ContainerRef) {
+        for pos in c.positions() {
+            self.unpack_loot_table(pos, None);
+        }
+    }
+
+    /// The biome at a block (`Level.getBiome`, through the biome zoom), by
+    /// id.
+    fn biome_id(&self, pos: BlockPos) -> Option<String> {
+        let zoom = minecraftoss_generator::zoom::zoom_seed(self.random_sequences.world_seed);
+        let [qx, qy, qz] = minecraftoss_generator::zoom::quart_for_block(zoom, pos.x, pos.y, pos.z);
+        let chunk = self.chunk(minecraftoss_core::ChunkPos::new(qx >> 2, qz >> 2))?;
+        let biome = chunk.biome((qx & 3) as usize, qy, (qz & 3) as usize);
+        Some(self.registries().biomes.get(biome).name.to_string())
     }
 
     /// `item replace block ... container.N with ...`: the block entity's own
@@ -446,6 +513,8 @@ impl Level<'_> {
             return false;
         }
         let me = ContainerRef::Single(pos, Store::Hopper);
+        // Its own `isEmpty` unpacks it.
+        self.unpack_container(me);
         let mut changed = false;
         if !self.container_is_empty(me) {
             changed = self.hopper_eject(pos, state);
@@ -472,6 +541,8 @@ impl Level<'_> {
     fn hopper_eject(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
         let facing = self.registries().blocks.property(state, "facing").and_then(Direction::from_name).unwrap_or(Direction::Down);
         let Some(target) = self.container_at(pos.relative(facing, 1), true) else { return false };
+        // `isFullContainer` reads it, which unpacks it.
+        self.unpack_container(target);
         let direction = facing.opposite();
         if self.container_slots(target, direction).into_iter().all(|slot| {
             let stack = self.container_item(target, slot);
@@ -503,6 +574,7 @@ impl Level<'_> {
     /// `HopperBlockEntity.suckInItems` from a container above.
     fn hopper_suck(&mut self, pos: BlockPos) -> bool {
         let Some(source) = self.container_at(pos.above(), true) else { return false };
+        self.unpack_container(source);
         let me = ContainerRef::Single(pos, Store::Hopper);
         for slot in self.container_slots(source, Direction::Down) {
             let stack = self.container_item(source, slot);
@@ -526,6 +598,7 @@ impl Level<'_> {
 
     /// `HopperBlockEntity.addItem(from, container, stack, direction)`.
     pub(super) fn add_item(&mut self, from: Option<ContainerRef>, into: ContainerRef, mut stack: Stack, direction: Option<Direction>) -> Stack {
+        self.unpack_container(into);
         let slots = match direction {
             Some(d) => self.container_slots(into, d),
             None => (0..into.size()).collect(),

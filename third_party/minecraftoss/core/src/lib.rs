@@ -12,6 +12,7 @@ pub mod anvil;
 pub mod chunk;
 pub mod chunk_nbt;
 pub mod datapack;
+pub mod enchantment;
 pub mod entity_data;
 pub mod environment;
 pub mod ident;

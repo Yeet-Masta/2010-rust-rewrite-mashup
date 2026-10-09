@@ -64,6 +64,8 @@ impl Level<'_> {
             return;
         }
         let me = ContainerRef::Single(pos, Store::Dispenser);
+        // `getRandomSlot` reads it, which unpacks it.
+        self.unpack_container(me);
         let Some(slot) = self.random_slot(me) else { return };
         let stack = self.container_item(me, slot);
         if dropper {
