@@ -556,8 +556,10 @@ impl ServerSim {
         self.dormant.len()
     }
 
-    /// The recipe book mobs consult (breeding colours).
+    /// The recipe book mobs consult (breeding colours), and furnaces cook
+    /// from.
     pub fn set_recipe_book(&mut self, recipes: Arc<minecraftoss_player::crafting::RecipeBook>) {
+        self.level.cooking = Some(Arc::new(crate::menus::BookCooking(recipes.clone())));
         self.mobs.set_recipe_book(recipes);
     }
 

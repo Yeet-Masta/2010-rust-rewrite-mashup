@@ -15,6 +15,9 @@ use super::Gui;
 use crate::font::rgb;
 use crate::render::UiList;
 
+#[path = "screens/furnace.rs"]
+mod furnace;
+
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
 /// `ChatFormatting.YELLOW`: a dragged slot's count when the slot is full.
@@ -81,6 +84,10 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::Generic3x3 => Layout::plain("dispenser", 166.0, TitleX::Centred),
         MenuKind::Hopper => Layout::plain("hopper", 133.0, TitleX::At(8.0)),
         MenuKind::ShulkerBox => Layout::plain("shulker_box", 167.0, TitleX::At(8.0)),
+        // `AbstractFurnaceScreen.init` centres the title.
+        MenuKind::Furnace => Layout::plain("furnace", 166.0, TitleX::Centred),
+        MenuKind::BlastFurnace => Layout::plain("blast_furnace", 166.0, TitleX::Centred),
+        MenuKind::Smoker => Layout::plain("smoker", 166.0, TitleX::Centred),
     }
 }
 
@@ -124,7 +131,6 @@ pub struct MenuView<'a> {
     pub inventory: &'a Inventory,
     /// The menu's data values (progress, costs), which the storage kinds
     /// have none of: the kinds that draw them read them in `menu_extras`.
-    #[allow(dead_code)]
     pub data: &'a [i32],
 }
 
@@ -226,12 +232,15 @@ impl Gui {
 
     /// What a kind draws over its background: progress, buttons. One arm
     /// per kind that has any.
-    fn menu_extras(&mut self, _ui: &mut UiList, view: &MenuView<'_>, _left: f32, _top: f32) {
+    fn menu_extras(&mut self, ui: &mut UiList, view: &MenuView<'_>, left: f32, top: f32) {
         match view.kind {
             MenuKind::Generic { .. }
             | MenuKind::Generic3x3
             | MenuKind::Hopper
             | MenuKind::ShulkerBox => {}
+            MenuKind::Furnace | MenuKind::BlastFurnace | MenuKind::Smoker => {
+                self.furnace_extras(ui, view, left, top)
+            }
         }
     }
 }
@@ -279,6 +288,8 @@ mod tests {
                 72.0,
                 TitleX::Centred,
             ),
+            (MenuKind::Furnace, "furnace", 166.0, 72.0, TitleX::Centred),
+            (MenuKind::Smoker, "smoker", 166.0, 72.0, TitleX::Centred),
         ];
         for (kind, background, height, label, title_x) in sizes {
             let layout = layout(kind);
@@ -301,6 +312,9 @@ mod tests {
             MenuKind::ShulkerBox,
             MenuKind::Hopper,
             MenuKind::Generic3x3,
+            MenuKind::Furnace,
+            MenuKind::BlastFurnace,
+            MenuKind::Smoker,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

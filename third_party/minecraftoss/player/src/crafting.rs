@@ -145,25 +145,38 @@ impl RecipeBook {
     pub fn from_jar(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("open data JAR {}", path.display()))?;
         let mut archive = ZipArchive::new(file)?;
-        let mut tags = HashMap::new();
-        let mut raw_recipes = Vec::new();
-        let mut raw_advancements = Vec::new();
+        let mut files = Vec::new();
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
             let name = entry.name().to_owned();
-            if !name.ends_with(".json") {
-                continue;
-            }
-            let is_recipe = name.starts_with("data/minecraft/recipe/");
-            let is_tag = name.starts_with("data/minecraft/tags/item/");
-            let is_recipe_advancement = name.starts_with("data/minecraft/advancement/recipes/");
-            if !is_recipe && !is_tag && !is_recipe_advancement {
+            let is_data = name.starts_with("data/minecraft/recipe/")
+                || name.starts_with("data/minecraft/tags/item/")
+                || name.starts_with("data/minecraft/advancement/recipes/");
+            if !name.ends_with(".json") || !is_data {
                 continue;
             }
             let mut content = String::new();
             entry.read_to_string(&mut content)?;
             let value: Value =
                 serde_json::from_str(&content).with_context(|| format!("parse {name}"))?;
+            files.push((name, value));
+        }
+        Ok(Self::from_files(files))
+    }
+
+    /// The book from the data pack's recipes, item tags and recipe
+    /// advancements, each by its path in the JAR (`data/minecraft/...`).
+    pub fn from_files(files: Vec<(String, Value)>) -> Self {
+        let mut tags = HashMap::new();
+        let mut raw_recipes = Vec::new();
+        let mut raw_advancements = Vec::new();
+        for (name, value) in files {
+            let is_recipe = name.starts_with("data/minecraft/recipe/");
+            let is_recipe_advancement = name.starts_with("data/minecraft/advancement/recipes/");
+            let is_tag = name.starts_with("data/minecraft/tags/item/");
+            if !is_recipe && !is_tag && !is_recipe_advancement {
+                continue;
+            }
             if is_recipe {
                 raw_recipes.push((name, value));
             } else if is_recipe_advancement {
@@ -255,14 +268,14 @@ impl RecipeBook {
             .iter()
             .flat_map(|advancement| auto_unlock_rules(advancement, &known_ids))
             .collect();
-        Ok(Self {
+        Self {
             recipes,
             smelting,
             tags,
             auto_unlocks,
             display_indices: HashMap::new(),
             item_catalog: None,
-        })
+        }
     }
 
     /// Load display IDs observed from the pinned server recipe manager. The
@@ -715,6 +728,27 @@ impl RecipeBook {
 
     pub fn smelting_for(&self, input: &ItemStack) -> Option<&SmeltingRecipe> {
         self.cooking_for(CookingKind::Furnace, input)
+    }
+
+    /// `RecipeManager.getRecipeFor` for a furnace: the recipe's key with it.
+    pub fn cooking_recipe_for(
+        &self,
+        kind: CookingKind,
+        input: &ItemStack,
+    ) -> Option<(&str, &SmeltingRecipe)> {
+        self.smelting
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .find(|entry| self.matches_ingredient(&entry.ingredient, &input.id))
+            .map(|entry| (entry.id.as_str(), &entry.recipe))
+    }
+
+    /// A cooking recipe by its key (`RecipeManager.byKey`).
+    pub fn cooking_recipe(&self, id: &str) -> Option<&SmeltingRecipe> {
+        self.smelting
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| &entry.recipe)
     }
 
     pub fn cooking_for(&self, kind: CookingKind, input: &ItemStack) -> Option<&SmeltingRecipe> {

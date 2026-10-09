@@ -6,8 +6,9 @@
 //! Items live in the block entity's saved tag (`Items`), so every change is
 //! what the chunk saves. Simulated containers: chests (single and double,
 //! trapped and copper), barrels, shulker boxes, hoppers, dispensers and
-//! droppers. Not yet: furnaces, brewing stands, crafters, bookshelves, pots,
-//! shelves, container entities, item entities.
+//! droppers, and furnaces (their tick and faces are in `furnace`). Not yet:
+//! brewing stands, crafters, bookshelves, pots, shelves, container entities,
+//! item entities.
 //!
 //! A container generation left with a loot table is filled from it the
 //! first time something takes from it, puts into it or opens it
@@ -32,6 +33,8 @@ pub enum Store {
     ShulkerBox,
     Hopper,
     Dispenser,
+    /// Furnaces, smokers and blast furnaces.
+    Furnace,
 }
 
 impl Store {
@@ -40,6 +43,7 @@ impl Store {
         match self {
             Self::Hopper => 5,
             Self::Dispenser => 9,
+            Self::Furnace => 3,
             _ => 27,
         }
     }
@@ -102,6 +106,8 @@ impl Level<'_> {
             Some(Store::Hopper)
         } else if info.is_a("DispenserBlock") {
             Some(Store::Dispenser)
+        } else if info.is_a("AbstractFurnaceBlock") {
+            Some(Store::Furnace)
         } else {
             None
         }
@@ -305,7 +311,7 @@ impl Level<'_> {
     }
 
     /// `BlockEntity.setChanged`: comparators re-read the container.
-    fn block_entity_changed(&mut self, pos: BlockPos) {
+    pub(super) fn block_entity_changed(&mut self, pos: BlockPos) {
         let state = self.block(pos);
         if !self.registries().blocks.is_air(state) {
             let block = self.block_id(state);
@@ -319,17 +325,30 @@ impl Level<'_> {
         }
     }
 
-    /// `Container.setItem`: hoppers do not report the change themselves.
+    /// `Container.setItem`: hoppers do not report the change themselves. A
+    /// furnace's new ingredient restarts its cooking.
     pub fn container_set_item(&mut self, c: ContainerRef, slot: usize, mut stack: Stack) {
         let max = self.container_max_stack(&stack);
         if !stack.is_empty() && stack.count > max {
             stack.count = max;
         }
+        let old = self.is_furnace(c).filter(|_| slot == 0).map(|_| self.container_item(c, slot));
         self.put_item(c, slot, stack);
         let (pos, store, _) = c.locate(slot);
+        if let Some(old) = old {
+            self.furnace_ingredient_set(pos, &old);
+        }
         if store != Store::Hopper {
             self.block_entity_changed(pos);
         }
+    }
+
+    /// What `Container.removeItem` left in a slot (a player's take from a
+    /// menu), written without `setItem`'s rules, then `setChanged`.
+    pub fn container_set_taken(&mut self, c: ContainerRef, slot: usize, left: Stack) {
+        self.put_item(c, slot, left);
+        let (pos, _, _) = c.locate(slot);
+        self.block_entity_changed(pos);
     }
 
     /// `Container.removeItem` (`ContainerHelper.removeItem`): splits off up
@@ -356,14 +375,26 @@ impl Level<'_> {
     }
 
     /// `WorldlyContainer.getSlotsForFace`, or every slot.
-    fn container_slots(&self, c: ContainerRef, _direction: Direction) -> Vec<usize> {
-        (0..c.size()).collect()
+    fn container_slots(&self, c: ContainerRef, direction: Direction) -> Vec<usize> {
+        match c {
+            ContainerRef::Single(_, Store::Furnace) => super::furnace::slots_for_face(direction).to_vec(),
+            _ => (0..c.size()).collect(),
+        }
     }
 
     /// `canPlaceItem` and, for worldly containers, `canPlaceItemThroughFace`.
-    fn container_can_place(&self, c: ContainerRef, _slot: usize, stack: &Stack, direction: Option<Direction>) -> bool {
+    fn container_can_place(&self, c: ContainerRef, slot: usize, stack: &Stack, direction: Option<Direction>) -> bool {
         match c {
             ContainerRef::Single(_, Store::ShulkerBox) if direction.is_some() => !self.is_shulker_box_item(&stack.id),
+            ContainerRef::Single(pos, Store::Furnace) => self.furnace_can_place(pos, slot, stack),
+            _ => true,
+        }
+    }
+
+    /// `canTakeItem` and, for worldly containers, `canTakeItemThroughFace`.
+    fn container_can_take(&self, c: ContainerRef, slot: usize, stack: &Stack, direction: Direction) -> bool {
+        match c {
+            ContainerRef::Single(_, Store::Furnace) => self.furnace_can_take(slot, stack, direction),
             _ => true,
         }
     }
@@ -578,7 +609,7 @@ impl Level<'_> {
         let me = ContainerRef::Single(pos, Store::Hopper);
         for slot in self.container_slots(source, Direction::Down) {
             let stack = self.container_item(source, slot);
-            if stack.is_empty() {
+            if stack.is_empty() || !self.container_can_take(source, slot, &stack, Direction::Down) {
                 continue;
             }
             let taken = self.container_remove_item(source, slot, 1);
@@ -669,6 +700,7 @@ impl Level<'_> {
     pub(super) fn has_ticker(&self, state: BlockStateId) -> bool {
         self.is_hopper(state)
             || self.store_of(state) == Some(Store::ShulkerBox)
+            || self.store_of(state) == Some(Store::Furnace)
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }

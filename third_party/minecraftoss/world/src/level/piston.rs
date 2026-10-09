@@ -647,6 +647,8 @@ impl Level<'_> {
                     self.daylight_tick(pos);
                 } else if self.is_a(state, "ShulkerBoxBlock") {
                     self.shulker_tick(pos);
+                } else if self.is_a(state, "AbstractFurnaceBlock") {
+                    self.furnace_tick(pos);
                 }
             }
             i += 1;

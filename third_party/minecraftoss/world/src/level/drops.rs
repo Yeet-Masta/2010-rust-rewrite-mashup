@@ -162,10 +162,16 @@ impl Level<'_> {
     }
 
     /// The items `BlockEntity.preRemoveSideEffects` drops: a container's
-    /// contents (`Containers.dropContents`). Shulker boxes keep theirs.
+    /// contents (`Containers.dropContents`). Shulker boxes keep theirs; a
+    /// furnace also pops its used recipes' experience.
     pub(super) fn pre_remove_side_effects(&mut self, pos: BlockPos, old: BlockStateId) -> Vec<Stack> {
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
+            Some(super::container::Store::Furnace) => {
+                let items = self.block_container_items(pos);
+                self.furnace_removed(pos);
+                items.into_iter().flatten().collect()
+            }
             // Every slot, empty ones included: each draws a position. The
             // first read unpacks a loot table.
             Some(_) => {

@@ -19,6 +19,7 @@ pub mod grow;
 pub mod plants;
 pub mod bonemeal;
 pub mod fluid;
+pub mod furnace;
 pub mod openers;
 pub mod physics;
 pub mod piston;
@@ -149,6 +150,8 @@ pub struct Level<'a> {
     hopper_ticked: HashMap<BlockPos, i64>,
     /// The dispenser slot being dispensed from.
     dispensing_slot: Option<usize>,
+    /// The recipes and fuels furnaces cook with; none cooks nothing.
+    pub cooking: Option<std::sync::Arc<dyn furnace::Cooking>>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -270,6 +273,7 @@ impl<'a> Level<'a> {
             rails_tag: lib.registries.block_tags.require("minecraft:rails").expect("tag exists"),
             hopper_ticked: HashMap::new(),
             dispensing_slot: None,
+            cooking: None,
             unsupported: Vec::new(),
             sky: None,
             entities: Vec::new(),

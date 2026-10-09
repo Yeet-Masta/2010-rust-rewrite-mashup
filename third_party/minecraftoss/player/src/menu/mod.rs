@@ -21,10 +21,12 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+pub mod furnace;
 pub mod storage;
 #[cfg(test)]
 mod tests;
 
+pub use furnace::FurnaceMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
 /// `AbstractContainerMenu.SLOT_CLICKED_OUTSIDE`: a click outside the window.
@@ -98,6 +100,20 @@ pub enum MenuPlace {
     /// `ContainerLevelAccess` (`Vec3.atCenterOf(pos)`): the grindstone's
     /// experience.
     Block,
+}
+
+/// What a menu asks of the block entity behind its own slots, beyond their
+/// stacks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockRequest {
+    /// `AbstractFurnaceBlockEntity.awardUsedRecipesAndPopExperience`: the
+    /// player took from the result, and is paid the experience of the
+    /// recipes the furnace used, which they unlock.
+    AwardUsedRecipes,
+    /// `Container.removeItem` emptied the own slot: unlike `setItem`, it
+    /// leaves the container's own rules for a new stack alone (a furnace's
+    /// cooking goes on cooling rather than restart).
+    Emptied(usize),
 }
 
 /// What a menu slot shows and changes.
@@ -267,6 +283,8 @@ pub struct MenuContext<'a> {
     /// menu's block: the stonecutter's, loom's and cartography table's take
     /// sounds, the enchanting table's use. (event, volume, pitch).
     pub sounds: Vec<(&'static str, f32, f32)>,
+    /// Requests to the menu's block entity, in order.
+    pub block_requests: Vec<BlockRequest>,
     /// Player slots written during the current input, each with its stack
     /// before the first write.
     touched: Vec<(usize, Option<ItemStack>)>,
@@ -289,6 +307,7 @@ impl<'a> MenuContext<'a> {
             xp_orbs: Vec::new(),
             level_events: Vec::new(),
             sounds: Vec::new(),
+            block_requests: Vec::new(),
             touched: Vec::new(),
             written: BTreeSet::new(),
         }
@@ -431,6 +450,10 @@ pub trait Menu {
     fn data(&self) -> Vec<i32> {
         Vec::new()
     }
+
+    /// `setData`: a data value as its source now has it (the block
+    /// entity's, read again before inputs; on a client, the server's).
+    fn set_data(&mut self, _id: usize, _value: i32) {}
 
     /// `canTakeItemForPickAll`: whether a double click may gather from
     /// `slot`. Menus with a result slot exclude it.

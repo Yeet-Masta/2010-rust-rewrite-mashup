@@ -216,6 +216,40 @@ const SPRITES: &[(&str, &str, f32)] = &[
     ("shulker_box", "gui/container/shulker_box", 0.0),
     ("hopper", "gui/container/hopper", 0.0),
     ("dispenser", "gui/container/dispenser", 0.0),
+    ("furnace", "gui/container/furnace", 0.0),
+    ("blast_furnace", "gui/container/blast_furnace", 0.0),
+    ("smoker", "gui/container/smoker", 0.0),
+    // The furnaces' progress (`AbstractFurnaceScreen`).
+    (
+        "furnace_lit_progress",
+        "gui/sprites/container/furnace/lit_progress",
+        0.0,
+    ),
+    (
+        "furnace_burn_progress",
+        "gui/sprites/container/furnace/burn_progress",
+        0.0,
+    ),
+    (
+        "blast_furnace_lit_progress",
+        "gui/sprites/container/blast_furnace/lit_progress",
+        0.0,
+    ),
+    (
+        "blast_furnace_burn_progress",
+        "gui/sprites/container/blast_furnace/burn_progress",
+        0.0,
+    ),
+    (
+        "smoker_lit_progress",
+        "gui/sprites/container/smoker/lit_progress",
+        0.0,
+    ),
+    (
+        "smoker_burn_progress",
+        "gui/sprites/container/smoker/burn_progress",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
