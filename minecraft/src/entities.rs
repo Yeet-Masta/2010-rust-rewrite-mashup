@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
+use minecraft_terrain::container_render::{self, ContainerLids};
 use minecraft_terrain::lighting::SkyLight;
 use minecraft_terrain::menus::{MenuInput, MenuUpdate, PlayerContext, UseResult};
 use minecraft_terrain::mesh::{Atlas, ChunkMesh, ItemVisuals};
@@ -101,6 +102,11 @@ pub struct Entities {
     moving_blocks: Vec<MovingBlockView>,
     /// Biome colours for moving blocks, read from the pack on first use.
     tint: Option<minecraft_terrain::mesh::BiomeTint>,
+    /// The lids of the containers' block entities, as the server's block
+    /// events move them.
+    lids: ContainerLids,
+    /// `ChestRenderer.xmasTextures`, as of the start.
+    christmas: bool,
     clock: f64,
     ticks: u64,
     /// The player's inventory: vanilla slots, stacking and recipes.
@@ -171,6 +177,14 @@ impl Entities {
             items: ItemVisuals::default(),
             moving_blocks: Vec::new(),
             tint: None,
+            lids: ContainerLids::default(),
+            christmas: {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                let (month, day) = container_render::month_day(now);
+                container_render::is_extended_christmas(month, day)
+            },
             clock: 0.0,
             ticks: 0,
             inventory,
@@ -665,8 +679,10 @@ impl Entities {
         let ticked = due > 0;
         for _ in 0..due {
             self.ticks += 1;
-            // Packets first, then the client level's entity ticks.
+            // Packets first, then the client level's entity and block
+            // entity ticks.
             self.client.tick();
+            self.lids.tick();
             for enderman in self.world.endermen() {
                 if let Some(mob) = self.client.get(enderman.id) {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
@@ -798,6 +814,11 @@ impl Entities {
             events.mob_events.extend(output.entity_events.iter().copied());
             if let Some(moving) = output.moving_blocks {
                 self.moving_blocks = moving;
+            }
+            // `ClientLevel.blockEvent`: the containers' lids.
+            for event in &output.block_events {
+                self.lids
+                    .block_event(event.pos, &event.block, event.a, event.b);
             }
             for result in &output.mob_results {
                 events.mob_events.extend(result.events.iter().copied());
@@ -1081,6 +1102,22 @@ impl Entities {
                 .flat_map(|view| mesh::moving_block_parts(view, partial))
                 .collect();
             let _ = mesh::append_moving_blocks(&mut out.items, scene, &parts, packs, atlas, tint, light);
+        }
+        // The containers' block entities (`ChestRenderer`,
+        // `ShulkerBoxRenderer`).
+        self.lids.retain_present(scene);
+        for pos in container_render::containers_near(scene, camera) {
+            container_render::append_container(
+                &mut out.culled,
+                &mut out.models,
+                scene,
+                pos,
+                &self.lids,
+                partial,
+                self.christmas,
+                atlas,
+                light,
+            );
         }
         // Their shadows, at `getMaxLocalRawBrightness`.
         let casters = client_mobs::shadow_casters(w, poses, camera, partial);

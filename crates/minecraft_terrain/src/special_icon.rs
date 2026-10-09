@@ -27,6 +27,8 @@ struct Cube {
 
 const ALL: u8 = 0b11_1111;
 const NORTH: u8 = 1 << 2;
+const WEST: u8 = 1 << 4;
+const EAST: u8 = 1 << 5;
 
 fn cube(u: f32, v: f32, from: [f32; 3], size: [f32; 3]) -> Cube {
     Cube {
@@ -41,9 +43,9 @@ fn cube(u: f32, v: f32, from: [f32; 3], size: [f32; 3]) -> Cube {
 
 /// `PartDefinition`: its pose, cuboids and children.
 #[derive(Clone, Default)]
-struct Part {
-    offset: [f32; 3],
-    rotation: [f32; 3],
+pub(crate) struct Part {
+    pub(crate) offset: [f32; 3],
+    pub(crate) rotation: [f32; 3],
     scale: f32,
     cubes: Vec<Cube>,
     children: Vec<Part>,
@@ -137,30 +139,14 @@ fn sheet(dir: &str, id: &str) -> String {
 fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>>> {
     let kind = model["type"].as_str().unwrap_or("");
     Ok(Some(match kind {
-        // `ChestModel.createSingleBodyLayer`.
         "minecraft:chest" => {
             let texture = model["texture"].as_str().unwrap_or("minecraft:normal");
-            vec![layer(
-                sheet("chest", texture),
-                [64.0, 64.0],
-                vec![
-                    part([0.0; 3], vec![cube(0.0, 19.0, [1.0, 0.0, 1.0], [14.0, 10.0, 14.0])]),
-                    part([0.0, 9.0, 1.0], vec![cube(0.0, 0.0, [1.0, 0.0, 0.0], [14.0, 5.0, 14.0])]),
-                    part([0.0, 9.0, 1.0], vec![cube(0.0, 0.0, [7.0, -2.0, 14.0], [2.0, 4.0, 1.0])]),
-                ],
-            )]
+            vec![layer(sheet("chest", texture), [64.0, 64.0], chest_model("single"))]
         }
-        // `ShulkerModel.createBoxLayer`, closed.
+        // Closed.
         "minecraft:shulker_box" => {
             let texture = model["texture"].as_str().unwrap_or("minecraft:shulker");
-            vec![layer(
-                sheet("shulker", texture),
-                [64.0, 64.0],
-                vec![
-                    part([0.0, 24.0, 0.0], vec![cube(0.0, 0.0, [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0])]),
-                    part([0.0, 24.0, 0.0], vec![cube(0.0, 28.0, [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0])]),
-                ],
-            )]
+            vec![layer(sheet("shulker", texture), [64.0, 64.0], shulker_box_model())]
         }
         // `BannerModel` and `BannerFlagModel` standing, then the flag's
         // pattern layers (`BannerRenderer.submitPatterns`).
@@ -313,6 +299,37 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
         }
         _ => return Ok(None),
     }))
+}
+
+/// `ChestModel`'s layer for a chest of `chest_type` (`single`, `left`,
+/// `right`): `createSingleBodyLayer`, or `createDoubleBodyLeftLayer` and
+/// `createDoubleBodyRightLayer`, whose halves run to the join and leave
+/// out its face. The bottom, then the lid and the lock, both hinged at
+/// 9 up and 1 in.
+pub(crate) fn chest_model(chest_type: &str) -> Vec<Part> {
+    let (x, width, lock_x, lock_width, faces) = match chest_type {
+        "left" => (0.0, 15.0, 0.0, 1.0, ALL & !WEST),
+        "right" => (1.0, 15.0, 15.0, 1.0, ALL & !EAST),
+        _ => (1.0, 14.0, 7.0, 2.0, ALL),
+    };
+    let sided = |mut cube: Cube| {
+        cube.faces = faces;
+        cube
+    };
+    vec![
+        part([0.0; 3], vec![sided(cube(0.0, 19.0, [x, 0.0, 1.0], [width, 10.0, 14.0]))]),
+        part([0.0, 9.0, 1.0], vec![sided(cube(0.0, 0.0, [x, 0.0, 0.0], [width, 5.0, 14.0]))]),
+        part([0.0, 9.0, 1.0], vec![sided(cube(0.0, 0.0, [lock_x, -2.0, 14.0], [lock_width, 4.0, 1.0]))]),
+    ]
+}
+
+/// `ShulkerModel.createBoxLayer` (`createShellMesh`): the lid, then the
+/// base, both at 24 down in the model's flipped space.
+pub(crate) fn shulker_box_model() -> Vec<Part> {
+    vec![
+        part([0.0, 24.0, 0.0], vec![cube(0.0, 0.0, [-8.0, -16.0, -8.0], [16.0, 12.0, 16.0])]),
+        part([0.0, 24.0, 0.0], vec![cube(0.0, 28.0, [-8.0, -8.0, -8.0], [16.0, 8.0, 16.0])]),
+    ]
 }
 
 fn grown(mut cube: Cube, grow: f32) -> Cube {
@@ -898,13 +915,26 @@ pub fn append_special_in_hand(
         let region = atlas.entity_region(&sheet);
         let tint = [(layer.tint >> 16) & 255, (layer.tint >> 8) & 255, layer.tint & 255].map(|c| c as f32 / 255.0);
         for part in &layer.parts {
-            emit_part(mesh, part, root, region, layer.size, tint, shade);
+            emit_part(mesh, part, root, region, layer.size, tint, shade, [15.0; 2]);
         }
     }
     Ok(true)
 }
 
-fn emit_part(mesh: &mut ChunkMesh, part: &Part, parent: Mat4, region: [f32; 4], size: [f32; 2], tint: [f32; 3], shade: &dyn Fn(Vec3) -> f32) {
+/// A part's cuboids and its children's under `parent` (`ModelPart.render`),
+/// textured from `region` of the atlas, tinted, shaded by `shade` from each
+/// face's normal under the pose, and lit by `light` (sky, block).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_part(
+    mesh: &mut ChunkMesh,
+    part: &Part,
+    parent: Mat4,
+    region: [f32; 4],
+    size: [f32; 2],
+    tint: [f32; 3],
+    shade: &dyn Fn(Vec3) -> f32,
+    light: [f32; 2],
+) {
     let pose = parent * part.matrix();
     let normals = Mat3::from_mat4(pose).inverse().transpose();
     for c in &part.cubes {
@@ -934,7 +964,7 @@ fn emit_part(mesh: &mut ChunkMesh, part: &Part, parent: Mat4, region: [f32; 4], 
                 continue;
             }
             let normal = if c.mirror { normal * Vec3::new(-1.0, 1.0, 1.0) } else { normal };
-            let light = shade((normals * normal).normalize_or_zero());
+            let brightness = shade((normals * normal).normalize_or_zero());
             let start = mesh.vertices.len() as u32;
             for (corner, [s, t]) in corners.into_iter().zip([[ub, va], [ua, va], [ua, vb], [ub, vb]]) {
                 mesh.vertices.push(Vertex {
@@ -943,9 +973,9 @@ fn emit_part(mesh: &mut ChunkMesh, part: &Part, parent: Mat4, region: [f32; 4], 
                         region[0] + (region[2] - region[0]) * s / size[0],
                         region[1] + (region[3] - region[1]) * t / size[1],
                     ],
-                    color: [tint[0] * light, tint[1] * light, tint[2] * light, 1.0],
-                    sky_light: 15.0,
-                    block_light: 15.0,
+                    color: [tint[0] * brightness, tint[1] * brightness, tint[2] * brightness, 1.0],
+                    sky_light: light[0],
+                    block_light: light[1],
                 });
             }
             mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
@@ -953,7 +983,7 @@ fn emit_part(mesh: &mut ChunkMesh, part: &Part, parent: Mat4, region: [f32; 4], 
         }
     }
     for child in &part.children {
-        emit_part(mesh, child, pose, region, size, tint, shade);
+        emit_part(mesh, child, pose, region, size, tint, shade, light);
     }
 }
 

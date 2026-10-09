@@ -528,8 +528,9 @@ pub fn resolve_block_variants(
 }
 
 /// Closed single chest from 26.3 ChestModel.createSingleBodyLayer. Vanilla
-/// uses a block-entity renderer for this model; this static mesh covers its
-/// closed pose until opening animation is represented in the world pass.
+/// uses a block-entity renderer for this model, as the world does
+/// (`container_render`); this static mesh is the shape its break particles
+/// and the block preview take.
 fn closed_chest_model(block: &Block) -> Result<ResolvedModel> {
     let chest_type = block
         .properties

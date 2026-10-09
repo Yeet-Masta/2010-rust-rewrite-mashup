@@ -49,4 +49,5 @@ pub mod poof_particles;
 pub mod portal_particles;
 pub mod item_icon;
 pub mod special_icon;
+pub mod container_render;
 pub mod item_icons;

@@ -287,6 +287,19 @@ impl HandcraftedScene {
     pub fn generated_chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
         self.generated.keys().copied()
     }
+    /// The cells of a chunk that may hold a block entity: the generated
+    /// chunk's block entities (those still pending too) and every edited
+    /// cell, where one may have been placed since. Which of them holds one
+    /// is for the block there to say.
+    pub fn block_entity_cells(&self, pos: ChunkPos) -> impl Iterator<Item = BlockPos> + '_ {
+        let store = self.generated.get(&pos).map(|chunk| &chunk.block_entities);
+        let generated = move |cell: &BlockPos| store.is_some_and(|store| store.entities.contains_key(cell) || store.pending.contains_key(cell));
+        let generated_cells = store.into_iter().flat_map(|store| {
+            store.entities.keys().chain(store.pending.keys().filter(|cell| !store.entities.contains_key(cell))).copied()
+        });
+        let edited = self.blocks.get(&pos).into_iter().flat_map(|blocks| blocks.keys()).filter(move |cell| !generated(cell)).copied();
+        generated_cells.chain(edited)
+    }
     /// Edits over one chunk: placed blocks, then positions cleared to air.
     pub fn chunk_edits(
         &self,

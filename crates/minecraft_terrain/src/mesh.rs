@@ -157,6 +157,18 @@ impl AnimatedTile {
     }
 }
 impl Atlas {
+    /// An atlas of the given slots over a blank texture, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_slots_for_tests(slots: impl IntoIterator<Item = (ResourceId, [f32; 4])>) -> Self {
+        Self {
+            pixels: RgbaImage::new(64, 64),
+            mipmaps: Vec::new(),
+            slots: slots.into_iter().collect(),
+            missing: Vec::new(),
+            animated: Vec::new(),
+            animated_tiles: Vec::new(),
+        }
+    }
     pub fn region(&self, id: &ResourceId) -> [f32; 4] {
         self.slots
             .get(id)
@@ -373,6 +385,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     // (`special_icon::append_special_in_hand`).
     for sheet in crate::special_icon::HAND_SHEETS {
         textures.insert(ResourceId::parse(sheet)?, ());
+    }
+    // The containers' block entity renderers (`container_render`).
+    for sheet in crate::container_render::sheets() {
+        textures.insert(ResourceId::parse(&sheet)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
@@ -1906,7 +1922,7 @@ pub(crate) fn append_block<'m, S: Scene>(
     transparent_indices: &mut Vec<u32>,
 ) -> Result<()> {
     if block.id.path == "chest" {
-        // Chest block entities have a separately posed lid/lock.
+        // `ChestRenderer` draws it, lid and all (`container_render`).
         return Ok(());
     }
     if matches!(block.id.path.as_str(), "water" | "lava") {
