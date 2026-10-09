@@ -1,7 +1,8 @@
 //! The 2D layer, drawn as vanilla draws it from the pack's own sprites: the
 //! hotbar, hearts, hunger, armor, air and experience; the inventory and
-//! crafting table screens; the pause, death and loading screens. Layout is
-//! in GUI pixels at vanilla's automatic GUI scale.
+//! crafting table screens, and the server menus' screens (`menu_gui.rs`);
+//! the pause, death and loading screens. Layout is in GUI pixels at
+//! vanilla's automatic GUI scale.
 use std::collections::HashMap;
 
 use image::RgbaImage;
@@ -11,6 +12,10 @@ use minecraftoss_player::survival::SurvivalStatus;
 
 use crate::font::{Font, LINE, rgb};
 use crate::render::{Renderer, TextureId, UiList};
+
+#[path = "menu_gui.rs"]
+mod menu_gui;
+pub use menu_gui::{MenuSlotView, MenuView, SlotDrag};
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
 /// item and its variants.
@@ -68,6 +73,8 @@ pub enum Screen {
     Inventory,
     Crafting,
     Creative,
+    /// A menu the server runs (a chest, a hopper...).
+    Menu,
     Paused,
     Dead,
 }
@@ -93,6 +100,9 @@ pub struct Hud<'a> {
     /// Hearts shake when health is low.
     pub shake: u64,
     pub debug: Option<Vec<String>>,
+    /// The action bar's message (`setOverlayMessage`) and how opaque it
+    /// still is.
+    pub overlay: Option<(String, f32)>,
 }
 
 /// Item icons drawn at the GUI's pixel size, 16 pixels to a GUI scale
@@ -129,7 +139,9 @@ pub struct Gui {
     pub mouse: (f32, f32),
 }
 
-const SPRITES: [(&str, &str, f32); 37] = [
+/// The sprites, by name: their pack path under `textures/` and nine-slice
+/// border. New ones are appended.
+const SPRITES: &[(&str, &str, f32)] = &[
     (
         "creative_scroller",
         "gui/sprites/container/creative_inventory/scroller",
@@ -199,7 +211,17 @@ const SPRITES: [(&str, &str, f32); 37] = [
         0.0,
     ),
     ("shield_slot", "gui/sprites/container/slot/shield", 0.0),
+    // The server menus' backgrounds (`menu_gui::layout`).
+    ("generic_54", "gui/container/generic_54", 0.0),
+    ("shulker_box", "gui/container/shulker_box", 0.0),
+    ("hopper", "gui/container/hopper", 0.0),
+    ("dispenser", "gui/container/dispenser", 0.0),
 ];
+
+/// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
+/// `SlotDef.icon`), loaded under their own ids from `gui/sprites/`. New
+/// ones are appended.
+const SLOT_ICONS: &[&str] = &[];
 
 impl Gui {
     pub fn load(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {
@@ -235,6 +257,11 @@ impl Gui {
                     ("boots_slot", "gui/sprites/container/slot/boots"),
                 ]
                 .map(|(name, path)| (name.to_owned(), path.to_owned(), 0.0)),
+            )
+            .chain(
+                SLOT_ICONS
+                    .iter()
+                    .map(|id| (id.to_string(), format!("gui/sprites/{id}"), 0.0)),
             );
         for (name, path, border) in named {
             let Ok(id) = ResourceId::parse(&format!("minecraft:{path}")) else {
@@ -433,6 +460,17 @@ impl Gui {
         ui.fill(self.rect(x, y, w, h), colour);
     }
 
+    /// `Screen.extractTransparentBackground`: an in-game screen darkens the
+    /// world, from `0xC0101010` at the top to `0xD0101010` at the bottom.
+    fn dim(&self, ui: &mut UiList) {
+        let grey = 16.0 / 255.0;
+        ui.gradient(
+            self.rect(0.0, 0.0, self.width, self.height),
+            [grey, grey, grey, 192.0 / 255.0],
+            [grey, grey, grey, 208.0 / 255.0],
+        );
+    }
+
     /// A whole sprite, stretched or nine-sliced to the rectangle.
     fn sprite(&self, ui: &mut UiList, name: &str, x: f32, y: f32, w: f32, h: f32) {
         self.sprite_tinted(ui, name, x, y, w, h, WHITE);
@@ -539,7 +577,6 @@ impl Gui {
     }
 
     /// A 16-pixel item at (x, y) with its count and wear.
-    #[allow(clippy::too_many_arguments)]
     fn item(
         &mut self,
         ui: &mut UiList,
@@ -548,6 +585,23 @@ impl Gui {
         stack: &ItemStack,
         x: f32,
         y: f32,
+    ) {
+        self.item_counted(ui, packs, inventory, stack, x, y, None);
+    }
+
+    /// An item with its wear, and its count or `count`'s text in its
+    /// colour instead (`itemDecorations` with a count text: a drag's
+    /// capped stacks).
+    #[allow(clippy::too_many_arguments)]
+    fn item_counted(
+        &mut self,
+        ui: &mut UiList,
+        packs: &PackStack,
+        inventory: &Inventory,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        count: Option<(&str, [f32; 4])>,
     ) {
         if let Some(rect) = self.icon(packs, stack)
             && let Some(texture) = self.icons.texture
@@ -577,15 +631,16 @@ impl Gui {
             self.fill(ui, x + 2.0, y + 13.0, 13.0, 2.0, [0.0, 0.0, 0.0, 1.0]);
             self.fill(ui, x + 2.0, y + 13.0, width, 1.0, colour);
         }
-        if stack.count > 1 {
-            let count = stack.count.to_string();
-            let width = self.font.width(&count);
+        let own = stack.count.to_string();
+        let count = count.or_else(|| (stack.count != 1).then_some((own.as_str(), WHITE)));
+        if let Some((count, colour)) = count {
+            let width = self.font.width(count);
             self.text(
                 ui,
-                &count,
+                count,
                 x + 19.0 - 2.0 - width,
                 y + 6.0 + 3.0,
-                WHITE,
+                colour,
                 true,
             );
         }
@@ -740,6 +795,14 @@ impl Gui {
             let x = (w - self.font.width(name)) / 2.0;
             self.text(ui, name, x, y, [1.0, 1.0, 1.0, *alpha], true);
         }
+        // `extractOverlayMessage`: centred 68 pixels up, without a backdrop
+        // (the text background is for chat only by default).
+        if let Some((text, alpha)) = hud.overlay.as_ref()
+            && *alpha > 0.0
+        {
+            let x = center - (self.font.width(text) / 2.0).trunc();
+            self.text(ui, text, x, h - 68.0 - 4.0, [1.0, 1.0, 1.0, *alpha], true);
+        }
         if let Some(lines) = hud.debug.as_ref() {
             for (i, line) in lines.iter().enumerate() {
                 let y = 2.0 + i as f32 * LINE;
@@ -825,14 +888,7 @@ impl Gui {
         inventory: &Inventory,
         workbench: bool,
     ) {
-        self.fill(
-            ui,
-            0.0,
-            0.0,
-            self.width,
-            self.height,
-            [0.06, 0.06, 0.06, 0.75],
-        );
+        self.dim(ui);
         let ((left, top), slots) = self.container(workbench);
         let background = if workbench {
             "crafting_table"
@@ -1221,14 +1277,7 @@ impl Gui {
         let tab = &data.tabs[view.tab];
         let inventory = view.inventory;
         let inventory_tab = tab.kind == crate::creative::Kind::Inventory;
-        self.fill(
-            ui,
-            0.0,
-            0.0,
-            self.width,
-            self.height,
-            [0.06, 0.06, 0.06, 0.75],
-        );
+        self.dim(ui);
         for &i in view.tabs {
             if i != view.tab {
                 self.creative_tab(ui, packs, inventory, i, false);

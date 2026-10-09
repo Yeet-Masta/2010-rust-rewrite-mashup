@@ -24,6 +24,8 @@ use crate::world::World;
 
 #[path = "creative_screen.rs"]
 mod creative_screen;
+#[path = "menu_screen.rs"]
+mod menu_screen;
 
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Vanilla's default field of view.
@@ -55,6 +57,9 @@ pub struct Input {
     /// Buttons pressed and released this frame: (right button, pressed).
     pub clicks: Vec<(bool, bool)>,
     pub middle_click: bool,
+    /// The middle button pressed (true) and released this frame, for a
+    /// screen's drags.
+    pub middle_clicks: Vec<bool>,
     pub scroll: f32,
     pub keys: Vec<Key>,
     /// The hotbar save (C) and load (X) activators held.
@@ -69,6 +74,8 @@ pub enum Key {
     Escape,
     Drop,
     Hotbar(usize),
+    /// F: the hands swap (over a screen's slot, it swaps with the offhand).
+    SwapOffhand,
     Debug,
     HideHud,
     Screenshot,
@@ -159,6 +166,14 @@ pub struct Game {
     jump_latched: bool,
     /// The tick the player died on.
     died_at: u64,
+    /// The menu open on the server, with its screen.
+    menu: Option<menu_screen::ClientMenu>,
+    /// A use of a menu block the server has not answered yet.
+    use_pending: Option<BlockPos>,
+    /// The player's ender inventory, as the server last sent it, to save.
+    ender_items: Vec<Option<ItemStack>>,
+    /// The action bar's message, and the ticks it has left.
+    overlay: Option<(serde_json::Value, u32)>,
 }
 
 impl Game {
@@ -198,20 +213,26 @@ impl Game {
             ) = saved.experience;
             world.day.set(saved.day_ticks);
             entities.selected = saved.selected;
-            for (slot, stack) in entities.inventory.slots.iter_mut().zip(&saved.slots) {
-                *slot = stack.clone().map(|mut stack| {
-                    // The item's own stack size, which worn tools keep.
+            let recipes = entities.inventory.recipes.clone();
+            // The item's own stack size, which worn tools keep.
+            let sized = |stack: &Option<ItemStack>| {
+                stack.clone().map(|mut stack| {
                     stack.max = stack
                         .components
                         .as_ref()
                         .and_then(|c| c.get("minecraft:max_stack_size")?.as_u64())
                         .map_or_else(
-                            || entities.inventory.recipes.max_stack(&stack.id),
+                            || recipes.max_stack(&stack.id),
                             |max| max.clamp(1, 99) as u8,
                         );
                     stack
-                });
+                })
+            };
+            for (slot, stack) in entities.inventory.slots.iter_mut().zip(&saved.slots) {
+                *slot = sized(stack);
             }
+            let ender: Vec<Option<ItemStack>> = saved.ender.iter().map(sized).collect();
+            entities.set_ender_items(ender);
         }
         if let Some(ticks) = options.time {
             world.day.set(ticks);
@@ -225,6 +246,9 @@ impl Game {
         let previous = player.pos;
         let health = player.survival.health;
         let new_world = saved.is_none();
+        let ender_items = saved
+            .as_ref()
+            .map_or_else(Vec::new, |saved| saved.ender.clone());
         let mut game = Self {
             world,
             player,
@@ -272,6 +296,10 @@ impl Game {
             jump_taps: 0,
             jump_latched: false,
             died_at: 0,
+            menu: None,
+            use_pending: None,
+            ender_items,
+            overlay: None,
         };
         // A new world's seed is on disk before any of its chunks.
         if new_world {
@@ -346,6 +374,9 @@ impl Game {
         ) {
             self.close_container();
         }
+        // A menu's container closes first (a barrel saves shut), and the
+        // carried stack comes back.
+        self.settle_menu();
         // Leftovers that didn't fit are items on the ground: they save
         // with the server's entities.
         self.entities.hand_over_drops();
@@ -401,6 +432,7 @@ impl Game {
             flying: self.player.flying,
             selected: self.entities.selected,
             slots: self.entities.inventory.slots.clone(),
+            ender: self.ender_items.clone(),
         };
         match crate::save::write(dir, &saved) {
             Ok(()) => log!("Saved the world to {}", dir.display()),
@@ -420,6 +452,7 @@ impl Game {
         gui.layout(size, input.mouse);
         self.keys(input, gui);
         self.screen_input(input, gui);
+        self.flush_menu();
         if self.captures_mouse() {
             self.player.yaw += input.look.0 * LOOK;
             self.player.pitch = (self.player.pitch + input.look.1 * LOOK).clamp(-90.0, 90.0);
@@ -437,13 +470,14 @@ impl Game {
                     }
                 }
             }
-            if input.middle_click {
+            if input.middle_click && !self.inventory_busy() {
                 self.pick_block();
             }
         }
         // Notches no screen used are gone; part of one waits for the next.
         input.scroll = input.scroll.fract();
         input.clicks.clear();
+        input.middle_clicks.clear();
         self.jump_taps = (self.jump_taps + std::mem::take(&mut input.jump_taps)).min(4);
         // The pause menu stops the world, as it does in singleplayer.
         let world_dt = if self.screen == Screen::Paused {
@@ -483,59 +517,12 @@ impl Game {
             hurts: std::mem::take(&mut self.hurts),
         };
         let bright = self.world.sky_light_level() > 11.0;
+        self.entities.hold_pickups = self.inventory_busy();
         let events = self
             .entities
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
-        self.world.set_blocks(&events.changes);
-        // Before another chunk goes to the server, as it expects.
-        self.world
-            .stream
-            .record_block_entities(events.block_entities);
-        if events.experience > 0 && !self.creative {
-            self.player
-                .survival
-                .give_experience_points(events.experience);
-            self.score += events.experience;
-            let pitch = (self.sounds.random() - self.sounds.random()) * 0.35 + 0.9;
-            self.play("minecraft:entity.experience_orb.pickup", None, 0.1, pitch);
-        }
-        for hit in events.hits {
-            self.hurt_by_mob(hit);
-        }
-        for (id, event) in events.mob_events {
-            if let Some(bounds) = self.entities.mob_bounds(id) {
-                crate::emitters::entity_event(&mut self.particles, &self.world, bounds, event);
-            }
-        }
-        for (id, result) in events.attacks {
-            self.attack_particles(id, &result);
-        }
-        for pos in events.bone_meal_used {
-            let mut sounds = Vec::new();
-            crate::ambient::bone_meal(&mut self.particles, &self.world, pos, &mut sounds);
-            for (event, at, volume, pitch) in sounds {
-                self.play(event, Some(at), volume, pitch);
-            }
-        }
-        if events.use_taken {
-            self.start_swing();
-        }
-        // A mob with nothing to do with the held item: it's used in the
-        // air, as food is eaten (`MultiPlayerGameMode.useItem`).
-        if events.use_passed
-            && input.use_item
-            && self.eating.is_none()
-            && self.captures_mouse()
-            && self.alive()
-            && let Some(stack) = self.entities.held().cloned()
-        {
-            let food = &self.player.survival.food;
-            self.eating = FoodUse::start(self.entities.selected, &stack, food, self.mode());
-        }
-        for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
-            self.play(&event, Some(at), volume, pitch);
-        }
+        self.handle_events(events, input.use_item);
         self.check_death();
 
         // The camera.
@@ -656,9 +643,79 @@ impl Game {
         (Some(draw), ui)
     }
 
+    /// What the server sent back: block and block entity changes, the
+    /// mobs' doings, the menu's updates and the uses' answers, sounds.
+    fn handle_events(&mut self, events: crate::entities::Events, use_held: bool) {
+        self.world.set_blocks(&events.changes);
+        // Before another chunk goes to the server, as it expects.
+        self.world
+            .stream
+            .record_block_entities(events.block_entities);
+        if events.experience > 0 && !self.creative {
+            self.player
+                .survival
+                .give_experience_points(events.experience);
+            self.score += events.experience;
+            let pitch = (self.sounds.random() - self.sounds.random()) * 0.35 + 0.9;
+            self.play("minecraft:entity.experience_orb.pickup", None, 0.1, pitch);
+        }
+        for hit in events.hits {
+            self.hurt_by_mob(hit);
+        }
+        for (id, event) in events.mob_events {
+            if let Some(bounds) = self.entities.mob_bounds(id) {
+                crate::emitters::entity_event(&mut self.particles, &self.world, bounds, event);
+            }
+        }
+        for (id, result) in events.attacks {
+            self.attack_particles(id, &result);
+        }
+        for pos in events.bone_meal_used {
+            let mut sounds = Vec::new();
+            crate::ambient::bone_meal(&mut self.particles, &self.world, pos, &mut sounds);
+            for (event, at, volume, pitch) in sounds {
+                self.play(event, Some(at), volume, pitch);
+            }
+        }
+        if events.use_taken {
+            self.start_swing();
+        }
+        // A mob with nothing to do with the held item: it's used in the
+        // air, as food is eaten (`MultiPlayerGameMode.useItem`).
+        if events.use_passed
+            && use_held
+            && self.eating.is_none()
+            && self.captures_mouse()
+            && self.alive()
+            && let Some(stack) = self.entities.held().cloned()
+        {
+            let food = &self.player.survival.food;
+            self.eating = FoodUse::start(self.entities.selected, &stack, food, self.mode());
+        }
+        for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
+            self.play(&event, Some(at), volume, pitch);
+        }
+        for update in events.menu {
+            self.menu_update(update);
+        }
+        // A use of a menu block is answered; only one is out at a time.
+        for result in events.use_results {
+            self.use_pending = None;
+            if let Some(message) = result.overlay {
+                self.overlay = Some((message, 60));
+            }
+            // The client keeps no statistics yet: `result.stats` go unread.
+        }
+        // An answer may have let the next batch go.
+        self.flush_menu();
+    }
+
     fn keys(&mut self, input: &mut Input, gui: &Gui) {
         for key in std::mem::take(&mut input.keys) {
             if self.screen == Screen::Creative && self.creative_key(key, gui, input.ctrl) {
+                continue;
+            }
+            if self.screen == Screen::Menu && self.menu_key(key, gui, input.ctrl) {
                 continue;
             }
             match (key, self.screen) {
@@ -668,7 +725,10 @@ impl Game {
                     Key::Escape | Key::Inventory,
                     Screen::Inventory | Screen::Crafting | Screen::Creative,
                 ) => self.close_container(),
-                (Key::Inventory, Screen::Playing) if self.alive() && self.landed => {
+                // Not while the server has the inventory's copy.
+                (Key::Inventory, Screen::Playing)
+                    if self.alive() && self.landed && !self.inventory_busy() =>
+                {
                     if self.creative {
                         self.open_creative(gui);
                         self.screen = Screen::Creative;
@@ -677,9 +737,17 @@ impl Game {
                     }
                 }
                 (Key::Hotbar(slot), Screen::Playing) => {
-                    if !self.hotbar_keys(slot, input) {
+                    if self.inventory_busy() || !self.hotbar_keys(slot, input) {
                         self.entities.selected = slot;
                     }
+                }
+                // `SWAP_ITEM_WITH_OFFHAND`: the hands trade stacks.
+                (Key::SwapOffhand, Screen::Playing) if self.alive() && !self.inventory_busy() => {
+                    self.entities
+                        .inventory
+                        .slots
+                        .swap(self.entities.selected, 40);
+                    self.eating = None;
                 }
                 (Key::Hotbar(slot), Screen::Inventory | Screen::Crafting) => {
                     if let (Some(Slot::Inventory(index)), _) =
@@ -698,7 +766,7 @@ impl Game {
                         self.throw(dropped.into_iter().collect());
                     }
                 }
-                (Key::Drop, Screen::Playing) if self.alive() => {
+                (Key::Drop, Screen::Playing) if self.alive() && !self.inventory_busy() => {
                     let selected = self.entities.selected;
                     if let Some(stack) = self.entities.inventory.drop_selected(selected, input.ctrl)
                     {
@@ -743,6 +811,7 @@ impl Game {
                 }
             }
             Screen::Creative => self.creative_input(input, gui),
+            Screen::Menu => self.menu_input(input, gui),
             Screen::Inventory | Screen::Crafting => {
                 let workbench = self.screen == Screen::Crafting;
                 let (slot, outside) = gui.slot_at(workbench);
@@ -960,7 +1029,9 @@ impl Game {
         {
             self.landed = true;
         }
-        let playing = self.screen == Screen::Playing && self.alive() && self.landed;
+        // Hands wait while the server has the inventory's copy.
+        let playing =
+            self.screen == Screen::Playing && self.alive() && self.landed && !self.inventory_busy();
         if playing {
             self.tick_hands(input);
         } else {
@@ -970,6 +1041,12 @@ impl Game {
             self.eating = None;
         }
         self.swing.tick();
+        if let Some((_, left)) = self.overlay.as_mut() {
+            *left = left.saturating_sub(1);
+        }
+        if self.overlay.as_ref().is_some_and(|(_, left)| *left == 0) {
+            self.overlay = None;
+        }
         if self.landed && self.alive() && self.world.chunk_ready(feet) {
             self.tick_movement(if self.screen == Screen::Playing {
                 Some(input)
@@ -1130,7 +1207,13 @@ impl Game {
             }
         } else if pressed || (input.use_item && self.use_delay == 0) {
             self.use_delay = 4;
-            self.use_item(held.as_ref(), target, mob_distance.is_some(), pressed);
+            self.use_item(
+                held.as_ref(),
+                target,
+                mob_distance.is_some(),
+                pressed,
+                input.sneak,
+            );
         }
     }
 
@@ -1218,6 +1301,7 @@ impl Game {
         target: Option<minecraftoss_player::Hit>,
         at_mob: bool,
         pressed: bool,
+        sneaking: bool,
     ) {
         let eye = self.player.eye();
         let look = self.player.look();
@@ -1227,8 +1311,11 @@ impl Game {
                 .interact(eye, look, self.entity_reach(), self.creative);
             return;
         }
+        // `performUseItemOn`: sneaking (`isSecondaryUseActive`) with
+        // something in either hand uses the item, not the block.
+        let hands = held.is_some() || self.entities.inventory.slots[40].is_some();
         if let Some(hit) = target.as_ref()
-            && !self.player.crouching
+            && !(sneaking && hands)
             && let Some(block) = self.world.block(hit.pos).cloned()
         {
             if block.id.path == "crafting_table" {
@@ -1238,6 +1325,16 @@ impl Game {
                 return;
             }
             let (facing, _) = horizontal_facing(self.player.yaw);
+            // A block with a menu: the server opens it, or says why not
+            // (`useWithoutItem`'s `SUCCESS` on the client swings the arm,
+            // and nothing is placed). Uses wait for its answer.
+            if self.entities.opens_menu(&self.world.scene, hit.pos) {
+                let player = self.player_context();
+                self.entities.use_block_with(hit.pos, facing, player);
+                self.use_pending = Some(hit.pos);
+                self.start_swing();
+                return;
+            }
             if self.entities.use_block(&self.world.scene, hit.pos, facing) {
                 // `LeverBlock.useWithoutItem` on the client: a speck as it
                 // turns on.
@@ -1787,6 +1884,9 @@ impl Game {
             return;
         }
         self.play("minecraft:entity.player.death", None, 1.0, 1.0);
+        // `AbstractContainerScreen.tick` closes the menu of a dead player;
+        // its carried stack comes back, to drop with the rest.
+        self.settle_menu();
         let inventory = &mut self.entities.inventory;
         let mut drops = inventory.drain_on_death();
         drops.extend(inventory.settle_crafting());
@@ -1802,6 +1902,7 @@ impl Game {
     }
 
     fn respawn(&mut self) {
+        self.settle_menu();
         let (x, y, z) = self.world.stream.respawn_position();
         let mut player = Player::new(DVec3::new(x, y, z));
         player.yaw = self.player.yaw;
@@ -1995,8 +2096,17 @@ impl Game {
                 (gui.stack_name(stack), (left / 0.5).clamp(0.0, 1.0) as f32)
             });
             let debug = self.debug.then(|| self.debug_lines(sections));
+            // `extractOverlayMessage`'s fade over its last second.
+            let partial = (self.clock / TICK_SECONDS) as f32;
+            let overlay = self.overlay.as_ref().map(|(message, left)| {
+                let alpha = ((*left as f32 - partial) * 255.0 / 20.0).min(255.0).floor();
+                (
+                    crate::creative::text(gui.language(), message),
+                    alpha / 255.0,
+                )
+            });
             let hud = Hud {
-                inventory: &self.entities.inventory,
+                inventory: self.shown_inventory(),
                 selected: self.entities.selected,
                 survival: (!self.creative).then_some(&self.player.survival),
                 armor: self.entities.inventory.armor_value(),
@@ -2004,6 +2114,7 @@ impl Game {
                 selected_name,
                 shake: self.ticks,
                 debug,
+                overlay,
             };
             gui.hud(&mut ui, packs, &hud);
         }
@@ -2063,6 +2174,11 @@ impl Game {
                 let (tabs, mut view) = self.creative_view();
                 view.tabs = &tabs;
                 gui.creative_screen(&mut ui, packs, &view);
+            }
+            Screen::Menu => {
+                if let Some(view) = self.menu_view(gui) {
+                    gui.menu_screen(&mut ui, packs, &view);
+                }
             }
             Screen::Paused => gui.pause_screen(&mut ui),
             Screen::Dead => gui.death_screen(&mut ui, self.score, self.death_buttons_ready()),

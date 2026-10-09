@@ -63,7 +63,8 @@ Usage: minecraft [options]
 Controls: WASD move, mouse look, Space jump (twice to fly in creative),
 Shift sneak, Ctrl or W twice sprint, left click mine and attack, right click
 place and use, middle click pick block, 1-9 or the wheel select, E inventory,
-Q drop, F1 hide the HUD, F2 screenshot, F3 debug, F11 fullscreen, Esc menu.";
+Q drop, F swap hands, F1 hide the HUD, F2 screenshot, F3 debug, F11
+fullscreen, Esc menu.";
 
 enum Phase {
     Loading(std::sync::mpsc::Receiver<Result<world::World, String>>),
@@ -205,6 +206,7 @@ impl App {
             KeyCode::KeyE => Key::Inventory,
             KeyCode::Escape => Key::Escape,
             KeyCode::KeyQ => Key::Drop,
+            KeyCode::KeyF => Key::SwapOffhand,
             KeyCode::KeyW => Key::Forward,
             KeyCode::F1 => Key::HideHud,
             KeyCode::F2 => Key::Screenshot,
@@ -257,6 +259,7 @@ impl App {
                     // Nothing pressed while loading carries into the game.
                     self.input.keys.clear();
                     self.input.clicks.clear();
+                    self.input.middle_clicks.clear();
                     let mut ui = render::UiList::default();
                     gui.layout(renderer.size(), self.input.mouse);
                     gui.loading_screen(&mut ui, "Generating world...", None);
@@ -382,7 +385,10 @@ impl ApplicationHandler for App {
                         self.input.use_item = pressed && playing;
                         self.input.clicks.push((true, pressed));
                     }
-                    MouseButton::Middle if pressed => self.input.middle_click = true,
+                    MouseButton::Middle => {
+                        self.input.middle_click |= pressed;
+                        self.input.middle_clicks.push(pressed);
+                    }
                     _ => {}
                 }
             }

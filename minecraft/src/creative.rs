@@ -230,6 +230,16 @@ pub fn translate(language: &HashMap<String, String>, key: &str, args: &[String])
     out
 }
 
+/// A text component's string (a screen's title, an action bar message),
+/// with the component's `extra` parts after it.
+pub fn text(language: &HashMap<String, String>, value: &Value) -> String {
+    let mut text = component(language, value).map_or_else(String::new, |(text, _)| text);
+    for part in value["extra"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        text.push_str(&self::text(language, part));
+    }
+    text
+}
+
 /// A text component's string and colour: a translation or plain text.
 fn component(language: &HashMap<String, String>, value: &Value) -> Option<(String, Option<u32>)> {
     if let Some(text) = value.as_str() {

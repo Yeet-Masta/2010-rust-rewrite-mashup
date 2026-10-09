@@ -20,6 +20,8 @@ pub struct Saved {
     pub flying: bool,
     pub selected: usize,
     pub slots: Vec<Option<ItemStack>>,
+    /// The ender chest's 27 slots (`EnderItems`), which are the player's.
+    pub ender: Vec<Option<ItemStack>>,
 }
 
 const FILE: &str = "level.json";
@@ -29,16 +31,11 @@ pub fn read(dir: &Path) -> Option<Saved> {
     let player = &value["player"];
     let float = |v: &Value| v.as_f64().unwrap_or(0.0);
     let position = player["position"].as_array()?;
-    let slots = player["inventory"]
-        .as_array()?
-        .iter()
-        .map(|slot| {
-            let id = slot["id"].as_str()?;
-            let mut stack = ItemStack::new(id, slot["count"].as_u64()?.clamp(1, 255) as u8);
-            stack.components = slot.get("components").filter(|c| !c.is_null()).cloned();
-            Some(stack)
-        })
-        .collect();
+    let slots = stacks(player["inventory"].as_array()?);
+    // A world saved before ender chests opened has none.
+    let ender = player["ender_items"]
+        .as_array()
+        .map_or_else(Vec::new, |slots| stacks(slots));
     Some(Saved {
         seed: value["seed"].as_i64()?,
         creative: value["creative"].as_bool().unwrap_or(false),
@@ -61,12 +58,25 @@ pub fn read(dir: &Path) -> Option<Saved> {
         flying: player["flying"].as_bool().unwrap_or(false),
         selected: player["selected"].as_u64().unwrap_or(0).min(8) as usize,
         slots,
+        ender,
     })
 }
 
-pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
-    let inventory: Vec<Value> = saved
-        .slots
+/// Saved slots: a stack each, or null for an empty slot.
+fn stacks(slots: &[Value]) -> Vec<Option<ItemStack>> {
+    slots
+        .iter()
+        .map(|slot| {
+            let id = slot["id"].as_str()?;
+            let mut stack = ItemStack::new(id, slot["count"].as_u64()?.clamp(1, 255) as u8);
+            stack.components = slot.get("components").filter(|c| !c.is_null()).cloned();
+            Some(stack)
+        })
+        .collect()
+}
+
+fn slots_json(slots: &[Option<ItemStack>]) -> Vec<Value> {
+    slots
         .iter()
         .map(|slot| match slot {
             Some(stack) => {
@@ -74,7 +84,11 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             }
             None => Value::Null,
         })
-        .collect();
+        .collect()
+}
+
+pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
+    let inventory = slots_json(&saved.slots);
     let value = json!({
         "seed": saved.seed,
         "creative": saved.creative,
@@ -92,6 +106,7 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             "selected": saved.selected,
             "flying": saved.flying,
             "inventory": inventory,
+            "ender_items": slots_json(&saved.ender),
         },
     });
     std::fs::create_dir_all(dir)?;
@@ -99,4 +114,49 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
     let partial = dir.join(format!("{FILE}.partial"));
     std::fs::write(&partial, text)?;
     std::fs::rename(partial, dir.join(FILE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(ender: Vec<Option<ItemStack>>) -> Saved {
+        Saved {
+            seed: 7,
+            creative: false,
+            position: [0.5, 64.0, 0.5],
+            yaw: 0.0,
+            pitch: 0.0,
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            experience: (0, 0.0, 0),
+            day_ticks: 1000.0,
+            flying: false,
+            selected: 0,
+            slots: vec![None; 43],
+            ender,
+        }
+    }
+
+    #[test]
+    fn the_ender_chest_saves_with_the_player() {
+        let dir = std::env::temp_dir().join(format!("minecraft-save-{}", std::process::id()));
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.components = Some(json!({"minecraft:custom_name": "Edge"}));
+        let mut ender = vec![None; 27];
+        ender[0] = Some(ItemStack::new("minecraft:dirt", 12));
+        ender[26] = Some(sword);
+        write(&dir, &saved(ender.clone())).unwrap();
+        let loaded = read(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.ender, ender);
+        // A world saved before ender chests opened has an empty one.
+        let value = json!({"seed": 1, "player": {"position": [0, 0, 0], "inventory": []}});
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), value.to_string()).unwrap();
+        let old = read(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(old.ender.is_empty());
+    }
 }

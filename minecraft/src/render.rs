@@ -94,6 +94,17 @@ impl UiList {
         self.push(WHITE, false, rect, [0.0, 0.0, 1.0, 1.0], colour);
     }
 
+    /// A flat fill from `top`'s colour at its top edge to `bottom`'s at
+    /// its bottom (`GuiGraphicsExtractor.fillGradient`).
+    pub fn gradient(&mut self, rect: [f32; 4], top: [f32; 4], bottom: [f32; 4]) {
+        self.push(WHITE, false, rect, [0.0, 0.0, 1.0, 1.0], top);
+        let len = self.vertices.len();
+        // The quad's bottom corners: its third, fifth and sixth vertices.
+        for i in [len - 4, len - 2, len - 1] {
+            self.vertices[i].colour = bottom;
+        }
+    }
+
     /// The glint over `mask`'s opaque pixels in `rect`, at `glint_uv`
     /// for the corners (top left, top right, bottom right, bottom left).
     pub fn glint(

@@ -788,8 +788,8 @@ fn quick_craft_accepts<M: Menu + ?Sized>(
 }
 
 /// `AbstractContainerMenu.getQuickCraftPlaceCount`: what a drag puts in each
-/// of `size` slots.
-fn quick_craft_place_count(size: usize, kind: i32, stack: &ItemStack) -> i32 {
+/// of `size` slots (the screen's preview shows the same).
+pub fn quick_craft_place_count(size: usize, kind: i32, stack: &ItemStack) -> i32 {
     match kind {
         0 => i32::from(stack.count) / size as i32,
         1 => 1,

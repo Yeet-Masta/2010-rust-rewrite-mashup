@@ -10,6 +10,7 @@ use std::sync::Arc;
 use glam::{DVec3, Vec3};
 use minecraft_terrain::client_mobs::{ClientMobs, server_mobs};
 use minecraft_terrain::lighting::SkyLight;
+use minecraft_terrain::menus::{MenuInput, MenuUpdate, PlayerContext, UseResult};
 use minecraft_terrain::mesh::{Atlas, ChunkMesh, ItemVisuals};
 use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraft_terrain::poof_particles::PoofParticles;
@@ -76,6 +77,11 @@ pub struct Events {
     pub mob_events: Vec<(u64, u8)>,
     /// The player's hits: the mob, and what the hit did.
     pub attacks: Vec<(u64, minecraftoss_entities::world::AttackResult)>,
+    /// The open menu's updates, in order: an opening, the answers to the
+    /// batches of inputs, what a tick changed, and the closing.
+    pub menu: Vec<MenuUpdate>,
+    /// The answers to uses of blocks that open menus.
+    pub use_results: Vec<UseResult>,
 }
 
 pub struct Entities {
@@ -105,6 +111,9 @@ pub struct Entities {
     server_handed: HashMap<u32, (u64, ItemEntity)>,
     /// Stacks the server let the player pick up, not yet in the inventory.
     server_picked: Vec<(i32, [f64; 3], String, i32, Option<String>)>,
+    /// Pickups wait: a menu's batch or a use with the inventory's copy is
+    /// with the server, whose answer is written over the inventory.
+    pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
     /// Sounds the mob world made since the last take: event, block point,
@@ -168,6 +177,7 @@ impl Entities {
             server_item_ids: HashSet::new(),
             server_handed: HashMap::new(),
             server_picked: Vec::new(),
+            hold_pickups: false,
             server_snapshot: None,
             server_handled: 0,
             sounds: Vec::new(),
@@ -261,7 +271,12 @@ impl Entities {
             entities.into_iter().map(|e| (e.entity_id, e)).collect();
         let target = feet + DVec3::Y * 0.81;
         self.world_items.tick_pickup_effects(target);
-        for (id, position, item, count, components) in std::mem::take(&mut self.server_picked) {
+        let picked = if self.hold_pickups {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.server_picked)
+        };
+        for (id, position, item, count, components) in picked {
             let recipes = self.inventory.recipes.clone();
             let make_stack = |item: &str, count: i32| {
                 let mut stack = ItemStack::new(item, count.clamp(0, 255) as u8);
@@ -539,6 +554,34 @@ impl Entities {
         self.server.use_block(scene, pos, facing)
     }
 
+    /// Whether a use of the block at `pos` opens a menu (a chest, a barrel,
+    /// a hopper...), which the server decides with the player.
+    pub fn opens_menu(&self, scene: &HandcraftedScene, pos: (i32, i32, i32)) -> bool {
+        self.server.opens_menu(scene, pos)
+    }
+
+    /// A use of a menu block with the player; answered in
+    /// `Events.use_results`, with the opening in `Events.menu`.
+    pub fn use_block_with(
+        &mut self,
+        pos: (i32, i32, i32),
+        facing: &'static str,
+        player: PlayerContext,
+    ) {
+        self.server.use_block_with(pos, facing, player);
+    }
+
+    /// A batch of inputs on the open menu, with the player as it is now;
+    /// answered in `Events.menu`.
+    pub fn menu(&mut self, id: u8, seq: u32, inputs: Vec<MenuInput>, player: PlayerContext) {
+        self.server.menu(id, seq, inputs, player);
+    }
+
+    /// The player's ender inventory as saved, at world load.
+    pub fn set_ender_items(&mut self, items: Vec<Option<ItemStack>>) {
+        self.server.set_ender_items(items);
+    }
+
     /// `BoneMealItem.useOn` on a clicked face; whether it took arrives with
     /// the server's output.
     pub fn bone_meal(&mut self, pos: (i32, i32, i32), face: &'static str) {
@@ -649,6 +692,26 @@ impl Entities {
             });
         }
         let mut events = Events::default();
+        self.receive(&mut events);
+        if ticked {
+            self.server_items_tick(player.feet);
+            // `ItemEntity.playerTouch`'s pickup pop.
+            for _ in 0..self.world_items.take_pickup_sounds() {
+                let pitch =
+                    ((self.random.next_float() - self.random.next_float()) * 0.7 + 1.0) * 2.0;
+                self.sounds.push((
+                    "minecraft:entity.item.pickup".to_owned(),
+                    player.feet,
+                    0.2,
+                    pitch,
+                ));
+            }
+        }
+        events
+    }
+
+    /// Takes what the server sent back since the last call.
+    fn receive(&mut self, events: &mut Events) {
         for output in self.server.poll() {
             self.server_handled = output.handled;
             if let Some(snapshot) = output.entities {
@@ -658,6 +721,17 @@ impl Entities {
             events.changes.extend(output.changes);
             events.block_entities.extend(output.block_entities);
             events.bone_meal_used.extend(output.bone_meal_used);
+            events.menu.extend(output.menu);
+            events.use_results.extend(output.use_results);
+            // The level's own sounds: containers opening and closing.
+            for sound in &output.sounds {
+                self.sounds.push((
+                    sound.event.to_owned(),
+                    DVec3::from_array(sound.position),
+                    sound.volume,
+                    sound.pitch,
+                ));
+            }
             for summoned in &output.summoned {
                 if let Err(error) = summoned {
                     log!("Could not summon: {error}");
@@ -727,20 +801,15 @@ impl Entities {
                     .filter(|h| h.player_id == PLAYER),
             );
         }
-        if ticked {
-            self.server_items_tick(player.feet);
-            // `ItemEntity.playerTouch`'s pickup pop.
-            for _ in 0..self.world_items.take_pickup_sounds() {
-                let pitch =
-                    ((self.random.next_float() - self.random.next_float()) * 0.7 + 1.0) * 2.0;
-                self.sounds.push((
-                    "minecraft:entity.item.pickup".to_owned(),
-                    player.feet,
-                    0.2,
-                    pitch,
-                ));
-            }
-        }
+    }
+
+    /// Waits until the server has handled everything sent so far (a
+    /// menu's last batch, before the world saves or the player dies), and
+    /// takes what it sent back.
+    pub fn wait(&mut self) -> Events {
+        self.server.wait_idle();
+        let mut events = Events::default();
+        self.receive(&mut events);
         events
     }
 
