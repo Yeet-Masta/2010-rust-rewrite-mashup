@@ -785,7 +785,7 @@ impl Inventory {
         ));
     }
 
-    fn record_dropped(&mut self, stack: &ItemStack) {
+    pub(crate) fn record_dropped(&mut self, stack: &ItemStack) {
         self.pending_stats.push((
             crate::statistics::DROPPED.into(),
             stack.id.clone(),

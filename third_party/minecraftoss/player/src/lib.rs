@@ -19,6 +19,7 @@ pub mod item_catalog;
 pub mod items;
 pub mod lightning;
 pub mod loot;
+pub mod menu;
 pub mod mining;
 pub mod jmath;
 pub mod mth;
