@@ -1187,6 +1187,19 @@ impl TerrainStream {
         self.server.storage()
     }
 
+    /// Chunks forgotten from now on stay, with the changes recorded for
+    /// them, until [`Self::release_chunk`]: the integrated server may
+    /// still be sending what it did to them before it unloaded them.
+    pub fn hold_forgotten_chunks(&mut self) {
+        self.server.set_hold_forgotten(true);
+    }
+
+    /// The integrated server's last changes to a forgotten chunk are
+    /// recorded: it drops if it is out of range.
+    pub fn release_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
+        self.server.release(pos);
+    }
+
     /// One server tick: runs the chunk map for the player and applies what it
     /// sends to the scene. Returns the chunks it loaded and the positions it
     /// forgot, for the world simulation.

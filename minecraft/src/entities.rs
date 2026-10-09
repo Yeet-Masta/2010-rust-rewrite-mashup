@@ -120,6 +120,10 @@ pub struct Entities {
     pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
     server_handled: u64,
+    /// Chunks unloaded from the server, each with the commands sent as of
+    /// its unload: the chunk map keeps them until the outputs through it
+    /// are taken in (`unloads_answered`).
+    unloads: Vec<(minecraftoss_core::ChunkPos, u64)>,
     /// Sounds the mob world made since the last take: event, block point,
     /// volume, pitch.
     pub sounds: Vec<(String, DVec3, f32, f32)>,
@@ -184,6 +188,7 @@ impl Entities {
             hold_pickups: false,
             server_snapshot: None,
             server_handled: 0,
+            unloads: Vec::new(),
             sounds: Vec::new(),
             random: minecraftoss_player::rng::LegacyRandom::new((seed ^ 0x1735) as u64),
         }
@@ -195,6 +200,19 @@ impl Entities {
 
     pub fn unload_chunk(&mut self, pos: minecraftoss_core::ChunkPos) {
         self.server.unload_chunk(pos);
+        self.unloads.push((pos, self.server.sent()));
+    }
+
+    /// The unloaded chunks the server's outputs taken so far have caught up
+    /// with: every change it made to them came before, and once those are
+    /// recorded the chunk map may drop them.
+    pub fn unloads_answered(&mut self) -> Vec<minecraftoss_core::ChunkPos> {
+        let applied = self.server.applied();
+        let (answered, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.unloads)
+            .into_iter()
+            .partition(|&(_, sent)| sent <= applied);
+        self.unloads = waiting;
+        answered.into_iter().map(|(pos, _)| pos).collect()
     }
 
     /// Before a save: the server saves its entities and hands over every

@@ -300,6 +300,12 @@ pub struct ChunkMap {
     edits: HashMap<ChunkPos, Edits>,
     /// Chunks changed since they were last saved, for a quick autosave.
     unsaved: HashSet<ChunkPos>,
+    /// Whether chunks the client forgets are held until [`Self::release`]
+    /// (a level that ran them may still send their changes).
+    hold_forgotten: bool,
+    /// Chunks forgotten and not yet released, with how many times: kept,
+    /// with their edits, however far the player went.
+    held: HashMap<ChunkPos, u32>,
 }
 
 /// Generation order: the player ticket level (chessboard distance), then
@@ -555,6 +561,8 @@ impl ChunkMap {
             chunks: HashMap::new(),
             edits: HashMap::new(),
             unsaved: HashSet::new(),
+            hold_forgotten: false,
+            held: HashMap::new(),
             last_tick_ms: [0.0; 7],
             view_distance: view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE),
             view: None,
@@ -609,6 +617,51 @@ impl ChunkMap {
         self.view_distance = view_distance.clamp(MIN_VIEW_DISTANCE, EXTENDED_VIEW_DISTANCE);
     }
 
+    /// Holds every chunk the client forgets from now on until it is
+    /// released ([`Self::release`]), so the changes a level that ran it
+    /// still sends ([`Self::set_blocks`], [`Self::set_block_entities`])
+    /// find it, even when the player went far enough at once for the chunk
+    /// to drop the same tick.
+    pub fn set_hold_forgotten(&mut self, hold: bool) {
+        self.hold_forgotten = hold;
+    }
+
+    /// A forgotten chunk's last changes are in (once for each time it was
+    /// forgotten): it drops now if it is out of range, with its edits, as
+    /// the tracking would have dropped it.
+    pub fn release(&mut self, pos: ChunkPos) {
+        match self.held.get_mut(&pos) {
+            None => return,
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                return;
+            }
+            Some(_) => {
+                self.held.remove(&pos);
+            }
+        }
+        let Some(view) = self.view else { return };
+        if view.center.chebyshev(pos) <= self.keep_distance() {
+            return;
+        }
+        self.chunks.remove(&pos);
+        let mut world = self.shared.world.lock().expect("chunk world");
+        if matches!(world.slots.get(&pos), None | Some(Slot::Out { .. })) {
+            return;
+        }
+        let dropped: Vec<(ChunkPos, Slot)> = world.slots.remove(&pos).map(|slot| (pos, slot)).into_iter().collect();
+        world.ticking.remove(&pos);
+        drop(world);
+        self.evict(dropped);
+    }
+
+    /// How far from the player loaded chunks are kept: a few rings beyond
+    /// the generated area, so small back-and-forth movement does not
+    /// regenerate them.
+    fn keep_distance(&self) -> i32 {
+        self.view_distance + 5
+    }
+
     /// A final chunk with its edits, whether or not it has been sent.
     pub fn chunk(&mut self, pos: ChunkPos) -> Option<&Arc<Chunk>> {
         self.write_edits(pos);
@@ -654,6 +707,9 @@ impl ChunkMap {
         for pos in left {
             if !self.pending_send.remove(&pos) {
                 events.push(ChunkEvent::Forget(pos));
+                if self.hold_forgotten {
+                    *self.held.entry(pos).or_default() += 1;
+                }
             }
         }
         self.view = Some(next);
@@ -679,9 +735,11 @@ impl ChunkMap {
         self.queued_for = Some(view);
         let center = view.center;
         // Loaded chunks are kept a few rings beyond the generated area so
-        // small back-and-forth movement does not regenerate them.
-        let keep = self.view_distance + 5;
-        self.chunks.retain(|&pos, _| center.chebyshev(pos) <= keep);
+        // small back-and-forth movement does not regenerate them, and held
+        // ones until they are released.
+        let keep = self.keep_distance();
+        let held = &self.held;
+        self.chunks.retain(|&pos, _| center.chebyshev(pos) <= keep || held.contains_key(&pos));
         self.shared.biomes.lock().expect("biome cache").retain(|&pos, _| center.chebyshev(pos) <= keep + 1);
 
         // Tracked chunks must be block ticking, their 3x3 FULL: FEATURES two
@@ -732,7 +790,7 @@ impl ChunkMap {
         let dropped: Vec<ChunkPos> = world
             .slots
             .iter()
-            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && center.chebyshev(pos) > keep)
+            .filter(|&(&pos, slot)| !matches!(slot, Slot::Out { .. }) && center.chebyshev(pos) > keep && !self.held.contains_key(&pos))
             .map(|(&pos, _)| pos)
             .collect();
         let dropped: Vec<(ChunkPos, Slot)> = dropped.into_iter().filter_map(|pos| world.slots.remove(&pos).map(|slot| (pos, slot))).collect();
@@ -744,23 +802,28 @@ impl ChunkMap {
         self.last_tick_ms[5] = locked.elapsed().as_secs_f64() * 1000.0;
         self.shared.work.notify_all();
         let evicting = Instant::now();
-        // Dropped chunks, with any waiting edits, stay in memory until the
-        // saver has written them.
-        if !dropped.is_empty() {
-            let mut evicted = self.shared.evicted.lock().expect("evicted chunks");
-            for (pos, slot) in dropped {
-                let (chunk, status) = match slot {
-                    Slot::Proto { chunk, decorated } => (Arc::new(*chunk), if decorated { ChunkStatus::Features } else { ChunkStatus::Terrain }),
-                    Slot::Final(chunk) => (chunk, ChunkStatus::Full),
-                    Slot::Out { .. } => continue,
-                };
-                let edits = Arc::new(self.edits.remove(&pos).unwrap_or(Edits { blocks: Vec::new(), block_entities: BTreeMap::new() }));
-                evicted.insert(pos, Evicted { chunk, status, edits });
-            }
-            drop(evicted);
-            self.shared.evicted_ready.notify_one();
-        }
+        self.evict(dropped);
         self.last_tick_ms[6] = evicting.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    /// Dropped chunks, with any waiting edits, stay in memory until the
+    /// saver has written them.
+    fn evict(&mut self, dropped: Vec<(ChunkPos, Slot)>) {
+        if dropped.is_empty() {
+            return;
+        }
+        let mut evicted = self.shared.evicted.lock().expect("evicted chunks");
+        for (pos, slot) in dropped {
+            let (chunk, status) = match slot {
+                Slot::Proto { chunk, decorated } => (Arc::new(*chunk), if decorated { ChunkStatus::Features } else { ChunkStatus::Terrain }),
+                Slot::Final(chunk) => (chunk, ChunkStatus::Full),
+                Slot::Out { .. } => continue,
+            };
+            let edits = Arc::new(self.edits.remove(&pos).unwrap_or(Edits { blocks: Vec::new(), block_entities: BTreeMap::new() }));
+            evicted.insert(pos, Evicted { chunk, status, edits });
+        }
+        drop(evicted);
+        self.shared.evicted_ready.notify_one();
     }
 
     /// Sets blocks in FULL chunks (player and level changes), so the

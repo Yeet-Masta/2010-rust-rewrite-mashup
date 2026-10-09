@@ -1176,6 +1176,12 @@ impl ServerHandle {
         self.sent
     }
 
+    /// The commands handled as of the last output taken ([`Self::poll`],
+    /// [`Self::flush`]).
+    pub fn applied(&self) -> u64 {
+        self.applied
+    }
+
     /// Whether the server thread is still running (it ends only on a panic
     /// before the handle drops).
     pub fn running(&self) -> bool {
@@ -2920,6 +2926,38 @@ mod tests {
             let _ = done.send(handle.poll().len());
         });
         assert_eq!(waited.recv_timeout(std::time::Duration::from_secs(20)), Ok(0));
+    }
+
+    /// A jump beyond the kept rings forgets chunks and drops them in one
+    /// tick, while the level's last changes to them (a dropper's slot, a
+    /// hopper's move) are still on their way back. A held chunk keeps
+    /// them, and drops with them once released.
+    #[test]
+    fn forgotten_chunks_keep_the_changes_still_on_their_way() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen, 2, 4);
+        map.set_hold_forgotten(true);
+        let origin = ChunkPos::new(0, 0);
+        for x in -2..=2 {
+            for z in -2..=2 {
+                map.load_now(ChunkPos::new(x, z));
+            }
+        }
+        let sent = map.tick(origin);
+        assert!(sent.iter().any(|e| matches!(e, minecraftoss_world::ChunkEvent::Load(c) if c.pos == origin)));
+        let forgot = map.tick(ChunkPos::new(1000, 0));
+        assert!(forgot.iter().any(|e| matches!(e, minecraftoss_world::ChunkEvent::Forget(p) if *p == origin)));
+        // The server's output with the chunk's last change arrives now.
+        let dropper = minecraftoss_core::nbt::Tag::Compound([("id".to_owned(), minecraftoss_core::nbt::Tag::String("minecraft:dropper".to_owned()))].into_iter().collect());
+        map.set_block_entities([(minecraftoss_core::BlockPos::new(8, 200, 8), Some(dropper.clone()))]);
+        assert!(map.chunk(origin).is_some(), "held until released");
+        map.release(origin);
+        assert!(map.chunk(origin).is_none(), "dropped once released");
+        let reloaded = map.load_now(origin);
+        assert_eq!(reloaded.block_entities.entities.get(&(8, 200, 8)), Some(&dropper));
     }
 
     #[test]

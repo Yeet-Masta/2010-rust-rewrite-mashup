@@ -201,6 +201,9 @@ impl Game {
         let mut player = Player::new(DVec3::new(x, y, z));
         let mut creative = options.creative;
         let mut world = world;
+        // A chunk the server unloads may still have changes on their way
+        // back: the chunk map keeps it until they are in.
+        world.stream.hold_forgotten_chunks();
         if let Some(saved) = saved.as_ref() {
             creative = saved.creative || options.creative;
             player.pos = DVec3::from_array(saved.position);
@@ -543,6 +546,11 @@ impl Game {
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
         self.handle_events(events, input.use_item);
+        // Forgotten chunks whose last changes from the server are in may
+        // drop now.
+        for pos in self.entities.unloads_answered() {
+            self.world.stream.release_chunk(pos);
+        }
         self.check_death();
 
         // The camera.
