@@ -13,3 +13,7 @@ minecraft-data
 # Agent working memory. None of it is the product: the artifacts, the externals,
 # the agent clones and the RE tooling and its bases all stay on this machine.
 /context/
+
+# Agent worktrees, and lock files from building the engine crates on their own.
+/.claude/worktrees/
+/third_party/minecraftoss/*/Cargo.lock
