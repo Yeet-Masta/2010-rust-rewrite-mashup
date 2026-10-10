@@ -597,6 +597,14 @@ impl ServerSim {
         self.level.use_item_on_tnt(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
     }
 
+    /// `FlintAndSteelItem.useOn` or `FireChargeItem.useOn` on a clicked
+    /// face: where the item's sound plays, when it lit something.
+    pub fn use_igniter(&mut self, pos: BlockPos, face: &str, flint_and_steel: bool) -> Option<BlockPos> {
+        let face = minecraftoss_core::pos::Direction::from_name(face)?;
+        let at = self.level.use_igniter(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), face, flint_and_steel)?;
+        Some((at.x, at.y, at.z))
+    }
+
     /// The mobs a player at `position` tracks (`ChunkMap.TrackedEntity`:
     /// within `range` blocks horizontally).
     pub fn tracked_mobs(&self, position: [f64; 3], range: f64) -> minecraftoss_entities::world::EntityWorld {
@@ -943,6 +951,8 @@ pub enum Command {
     BoneMeal { pos: BlockPos, face: &'static str },
     /// Flint and steel or a fire charge used on TNT.
     IgniteTnt(BlockPos),
+    /// Flint and steel (or a fire charge) used on a clicked face.
+    UseIgniter { pos: BlockPos, face: &'static str, flint_and_steel: bool },
     /// The saved weather, as the world loads (`prepareWeather`).
     LoadWeather(Weather),
     /// `/weather`: rain, and thunder with it, for vanilla's default time.
@@ -1075,6 +1085,9 @@ pub struct Output {
     pub summoned: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
+    /// Uses of flint and steel (true) or a fire charge that lit something,
+    /// with where the item's sound plays.
+    pub ignited: Vec<(BlockPos, bool)>,
     /// The powers beacons gave the players (`BeaconBlockEntity.applyEffects`).
     pub beacon_effects: Vec<minecraftoss_world::level::beacon::BeaconEffect>,
     /// The weather after a tick (`ClientboundGameEventPacket`'s rain and
@@ -1240,6 +1253,12 @@ impl ServerHandle {
         self.send(Command::IgniteTnt(pos));
     }
 
+    /// Flint and steel or a fire charge used on a clicked face; when it lit
+    /// something, `Output.ignited` says so.
+    pub fn use_igniter(&mut self, pos: BlockPos, face: &'static str, flint_and_steel: bool) {
+        self.send(Command::UseIgniter { pos, face, flint_and_steel });
+    }
+
     /// The saved weather, as the world loads.
     pub fn load_weather(&mut self, weather: Weather) {
         self.send(Command::LoadWeather(weather));
@@ -1394,6 +1413,11 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::IgniteTnt(pos) => {
                     sim.ignite_tnt(pos);
+                }
+                Command::UseIgniter { pos, face, flint_and_steel } => {
+                    if let Some(at) = sim.use_igniter(pos, face, flint_and_steel) {
+                        out.ignited.push((at, flint_and_steel));
+                    }
                 }
                 Command::LoadWeather(weather) => sim.level.load_weather(&weather),
                 Command::SetWeather { raining, thundering } => sim.level.weather_command(raining, thundering),
@@ -2892,6 +2916,34 @@ mod tests {
         let age: i32 = grown.properties.get("age").and_then(|a| a.parse().ok()).unwrap_or(0);
         assert!((2..=5).contains(&age), "bone meal adds 2 to 5 ages: {age}");
         assert!(!server.bone_meal((8, 200, 8), "up"), "farmland does not take bone meal");
+    }
+
+    #[test]
+    fn flint_and_steel_lights_candles_and_places_fire() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        let chunk = map.load_now(ChunkPos::new(0, 0));
+        server.load_chunk(&chunk);
+        scene.insert_chunk(chunk);
+        scene.set((8, 200, 8), Some(Block::new("minecraft:stone")));
+        server.player_edit(&scene, (8, 200, 8), PlayerEdit::Place);
+        scene.set((4, 201, 4), Some(Block::new("minecraft:candle")));
+        server.player_edit(&scene, (4, 201, 4), PlayerEdit::Place);
+        server.take_changes();
+        assert_eq!(server.use_igniter((8, 200, 8), "up", true), Some((8, 201, 8)), "fire on the stone's top");
+        let changes = server.take_changes();
+        assert!(changes.iter().any(|(pos, b)| *pos == (8, 201, 8) && b.as_ref().is_some_and(|b| b.id.path == "fire")));
+        assert_eq!(server.use_igniter((8, 200, 8), "west", false), None, "fire does not survive on a stone's side");
+        assert_eq!(server.use_igniter((4, 201, 4), "up", false), Some((4, 201, 4)), "the candle lights in place");
+        let changes = server.take_changes();
+        let lit = changes.iter().find(|(pos, _)| *pos == (4, 201, 4)).and_then(|(_, b)| b.clone()).expect("the candle changed");
+        assert_eq!(lit.properties.get("lit").map(String::as_str), Some("true"));
     }
 
     /// What the client does with an output: the block changes and the

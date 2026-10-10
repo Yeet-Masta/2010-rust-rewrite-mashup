@@ -733,6 +733,9 @@ impl Game {
                 self.play(event, Some(at), volume, pitch);
             }
         }
+        for (pos, flint_and_steel) in events.ignited {
+            self.ignited(pos, flint_and_steel);
+        }
         if events.use_taken {
             self.start_swing();
         }
@@ -1583,6 +1586,19 @@ impl Game {
             }
             return;
         }
+        if matches!(
+            stack.id.as_str(),
+            "minecraft:flint_and_steel" | "minecraft:fire_charge"
+        ) && let Some(hit) = target.as_ref()
+        {
+            // `FlintAndSteelItem.useOn`, `FireChargeItem.useOn`: the server
+            // lights the block or sets fire on the face; the sound, the
+            // swing and the wear follow when it did (`ignited`).
+            let flint_and_steel = stack.id == "minecraft:flint_and_steel";
+            self.entities
+                .use_igniter(hit.pos, face_name(hit.face), flint_and_steel);
+            return;
+        }
         if stack.id == "minecraft:bone_meal"
             && let Some(hit) = target.as_ref()
         {
@@ -1770,6 +1786,48 @@ impl Game {
             && let Some(tool) = tool
         {
             self.item_broke(&tool);
+        }
+    }
+
+    /// A use of flint and steel or a fire charge that lit something at
+    /// `pos`: its sound (`FLINTANDSTEEL_USE` with a pitch of 0.8 to 1.2,
+    /// `FIRECHARGE_USE` with a pitch of 0.8 to 1.2 from two draws), the
+    /// swing, and the item: flint and steel wears by one, a fire charge is
+    /// spent, unless in creative.
+    fn ignited(&mut self, pos: BlockPos, flint_and_steel: bool) {
+        let (sound, pitch) = if flint_and_steel {
+            (
+                "minecraft:item.flintandsteel.use",
+                self.sounds.random() * 0.4 + 0.8,
+            )
+        } else {
+            let pitch = (self.sounds.random() - self.sounds.random()) * 0.2 + 1.0;
+            ("minecraft:item.firecharge.use", pitch)
+        };
+        self.play(sound, Some(center(pos)), 1.0, pitch);
+        self.start_swing();
+        let item = if flint_and_steel {
+            "minecraft:flint_and_steel"
+        } else {
+            "minecraft:fire_charge"
+        };
+        let selected = self.entities.selected;
+        if self.creative
+            || !self.entities.inventory.slots[selected]
+                .as_ref()
+                .is_some_and(|held| held.id == item)
+        {
+            return;
+        }
+        if flint_and_steel {
+            if self.entities.inventory.wear_tool(selected, 1) {
+                self.item_broke(item);
+            }
+        } else if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+            held.count -= 1;
+            if held.count == 0 {
+                self.entities.inventory.slots[selected] = None;
+            }
         }
     }
 

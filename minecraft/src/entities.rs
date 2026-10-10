@@ -75,6 +75,9 @@ pub struct Events {
     pub use_passed: bool,
     /// Where bone meal took (level event 1505).
     pub bone_meal_used: Vec<(i32, i32, i32)>,
+    /// Flint and steel (true) or a fire charge that lit something, and
+    /// where its sound plays.
+    pub ignited: Vec<((i32, i32, i32), bool)>,
     /// Entity events with particles (hearts, a villager's moods).
     pub mob_events: Vec<(u64, u8)>,
     /// The player's hits: the mob, and what the hit did.
@@ -682,6 +685,12 @@ impl Entities {
         self.server.ignite_tnt(pos);
     }
 
+    /// `FlintAndSteelItem.useOn` or `FireChargeItem.useOn` on a clicked
+    /// face; what it lit arrives with the server's output.
+    pub fn use_igniter(&mut self, pos: (i32, i32, i32), face: &'static str, flint_and_steel: bool) {
+        self.server.use_igniter(pos, face, flint_and_steel);
+    }
+
     /// `BoneMealItem.useOn` on a clicked face; whether it took arrives with
     /// the server's output.
     pub fn bone_meal(&mut self, pos: (i32, i32, i32), face: &'static str) {
@@ -829,6 +838,7 @@ impl Entities {
             events.changes.extend(output.changes);
             events.block_entities.extend(output.block_entities);
             events.bone_meal_used.extend(output.bone_meal_used);
+            events.ignited.extend(output.ignited);
             events.menu.extend(output.menu);
             events.use_results.extend(output.use_results);
             events.level_events.extend(output.level_events);

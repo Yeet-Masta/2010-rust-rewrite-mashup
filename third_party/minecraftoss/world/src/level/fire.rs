@@ -205,4 +205,50 @@ impl Level<'_> {
             }
         }
     }
+
+    /// `CampfireBlock.canLight`, `CandleBlock.canLight` and
+    /// `CandleCakeBlock.canLight`: an unlit campfire or candle that is not
+    /// under water, or an unlit candle cake.
+    fn can_light(&self, state: BlockStateId) -> bool {
+        let registries = self.registries();
+        let tagged = |tag: &str| registries.block_tags.id(tag).is_some_and(|t| registries.block_in_tag(state, t));
+        let prop = |name: &str| registries.blocks.property(state, name);
+        let (lit, waterlogged) = (prop("lit"), prop("waterlogged"));
+        if tagged("minecraft:campfires") || tagged("minecraft:candles") {
+            lit == Some("false") && waterlogged == Some("false")
+        } else {
+            tagged("minecraft:candle_cakes") && lit == Some("false")
+        }
+    }
+
+    /// The shared body of `FlintAndSteelItem.useOn` and
+    /// `FireChargeItem.useOn` on the block at `pos`, clicked on `face`:
+    /// lights a campfire, candle or candle cake there, or puts fire on the
+    /// clicked face where `BaseFireBlock.canBePlacedAt` allows. Flint and
+    /// steel sets with flags 11, a fire charge with `setBlockAndUpdate`.
+    /// Returns where the item's sound plays, or `None` when the use fails.
+    ///
+    /// `canBePlacedAt`'s `isPortal` (fire inside an empty nether portal
+    /// frame) is not ported: fire there survives on the frame anyway, and
+    /// its `onPlace` reports the portal as unsupported.
+    pub fn use_igniter(&mut self, pos: BlockPos, face: Direction, flint_and_steel: bool) -> Option<BlockPos> {
+        let flags = if flint_and_steel { update::ALL | 8 } else { update::ALL };
+        let state = self.block(pos);
+        if self.can_light(state) {
+            let lit = self.registries().blocks.with_property(state, "lit", "true")?;
+            self.set_block(pos, lit, flags, update::LIMIT);
+            return Some(pos);
+        }
+        let at = pos.relative(face, 1);
+        if !self.registries().blocks.is_air(self.block(at)) {
+            return None;
+        }
+        let lib = self.lib;
+        let fire = minecraftoss_generator::feature::update::base_fire_state(&Ctx { lib, region: &mut *self }, at);
+        if !self.can_survive_state(fire, at) {
+            return None;
+        }
+        self.set_block(at, fire, flags, update::LIMIT);
+        Some(at)
+    }
 }
