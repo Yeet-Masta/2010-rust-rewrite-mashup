@@ -458,7 +458,8 @@ impl ServerSim {
     pub fn set_recipe_book(&mut self, recipes: Arc<minecraftoss_player::crafting::RecipeBook>) {
         let book = Arc::new(crate::menus::BookCooking(recipes.clone()));
         self.level.cooking = Some(book.clone());
-        self.level.crafting = Some(book);
+        self.level.crafting = Some(book.clone());
+        self.level.brewing = Some(book);
         self.mobs.set_recipe_book(recipes);
     }
 

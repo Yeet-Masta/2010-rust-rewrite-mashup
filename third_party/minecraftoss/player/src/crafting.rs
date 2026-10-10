@@ -124,6 +124,59 @@ struct AutoUnlockRule {
     criterion: AutoUnlockCriterion,
 }
 
+/// `PotionIngredient`: an item, and the potions its `potion_contents` must
+/// hold when it names any (`PotionsPredicate.potions`).
+#[derive(Debug)]
+struct PotionIngredient {
+    item: Ingredient,
+    potions: Option<Vec<String>>,
+}
+
+impl PotionIngredient {
+    /// `PotionIngredient.MAP_CODEC`. A predicate on the potion's effects is
+    /// not read: an ingredient with one does not parse.
+    fn parse(value: &Value) -> Option<Self> {
+        let item = Ingredient::parse(value.get("item")?)?;
+        let potions = match value.get("potion_contents") {
+            None => None,
+            Some(contents) if contents.get("effects").is_some() => return None,
+            Some(contents) => match contents.get("potions") {
+                None => None,
+                Some(Value::String(id)) => Some(vec![id.clone()]),
+                Some(Value::Array(ids)) => {
+                    Some(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                }
+                Some(_) => return None,
+            },
+        };
+        Some(Self { item, potions })
+    }
+}
+
+/// The potion a stack's `potion_contents` holds (`PotionContents.potion`):
+/// the component's `potion`, or the component as a bare id.
+fn stack_potion(stack: &ItemStack) -> Option<&str> {
+    let contents = stack.components.as_ref()?.get("minecraft:potion_contents")?;
+    contents
+        .get("potion")
+        .and_then(Value::as_str)
+        .or_else(|| contents.as_str())
+}
+
+/// Two ids the same, `minecraft:` or not.
+fn same_id(a: &str, b: &str) -> bool {
+    a.strip_prefix("minecraft:").unwrap_or(a) == b.strip_prefix("minecraft:").unwrap_or(b)
+}
+
+/// A `minecraft:brewing` recipe (`BrewingRecipe`): a bottle and a reagent,
+/// and what the bottle becomes (`output`, an `ItemStackTemplate`).
+#[derive(Debug)]
+struct BrewingEntry {
+    input: PotionIngredient,
+    reagent: PotionIngredient,
+    output: ItemStack,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CookingRecipeRef<'a> {
     pub id: &'a str,
@@ -136,6 +189,8 @@ pub struct CookingRecipeRef<'a> {
 pub struct RecipeBook {
     recipes: Vec<Recipe>,
     smelting: Vec<SmeltingEntry>,
+    /// The brewing recipes, in file-name order.
+    brewing: Vec<BrewingEntry>,
     tags: HashMap<String, Vec<String>>,
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
@@ -196,7 +251,12 @@ impl RecipeBook {
         raw_recipes.sort_by(|a, b| a.0.cmp(&b.0));
         let mut recipes = Vec::new();
         let mut smelting = Vec::new();
+        let mut brewing = Vec::new();
         for (name, value) in raw_recipes {
+            if value.get("type").and_then(Value::as_str) == Some("minecraft:brewing") {
+                brewing.extend(parse_brewing(&value));
+                continue;
+            }
             let cooking_kind = match value.get("type").and_then(Value::as_str) {
                 Some("minecraft:smelting") => Some(CookingKind::Furnace),
                 Some("minecraft:blasting") => Some(CookingKind::BlastFurnace),
@@ -271,6 +331,7 @@ impl RecipeBook {
         Self {
             recipes,
             smelting,
+            brewing,
             tags,
             auto_unlocks,
             display_indices: HashMap::new(),
@@ -554,6 +615,60 @@ impl RecipeBook {
 
     pub fn count(&self) -> usize {
         self.recipes.len()
+    }
+
+    /// How many `minecraft:brewing` recipes the book has.
+    pub fn brewing_count(&self) -> usize {
+        self.brewing.len()
+    }
+
+    /// `PotionIngredient.test`: the stack's item, and its potion when the
+    /// ingredient names potions (a stack without one holds none).
+    fn potion_ingredient_matches(&self, ingredient: &PotionIngredient, stack: &ItemStack) -> bool {
+        if !self.matches_ingredient(&ingredient.item, &stack.id) {
+            return false;
+        }
+        let Some(potions) = &ingredient.potions else {
+            return true;
+        };
+        stack_potion(stack).is_some_and(|potion| potions.iter().any(|id| same_id(id, potion)))
+    }
+
+    /// `RecipeManager.getRecipeFor(BREWING, new BrewingInput(bottle,
+    /// reagent))` and `BrewingRecipe.assemble`: what the bottle brews into
+    /// with the reagent, by the first recipe that takes both.
+    pub fn brew(&self, bottle: &ItemStack, reagent: &ItemStack) -> Option<ItemStack> {
+        let entry = self.brewing.iter().find(|entry| {
+            self.potion_ingredient_matches(&entry.input, bottle)
+                && self.potion_ingredient_matches(&entry.reagent, reagent)
+        })?;
+        let mut output = entry.output.clone();
+        output.max = self.max_stack(&output.id);
+        Some(output)
+    }
+
+    /// The `brewing_reagent` recipe property set: a brewing recipe's
+    /// reagent item.
+    pub fn is_brewing_reagent(&self, stack: &ItemStack) -> bool {
+        self.brewing
+            .iter()
+            .any(|entry| self.matches_ingredient(&entry.reagent.item, &stack.id))
+    }
+
+    /// `PotionIngredient.isPotionInput`: a brewing recipe's bottle item (the
+    /// `brewing_input` property set), or in `#brewing_potion_inputs`.
+    pub fn is_potion_input(&self, stack: &ItemStack) -> bool {
+        self.brewing
+            .iter()
+            .any(|entry| self.matches_ingredient(&entry.input.item, &stack.id))
+            || self.item_in_tag("minecraft:brewing_potion_inputs", &stack.id)
+    }
+
+    /// The item's `brewing_fuel` component: its uses and speed multiplier.
+    /// Blaze powder alone has one (`Items.BLAZE_POWDER`), with
+    /// `brewing/uses_default` (20) and `brewing/speed_default` (1.0).
+    pub fn brewing_fuel(&self, id: &str) -> Option<(u32, f32)> {
+        (id == "minecraft:blaze_powder").then_some((20, 1.0))
     }
 
     pub fn crafting_recipes(&self) -> impl Iterator<Item = CraftingRecipeRef<'_>> {
@@ -1007,6 +1122,23 @@ fn parse_recipe(value: &Value) -> Option<Recipe> {
     })
 }
 
+/// `BrewingRecipe.MAP_CODEC`: `input`, `reagent` and `output` (an id, a
+/// count, and components).
+fn parse_brewing(value: &Value) -> Option<BrewingEntry> {
+    let output = value.get("output")?;
+    let count = u8::try_from(output.get("count").and_then(Value::as_u64).unwrap_or(1)).ok()?;
+    let mut stack = ItemStack::new(output.get("id")?.as_str()?, count);
+    stack.components = output
+        .get("components")
+        .filter(|components| components.as_object().is_some_and(|map| !map.is_empty()))
+        .cloned();
+    Some(BrewingEntry {
+        input: PotionIngredient::parse(value.get("input")?)?,
+        reagent: PotionIngredient::parse(value.get("reagent")?)?,
+        output: stack,
+    })
+}
+
 fn parse_result(value: &Value) -> Option<ItemStack> {
     let result = value.get("result")?;
     let id = result.get("id")?.as_str()?;
@@ -1137,6 +1269,65 @@ mod tests {
         assert_eq!(inv.count("minecraft:oak_log"), 3);
         assert!(inv.workbench.iter().all(Option::is_none));
     }
+    fn potion(id: &str, potion: &str) -> ItemStack {
+        let mut stack = ItemStack::new(id, 1);
+        stack.components = Some(serde_json::json!({"minecraft:potion_contents": {"potion": potion}}));
+        stack
+    }
+
+    #[test]
+    fn brewing_recipes_match_the_bottles_potion_and_the_reagent() {
+        let recipe = |input: &str, from: &str, reagent: &str, to: &str| {
+            serde_json::json!({
+                "type": "minecraft:brewing",
+                "input": {"item": input, "potion_contents": {"potions": from}},
+                "reagent": {"item": reagent},
+                "output": {"id": input, "components": {"minecraft:potion_contents": {"potion": to}}}
+            })
+        };
+        let book = RecipeBook::from_files(vec![
+            ("data/minecraft/recipe/brewing/potion_water_nether_wart.json".into(), recipe("minecraft:potion", "minecraft:water", "minecraft:nether_wart", "minecraft:awkward")),
+            ("data/minecraft/recipe/brewing/splash_potion_awkward_sugar.json".into(), recipe("minecraft:splash_potion", "minecraft:awkward", "minecraft:sugar", "minecraft:swiftness")),
+            ("data/minecraft/tags/item/brewing_potion_inputs.json".into(), serde_json::json!({"values": ["minecraft:potion", "minecraft:glass_bottle"]})),
+        ]);
+        assert_eq!((book.brewing_count(), book.count()), (2, 0));
+        let wart = ItemStack::new("minecraft:nether_wart", 1);
+        let awkward = book.brew(&potion("minecraft:potion", "minecraft:water"), &wart).expect("water and nether wart");
+        assert_eq!(awkward, potion("minecraft:potion", "minecraft:awkward"));
+        assert_eq!(book.brew(&potion("minecraft:potion", "water"), &wart), Some(awkward), "a bare potion id");
+        assert_eq!(book.brew(&potion("minecraft:splash_potion", "minecraft:water"), &wart), None, "another item");
+        assert_eq!(book.brew(&ItemStack::new("minecraft:potion", 1), &wart), None, "no potion");
+        assert_eq!(book.brew(&potion("minecraft:potion", "minecraft:mundane"), &wart), None);
+        assert!(book.is_brewing_reagent(&ItemStack::new("minecraft:sugar", 1)));
+        assert!(!book.is_brewing_reagent(&ItemStack::new("minecraft:stone", 1)));
+        for (id, input) in [("minecraft:splash_potion", true), ("minecraft:glass_bottle", true), ("minecraft:lingering_potion", false)] {
+            assert_eq!(book.is_potion_input(&ItemStack::new(id, 1)), input, "{id}");
+        }
+        assert_eq!(book.brewing_fuel("minecraft:blaze_powder"), Some((20, 1.0)));
+        assert_eq!(book.brewing_fuel("minecraft:blaze_rod"), None);
+    }
+
+    #[test]
+    fn the_games_brewing_recipes_load_when_available() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert_eq!(book.brewing_count(), 279);
+        let wart = ItemStack::new("minecraft:nether_wart", 1);
+        let awkward = book.brew(&potion("minecraft:potion", "minecraft:water"), &wart);
+        assert_eq!(awkward, Some(potion("minecraft:potion", "minecraft:awkward")));
+        let sugar = ItemStack::new("minecraft:sugar", 1);
+        let swift = book.brew(&potion("minecraft:lingering_potion", "minecraft:awkward"), &sugar);
+        assert_eq!(swift, Some(potion("minecraft:lingering_potion", "minecraft:swiftness")));
+        let breath = ItemStack::new("minecraft:dragon_breath", 1);
+        assert!(book.is_brewing_reagent(&breath) && book.is_potion_input(&ItemStack::new("minecraft:glass_bottle", 1)));
+    }
+
     #[test]
     fn pinned_jar_furnace_recipe_matches_when_available() {
         let jar = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(

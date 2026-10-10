@@ -21,12 +21,14 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+pub mod brewing;
 pub mod crafter;
 pub mod furnace;
 pub mod storage;
 #[cfg(test)]
 mod tests;
 
+pub use brewing::BrewingStandMenu;
 pub use crafter::CrafterMenu;
 pub use furnace::FurnaceMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};

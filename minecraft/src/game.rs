@@ -746,7 +746,8 @@ impl Game {
 
     /// `LevelEventHandler.levelEvent` for the events the server sends: the
     /// menus' blocks' sounds at their centres, pitched from 0.9 to 1.0; the
-    /// crafter's sounds, at pitch 1, and its smoke out of its front.
+    /// brewing stand's and the crafter's sounds, at pitch 1, and the
+    /// crafter's smoke out of its front.
     fn level_event(&mut self, pos: BlockPos, id: i32, data: i32) {
         let at = DVec3::new(
             f64::from(pos.0) + 0.5,
@@ -755,6 +756,7 @@ impl Game {
         );
         let (event, pitch) = match id {
             1029 => ("minecraft:block.anvil.destroy", None),
+            1035 => ("minecraft:block.brewing_stand.brew", Some(1.0)),
             1030 => ("minecraft:block.anvil.use", None),
             1042 => ("minecraft:block.grindstone.use", None),
             1044 => ("minecraft:block.smithing_table.use", None),

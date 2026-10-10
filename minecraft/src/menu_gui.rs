@@ -16,6 +16,8 @@ use super::Gui;
 use crate::font::rgb;
 use crate::render::UiList;
 
+#[path = "screens/brewing_stand.rs"]
+mod brewing_stand;
 #[path = "screens/crafter.rs"]
 mod crafter;
 #[path = "screens/furnace.rs"]
@@ -108,6 +110,8 @@ pub fn layout(kind: MenuKind) -> Layout {
         },
         // `CrafterScreen.init` centres the title.
         MenuKind::Crafter => Layout::plain("crafter", 166.0, TitleX::Centred),
+        // `BrewingStandScreen.init` centres the title.
+        MenuKind::BrewingStand => Layout::plain("brewing_stand", 166.0, TitleX::Centred),
     }
 }
 
@@ -290,6 +294,7 @@ impl Gui {
             }
             MenuKind::Merchant => self.merchant_extras(ui, packs, view, left, top),
             MenuKind::Crafter => self.crafter_extras(ui, view, left, top),
+            MenuKind::BrewingStand => self.brewing_stand_extras(ui, view, left, top),
         }
     }
 
@@ -366,6 +371,13 @@ mod tests {
             (MenuKind::Furnace, "furnace", 166.0, 72.0, TitleX::Centred),
             (MenuKind::Smoker, "smoker", 166.0, 72.0, TitleX::Centred),
             (MenuKind::Crafter, "crafter", 166.0, 72.0, TitleX::Centred),
+            (
+                MenuKind::BrewingStand,
+                "brewing_stand",
+                166.0,
+                72.0,
+                TitleX::Centred,
+            ),
         ];
         for (kind, background, height, label, title_x) in sizes {
             let layout = layout(kind);
@@ -393,6 +405,7 @@ mod tests {
             MenuKind::Smoker,
             MenuKind::Merchant,
             MenuKind::Crafter,
+            MenuKind::BrewingStand,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

@@ -28,7 +28,8 @@
 //! A crafter's menu shows its slots' states and `triggered` as its data
 //! values, and what its grid crafts as a tenth slot, read with the grid;
 //! a slot toggled in it is toggled in the block entity. The level's
-//! crafters craft from the recipe book too.
+//! crafters craft from the recipe book too, and its brewing stands brew
+//! from its brewing recipes, with the four data values on their menus.
 //!
 //! A villager's trading screen ([`MenuKind::Merchant`]) opens from the
 //! use of the villager (`openTradingScreen`). Its own slots are the menu's
@@ -52,10 +53,11 @@ use minecraftoss_entities::merchant::{MerchantMenu, Offers};
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_player::inventory::Inventory;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
-use minecraftoss_player::menu::{self, BlockRequest, ChestMenu, CrafterMenu, DispenserMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
+use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu, CrafterMenu, DispenserMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
+use minecraftoss_world::level::brewing::Brewing;
 use minecraftoss_world::level::crafter::Crafting;
 use minecraftoss_world::level::furnace::{Cooking, CookingRecipe, CookingType};
 use minecraftoss_world::level::openers::ContainerUser;
@@ -92,6 +94,8 @@ pub enum MenuKind {
     Merchant,
     /// `crafter_3x3` (`CrafterMenu`).
     Crafter,
+    /// `brewing_stand` (`BrewingStandMenu`).
+    BrewingStand,
 }
 
 impl MenuKind {
@@ -112,6 +116,7 @@ impl MenuKind {
             Self::Smoker => "minecraft:smoker",
             Self::Merchant => "minecraft:merchant",
             Self::Crafter => "minecraft:crafter_3x3",
+            Self::BrewingStand => "minecraft:brewing_stand",
         }
     }
 
@@ -128,6 +133,7 @@ impl MenuKind {
             Self::Smoker => Box::new(FurnaceMenu::new(CookingKind::Smoker, own)),
             Self::Merchant => Box::new(MerchantMenu::new(own)),
             Self::Crafter => Box::new(CrafterMenu::new(own)),
+            Self::BrewingStand => Box::new(BrewingStandMenu::new(own)),
         }
     }
 }
@@ -346,6 +352,7 @@ enum MenuBlock {
     BlastFurnace,
     Smoker,
     Crafter,
+    BrewingStand,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -361,6 +368,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("BlastFurnaceBlock", MenuBlock::BlastFurnace),
     ("SmokerBlock", MenuBlock::Smoker),
     ("CrafterBlock", MenuBlock::Crafter),
+    ("BrewingStandBlock", MenuBlock::BrewingStand),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -528,6 +536,31 @@ impl Crafting for BookCooking {
         let result = self.0.matching(&grid, 3, 3)?;
         let remainders = grid.iter().flatten().filter_map(|stack| self.0.crafting_remainder(&stack.id)).map(|stack| stacks::to_level(&stack)).collect();
         Some((stacks::to_level(&result), remainders))
+    }
+}
+
+impl Brewing for BookCooking {
+    fn brew(&self, bottle: &LevelStack, reagent: &LevelStack) -> Option<LevelStack> {
+        let max = |id: &str| i32::from(self.0.max_stack(id));
+        let (bottle, reagent) = (stacks::to_player(bottle, max)?, stacks::to_player(reagent, max)?);
+        self.0.brew(&bottle, &reagent).map(|stack| stacks::to_level(&stack))
+    }
+
+    fn is_reagent(&self, stack: &LevelStack) -> bool {
+        stacks::to_player(stack, |id| i32::from(self.0.max_stack(id))).is_some_and(|stack| self.0.is_brewing_reagent(&stack))
+    }
+
+    fn is_potion_input(&self, stack: &LevelStack) -> bool {
+        stacks::to_player(stack, |id| i32::from(self.0.max_stack(id))).is_some_and(|stack| self.0.is_potion_input(&stack))
+    }
+
+    fn fuel(&self, stack: &LevelStack) -> Option<(i32, f32)> {
+        let (uses, speed) = self.0.brewing_fuel(&stack.id).filter(|_| !stack.is_empty())?;
+        Some((uses as i32, speed))
+    }
+
+    fn remainder(&self, id: &str) -> Option<LevelStack> {
+        self.0.crafting_remainder(id).as_ref().map(stacks::to_level)
     }
 }
 
@@ -744,6 +777,7 @@ impl ServerSim {
             MenuBlock::BlastFurnace => single(MenuKind::BlastFurnace, "container.blast_furnace", "interact_with_blast_furnace"),
             MenuBlock::Smoker => single(MenuKind::Smoker, "container.smoker", "interact_with_smoker"),
             MenuBlock::Crafter => single(MenuKind::Crafter, "container.crafter", ""),
+            MenuBlock::BrewingStand => single(MenuKind::BrewingStand, "container.brewing", "interact_with_brewingstand"),
         }
     }
 
@@ -898,12 +932,13 @@ impl ServerSim {
         self.load_data(open.menu.as_mut(), open.source);
     }
 
-    /// The data values from the menu's block entity (a furnace's progress,
-    /// a crafter's slot states).
+    /// The data values from the menu's block entity (a furnace's or a
+    /// brewing stand's progress, a crafter's slot states).
     fn load_data(&self, menu: &mut (dyn Menu + Send), source: Source) {
         let data = match source {
             Source::Container(ContainerRef::Single(pos, Store::Furnace)) => self.level.furnace_data(pos).map(|data| data.to_vec()),
             Source::Container(ContainerRef::Single(pos, Store::Crafter)) => self.level.crafter_data(pos).map(|data| data.to_vec()),
+            Source::Container(ContainerRef::Single(pos, Store::BrewingStand)) => self.level.brewing_stand_data(pos).map(|data| data.to_vec()),
             _ => None,
         };
         for (id, value) in data.into_iter().flatten().enumerate() {
@@ -1702,7 +1737,7 @@ mod tests {
 
     #[test]
     fn menu_kinds_name_vanilla_menu_types() {
-        for (kind, own) in [(MenuKind::Generic { rows: 3 }, 27), (MenuKind::Generic { rows: 6 }, 54), (MenuKind::Generic3x3, 9), (MenuKind::Hopper, 5), (MenuKind::ShulkerBox, 27), (MenuKind::Furnace, 3), (MenuKind::BlastFurnace, 3), (MenuKind::Smoker, 3), (MenuKind::Crafter, 10)] {
+        for (kind, own) in [(MenuKind::Generic { rows: 3 }, 27), (MenuKind::Generic { rows: 6 }, 54), (MenuKind::Generic3x3, 9), (MenuKind::Hopper, 5), (MenuKind::ShulkerBox, 27), (MenuKind::Furnace, 3), (MenuKind::BlastFurnace, 3), (MenuKind::Smoker, 3), (MenuKind::Crafter, 10), (MenuKind::BrewingStand, 5)] {
             let menu = kind.menu(Vec::new());
             assert_eq!(menu.menu_type(), kind.menu_type());
             assert_eq!(menu.own().len(), own);
@@ -1976,5 +2011,115 @@ mod tests {
         let shown = shown.expect("the tick sends the grid");
         assert_eq!(shown.slots[9].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:stick", 4)));
         assert_eq!(server.level.comparator_output_at(LevelPos::new(7, 200, 8)), 8, "six disabled, two filled");
+    }
+
+    /// A bottle of a potion, as the player's stacks hold it.
+    fn potion_stack(recipes: &RecipeBook, item: &str, potion: &str) -> PlayerStack {
+        let mut stack = recipes.stack(item, 1);
+        stack.components = Some(json!({"minecraft:potion_contents": {"potion": potion}}));
+        stack
+    }
+
+    /// The potions the stand's bottles hold.
+    fn potions(update: &MenuUpdate) -> Vec<Option<String>> {
+        update.slots[..3].iter().map(|s| s.as_ref().and_then(|s| s.components.as_ref()?["minecraft:potion_contents"]["potion"].as_str().map(str::to_owned))).collect()
+    }
+
+    /// A brewing stand opens; water bottles, nether wart and blaze powder
+    /// go in by shift-clicks; the powder gives 20 uses, and in 400 ticks the
+    /// bottles are awkward potions, with the brewing sound and the stand
+    /// showing its bottles; with sugar, 400 ticks more make them potions of
+    /// swiftness.
+    #[test]
+    fn a_brewing_stand_brews_awkward_potions_then_swiftness() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        let Some(recipes) = cooking(&mut server, &mut inventory) else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:brewing_stand"));
+        for slot in 0..3 {
+            inventory.slots[slot] = Some(potion_stack(&recipes, "minecraft:potion", "minecraft:water"));
+        }
+        inventory.slots[3] = Some(recipes.stack("minecraft:nether_wart", 1));
+        inventory.slots[4] = Some(recipes.stack("minecraft:sugar", 1));
+        inventory.slots[5] = Some(recipes.stack("minecraft:blaze_powder", 2));
+        let (result, updates) = server.use_block_with(pos, "north", player(&inventory));
+        assert_eq!(result.stats, vec![("minecraft:custom".to_owned(), "minecraft:interact_with_brewingstand".to_owned(), 1)]);
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::BrewingStand, title: json!({"translate": "container.brewing"}) }));
+        assert_eq!((opening.slots.len(), &opening.data[..]), (5, &[0; 4][..]), "a new stand's totals are 0");
+        let inputs = [32, 33, 34, 35, 37].map(|slot| click(slot, ContainerInput::QuickMove));
+        let update = server.menu_batch(opening.id, 1, &inputs, player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(potions(&update), [Some("minecraft:water".to_owned()), Some("minecraft:water".to_owned()), Some("minecraft:water".to_owned())]);
+        assert_eq!(update.slots[3..], [Some(recipes.stack("minecraft:nether_wart", 1)), Some(recipes.stack("minecraft:blaze_powder", 2))]);
+        assert_eq!(update.player.len(), 5, "{:?}", update.player);
+
+        let _ = server.take_level_events();
+        let shown = tick(&mut server, FEET).expect("the brew starts");
+        assert_eq!(shown.data, [400, 19, 400, 20], "20 uses, one for this brew");
+        assert_eq!(shown.slots[4], Some(recipes.stack("minecraft:blaze_powder", 1)));
+        for bottle in 0..3 {
+            assert_eq!(property(&server, pos, &format!("has_bottle_{bottle}")).as_deref(), Some("true"));
+        }
+        let mut last = None;
+        for _ in 0..400 {
+            last = tick(&mut server, FEET).or(last);
+        }
+        let brewed = last.expect("the stand changed");
+        assert_eq!(potions(&brewed), [Some("minecraft:awkward".to_owned()), Some("minecraft:awkward".to_owned()), Some("minecraft:awkward".to_owned())]);
+        assert_eq!((&brewed.slots[3], &brewed.data[..]), (&None, &[0, 19, 400, 20][..]));
+        assert_eq!(server.take_level_events(), [((8, 200, 8), 1035, 0)]);
+
+        let update = server.menu_batch(opening.id, 2, &[click(36, ContainerInput::QuickMove)], player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(update.slots[3], Some(recipes.stack("minecraft:sugar", 1)));
+        let mut last = None;
+        for _ in 0..401 {
+            last = tick(&mut server, FEET).or(last);
+        }
+        let brewed = last.expect("the stand changed");
+        assert_eq!(potions(&brewed), [Some("minecraft:swiftness".to_owned()), Some("minecraft:swiftness".to_owned()), Some("minecraft:swiftness".to_owned())]);
+        assert_eq!(brewed.data[1], 18);
+        // Taken out by a shift-click: a potion with its contents, one to a
+        // slot.
+        let update = server.menu_batch(opening.id, 3, &[click(0, ContainerInput::QuickMove)], player(&inventory));
+        assert_eq!(update.player, vec![(8, Some(potion_stack(&recipes, "minecraft:potion", "minecraft:swiftness")))]);
+        server.menu_batch(opening.id, 4, &[MenuInput::Close], player(&inventory));
+        tick(&mut server, FEET);
+        assert_eq!(property(&server, pos, "has_bottle_0").as_deref(), Some("false"));
+    }
+
+    /// Hoppers reach a brewing stand by its faces: the top feeds the
+    /// reagent, a side the bottles and the fuel, and the bottom takes the
+    /// bottles out; a comparator reads it as a container.
+    #[test]
+    fn hoppers_feed_and_empty_a_brewing_stand_by_its_faces() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        let Some(recipes) = cooking(&mut server, &mut inventory) else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:brewing_stand"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:hopper").with("facing", "down"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:hopper").with("facing", "west"));
+        place(&mut server, &mut scene, (7, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (7, 200, 8), Block::new("minecraft:comparator").with("facing", "east"));
+        let water = stacks::to_level(&potion_stack(&recipes, "minecraft:potion", "minecraft:water"));
+        server.level.replace_block_item(LevelPos::new(8, 201, 8), 0, LevelStack::new("minecraft:nether_wart", 1));
+        server.level.replace_block_item(LevelPos::new(9, 200, 8), 0, water);
+        server.level.replace_block_item(LevelPos::new(9, 200, 8), 1, LevelStack::new("minecraft:blaze_powder", 1));
+        for _ in 0..430 {
+            tick(&mut server, FEET);
+        }
+        let stand = items(&server, pos);
+        assert_eq!(stand[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
+        assert_eq!(stand[1..], [None, None, None, None], "the wart and the powder were used");
+        assert_eq!(server.level.comparator_output_at(LevelPos::new(7, 200, 8)), 3, "one full slot of five");
+        place(&mut server, &mut scene, (8, 199, 8), Block::new("minecraft:hopper").with("facing", "down"));
+        for _ in 0..10 {
+            tick(&mut server, FEET);
+        }
+        assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
+        assert_eq!(items(&server, pos)[0], None);
     }
 }

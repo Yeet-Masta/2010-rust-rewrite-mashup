@@ -54,8 +54,8 @@ pub enum Kind {
     Rail { straight: bool, powered: bool },
     /// `HopperBlock`.
     Hopper,
-    /// Other simulated item containers (chests, barrels, shulker boxes,
-    /// dispensers and droppers).
+    /// Other simulated item containers (chests, barrels, shulker boxes and
+    /// brewing stands).
     Container,
     /// `TrappedChestBlock`: a container whose openers are its signal.
     TrappedChest,
@@ -117,6 +117,7 @@ impl Kinds {
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
             ("CrafterBlock", Kind::Crafter),
+            ("BrewingStandBlock", Kind::Container),
         ];
         let mut by_block = HashMap::new();
         for (id, info) in registries.blocks.blocks() {

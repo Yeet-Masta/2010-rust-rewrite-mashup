@@ -18,6 +18,7 @@ pub mod fire;
 pub mod grow;
 pub mod plants;
 pub mod bonemeal;
+pub mod brewing;
 pub mod crafter;
 pub mod fluid;
 pub mod furnace;
@@ -157,6 +158,10 @@ pub struct Level<'a> {
     pub cooking: Option<std::sync::Arc<dyn furnace::Cooking>>,
     /// The recipes crafters craft with; none crafts nothing.
     pub crafting: Option<std::sync::Arc<dyn crafter::Crafting>>,
+    /// The recipes and fuel brewing stands brew with; none brews nothing.
+    pub brewing: Option<std::sync::Arc<dyn brewing::Brewing>>,
+    /// What the brewing stands keep without saving it.
+    brewing_unsaved: HashMap<BlockPos, brewing::Unsaved>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -281,6 +286,8 @@ impl<'a> Level<'a> {
             dispensing_slot: None,
             cooking: None,
             crafting: None,
+            brewing: None,
+            brewing_unsaved: HashMap::new(),
             unsupported: Vec::new(),
             sky: None,
             entities: Vec::new(),

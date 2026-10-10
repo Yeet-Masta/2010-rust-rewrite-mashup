@@ -6,9 +6,9 @@
 //! Items live in the block entity's saved tag (`Items`), so every change is
 //! what the chunk saves. Simulated containers: chests (single and double,
 //! trapped and copper), barrels, shulker boxes, hoppers, dispensers and
-//! droppers, furnaces (their tick and faces are in `furnace`) and crafters
-//! (in `crafter`). Not yet: brewing stands, bookshelves, pots, shelves,
-//! container entities, item entities.
+//! droppers, furnaces (their tick and faces are in `furnace`), crafters (in
+//! `crafter`) and brewing stands (in `brewing`). Not yet: bookshelves,
+//! pots, shelves, container entities, item entities.
 //!
 //! A container generation left with a loot table is filled from it the
 //! first time something takes from it, puts into it or opens it
@@ -36,6 +36,7 @@ pub enum Store {
     /// Furnaces, smokers and blast furnaces.
     Furnace,
     Crafter,
+    BrewingStand,
 }
 
 impl Store {
@@ -45,6 +46,7 @@ impl Store {
             Self::Hopper => 5,
             Self::Dispenser | Self::Crafter => 9,
             Self::Furnace => 3,
+            Self::BrewingStand => 5,
             _ => 27,
         }
     }
@@ -111,6 +113,8 @@ impl Level<'_> {
             Some(Store::Furnace)
         } else if info.is_a("CrafterBlock") {
             Some(Store::Crafter)
+        } else if info.is_a("BrewingStandBlock") {
+            Some(Store::BrewingStand)
         } else {
             None
         }
@@ -385,6 +389,7 @@ impl Level<'_> {
     fn container_slots(&self, c: ContainerRef, direction: Direction) -> Vec<usize> {
         match c {
             ContainerRef::Single(_, Store::Furnace) => super::furnace::slots_for_face(direction).to_vec(),
+            ContainerRef::Single(_, Store::BrewingStand) => super::brewing::slots_for_face(direction).to_vec(),
             _ => (0..c.size()).collect(),
         }
     }
@@ -395,6 +400,7 @@ impl Level<'_> {
             ContainerRef::Single(_, Store::ShulkerBox) if direction.is_some() => !self.is_shulker_box_item(&stack.id),
             ContainerRef::Single(pos, Store::Furnace) => self.furnace_can_place(pos, slot, stack),
             ContainerRef::Single(pos, Store::Crafter) => self.crafter_can_place(pos, slot),
+            ContainerRef::Single(pos, Store::BrewingStand) => self.brewing_stand_can_place(pos, slot, stack),
             _ => true,
         }
     }
@@ -403,6 +409,7 @@ impl Level<'_> {
     fn container_can_take(&self, c: ContainerRef, slot: usize, stack: &Stack, direction: Direction) -> bool {
         match c {
             ContainerRef::Single(_, Store::Furnace) => self.furnace_can_take(slot, stack, direction),
+            ContainerRef::Single(_, Store::BrewingStand) => super::brewing::can_take(slot, stack),
             _ => true,
         }
     }
@@ -710,6 +717,7 @@ impl Level<'_> {
             || self.store_of(state) == Some(Store::ShulkerBox)
             || self.store_of(state) == Some(Store::Furnace)
             || self.store_of(state) == Some(Store::Crafter)
+            || self.store_of(state) == Some(Store::BrewingStand)
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }

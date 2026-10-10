@@ -314,12 +314,29 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/crafter/unpowered_redstone",
         0.0,
     ),
+    // The brewing stand (`BrewingStandScreen`).
+    ("brewing_stand", "gui/container/brewing_stand", 0.0),
+    (
+        "brewing_stand_fuel_length",
+        "gui/sprites/container/brewing_stand/fuel_length",
+        0.0,
+    ),
+    (
+        "brewing_stand_brew_progress",
+        "gui/sprites/container/brewing_stand/brew_progress",
+        0.0,
+    ),
+    (
+        "brewing_stand_bubbles",
+        "gui/sprites/container/brewing_stand/bubbles",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
 /// `SlotDef.icon`), loaded under their own ids from `gui/sprites/`. New
 /// ones are appended.
-const SLOT_ICONS: &[&str] = &[];
+const SLOT_ICONS: &[&str] = &["container/slot/potion", "container/slot/brewing_fuel"];
 
 impl Gui {
     pub fn load(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {

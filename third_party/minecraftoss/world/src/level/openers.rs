@@ -432,6 +432,7 @@ impl Level<'_> {
     pub(super) fn block_entity_removed(&mut self, pos: BlockPos) {
         self.openers.remove(&pos);
         self.shulker_lids.remove(&pos);
+        self.brewing_unsaved.remove(&pos);
         if let Some(removed) = self.watched_block_entities.get_mut(&pos) {
             *removed = true;
         }
