@@ -121,6 +121,7 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::Enchantment => Layout::plain("enchanting_table", 166.0, TitleX::At(8.0)),
         // `AnvilScreen`: the title at 60.
         MenuKind::Anvil => Layout::plain("anvil", 166.0, TitleX::At(60.0)),
+        MenuKind::Grindstone => Layout::plain("grindstone", 166.0, TitleX::At(8.0)),
     }
 }
 
@@ -312,6 +313,14 @@ impl Gui {
             MenuKind::BrewingStand => self.brewing_stand_extras(ui, view, left, top),
             MenuKind::Enchantment => self.enchanting_extras(ui, view, left, top),
             MenuKind::Anvil => self.anvil_extras(ui, view, left, top),
+            MenuKind::Grindstone => {
+                // `GrindstoneScreen.extractBackground`: the error sprite
+                // while the inputs make nothing.
+                let held = |i: usize| view.slots.get(i).is_some_and(|slot| slot.stack.is_some());
+                if (held(0) || held(1)) && !held(2) {
+                    self.sprite(ui, "grindstone_error", left + 92.0, top + 31.0, 28.0, 21.0);
+                }
+            }
         }
     }
 
@@ -426,6 +435,7 @@ mod tests {
             MenuKind::BrewingStand,
             MenuKind::Enchantment,
             MenuKind::Anvil,
+            MenuKind::Grindstone,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

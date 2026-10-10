@@ -396,6 +396,13 @@ const SPRITES: &[(&str, &str, f32)] = &[
         0.0,
     ),
     ("anvil_error", "gui/sprites/container/anvil/error", 0.0),
+    // The grindstone (`GrindstoneScreen`).
+    ("grindstone", "gui/container/grindstone", 0.0),
+    (
+        "grindstone_error",
+        "gui/sprites/container/grindstone/error",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as

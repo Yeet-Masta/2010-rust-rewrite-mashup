@@ -66,6 +66,7 @@ use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu, CrafterMenu, DispenserMenu, EnchantmentMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
 use minecraftoss_player::menu::enchanting::{self, EnchantingTable, TableAccess};
 use minecraftoss_player::menu::anvil::{self, AnvilMenu, EnchantmentRules};
+use minecraftoss_player::menu::GrindstoneMenu;
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -112,6 +113,8 @@ pub enum MenuKind {
     Enchantment,
     /// `anvil` (`AnvilMenu`).
     Anvil,
+    /// `grindstone` (`GrindstoneMenu`).
+    Grindstone,
 }
 
 impl MenuKind {
@@ -135,6 +138,7 @@ impl MenuKind {
             Self::BrewingStand => "minecraft:brewing_stand",
             Self::Enchantment => "minecraft:enchantment",
             Self::Anvil => "minecraft:anvil",
+            Self::Grindstone => "minecraft:grindstone",
         }
     }
 
@@ -154,6 +158,7 @@ impl MenuKind {
             Self::BrewingStand => Box::new(BrewingStandMenu::new(own)),
             Self::Enchantment => Box::new(EnchantmentMenu::new(own)),
             Self::Anvil => Box::new(AnvilMenu::new(own)),
+            Self::Grindstone => Box::new(GrindstoneMenu::new(own)),
         }
     }
 }
@@ -255,6 +260,9 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
     if let Some(anvil) = any.downcast_mut::<AnvilMenu>() {
         anvil.set_rules(Some(rules));
         anvil.set_at_block(at_block);
+    } else if let Some(grindstone) = any.downcast_mut::<GrindstoneMenu>() {
+        grindstone.set_rules(Some(rules));
+        grindstone.set_at_block(at_block);
     }
 }
 
@@ -519,6 +527,7 @@ enum MenuBlock {
     BrewingStand,
     EnchantingTable,
     Anvil,
+    Grindstone,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -537,6 +546,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("BrewingStandBlock", MenuBlock::BrewingStand),
     ("EnchantingTableBlock", MenuBlock::EnchantingTable),
     ("AnvilBlock", MenuBlock::Anvil),
+    ("GrindstoneBlock", MenuBlock::Grindstone),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -962,6 +972,7 @@ impl ServerSim {
                 Some(Target { kind: MenuKind::Enchantment, source: Source::Station(at, block), title, stat: "", locked_by: Vec::new(), centre: centre(at) })
             }
             MenuBlock::Anvil => station(MenuKind::Anvil, "container.repair", "interact_with_anvil"),
+            MenuBlock::Grindstone => station(MenuKind::Grindstone, "container.grindstone_title", "interact_with_grindstone"),
         }
     }
 
@@ -2381,6 +2392,31 @@ mod tests {
         }
         assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
         assert_eq!(items(&server, pos)[0], None);
+    }
+
+    #[test]
+    fn a_grindstone_grinds_off_enchantments_at_its_block() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:grindstone"));
+        let mut inventory = Inventory::default();
+        let mut sword = stack("minecraft:iron_sword", 1, 1);
+        sword.components = Some(json!({"minecraft:enchantments": {"minecraft:sharpness": 2, "minecraft:vanishing_curse": 1}, "minecraft:repair_cost": 3}));
+        inventory.slots[0] = Some(sword);
+        let (result, updates) = server.use_block_with(pos, "north", player(&inventory));
+        assert_eq!(result.stats, vec![("minecraft:custom".to_owned(), "minecraft:interact_with_grindstone".to_owned(), 1)]);
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Grindstone, title: json!({"translate": "container.grindstone_title"}) }));
+        let update = server.menu_batch(opening.id, 1, &[click(30, ContainerInput::QuickMove)], player(&inventory));
+        apply(&mut inventory, &update);
+        let ground = update.slots[2].clone().expect("a result");
+        assert_eq!(ground.components, Some(json!({"minecraft:enchantments": {"minecraft:vanishing_curse": 1}, "minecraft:repair_cost": 1})));
+        server.take_level_events();
+        let update = server.menu_batch(opening.id, 2, &[click(2, ContainerInput::Pickup)], player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(inventory.cursor, Some(ground));
+        assert_eq!(update.slots, [None, None, None]);
+        assert_eq!(server.take_level_events(), [(pos, 1042, 0)]);
     }
 
     #[test]
