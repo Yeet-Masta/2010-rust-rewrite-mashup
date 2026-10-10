@@ -31,27 +31,12 @@ pub enum DamageScaling {
     Always,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
-pub enum EffectKind {
-    Hunger,
-    Poison,
-    Regeneration,
-    Absorption,
-    Resistance,
-    FireResistance,
-    Nausea,
-    /// `MobEffects.SLOWNESS`: movement speed -15% a level.
-    Slowness,
-    /// `MobEffects.WEAKNESS`: attack damage -4 a level.
-    Weakness,
-}
+/// The status effects, under the name the survival code has used for them.
+pub use crate::effects::{EffectInstance, MobEffect as EffectKind};
+use crate::effects::{ActiveEffects, Attribute};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EffectInstance {
-    pub duration: u32,
-    pub amplifier: u8,
-}
+/// `Attributes.MAX_HEALTH`'s base for a player.
+pub const BASE_MAX_HEALTH: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FoodData {
@@ -141,7 +126,7 @@ pub struct Armor {
     pub value: Option<(f32, f32)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SurvivalStatus {
     pub health: f32,
     pub max_health: f32,
@@ -153,10 +138,16 @@ pub struct SurvivalStatus {
     pub air: i32,
     pub max_air: i32,
     pub absorption: f32,
+    /// `MAX_ABSORPTION`'s value: what absorption can hold (the absorption
+    /// effect's 4 a level).
+    pub max_absorption: f32,
     pub fire_ticks: u32,
     damage_cooldown: u8,
     last_hurt: f32,
-    effects: [Option<EffectInstance>; 9],
+    /// `activeEffects`.
+    pub effects: ActiveEffects,
+    /// `tickCount`, which an infinite effect's intervals count.
+    age: i32,
 }
 
 impl Default for SurvivalStatus {
@@ -172,10 +163,12 @@ impl Default for SurvivalStatus {
             air: 300,
             max_air: 300,
             absorption: 0.0,
+            max_absorption: 0.0,
             fire_ticks: 0,
             damage_cooldown: 0,
             last_hurt: 0.0,
-            effects: [None; 9],
+            effects: ActiveEffects::default(),
+            age: 0,
         }
     }
 }
@@ -208,14 +201,20 @@ impl SurvivalStatus {
         }
     }
 
-    pub fn effect(&self, kind: EffectKind) -> Option<EffectInstance> {
-        self.effects[kind as usize]
+    /// `getEffect`.
+    pub fn effect(&self, kind: EffectKind) -> Option<&EffectInstance> {
+        self.effects.get(kind)
+    }
+
+    /// `hasEffect`.
+    pub fn has_effect(&self, kind: EffectKind) -> bool {
+        self.effects.has(kind)
     }
 
     /// The attack damage attribute's `ADD_VALUE` modifiers from effects:
-    /// weakness's -4 a level (`MobEffects.WEAKNESS`).
+    /// strength's +3 and weakness's -4 a level.
     pub fn attack_damage_modifier(&self) -> f64 {
-        self.effect(EffectKind::Weakness).map_or(0.0, |e| -4.0 * (f64::from(e.amplifier) + 1.0))
+        self.effects.attribute(Attribute::AttackDamage, 0.0, &[])
     }
 
     /// `LivingEntity.heal`: only the living heal, up to their maximum.
@@ -225,26 +224,70 @@ impl SurvivalStatus {
         }
     }
 
+    /// `setAbsorptionAmount`: held between none and `MAX_ABSORPTION`.
+    pub fn set_absorption(&mut self, amount: f32) {
+        self.absorption = amount.clamp(0.0, self.max_absorption);
+    }
+
+    /// `addEffect` of an effect at a level for a time, with particles and
+    /// an icon.
     pub fn add_effect(&mut self, kind: EffectKind, duration: u32, amplifier: u8) {
-        let slot = &mut self.effects[kind as usize];
-        if slot.is_none_or(|old| {
-            amplifier > old.amplifier || (amplifier == old.amplifier && duration > old.duration)
-        }) {
-            *slot = Some(EffectInstance {
-                duration,
-                amplifier,
-            });
+        self.add_effect_instance(EffectInstance::new(kind, duration as i32, i32::from(amplifier)));
+    }
+
+    /// `LivingEntity.addEffect` (a player can be given every effect): a new
+    /// effect, or an update of the one it has (`MobEffectInstance.update`),
+    /// with its attributes refreshed (`onEffectAdded`, `onEffectUpdated`),
+    /// then the given instance's `onEffectStarted` (absorption's hearts)
+    /// whether or not it changed anything. Returns whether it did.
+    pub fn add_effect_instance(&mut self, instance: EffectInstance) -> bool {
+        let (kind, amplifier) = (instance.effect, instance.amplifier);
+        let changed = self.effects.add(instance) != crate::effects::Added::Unchanged;
+        if changed {
+            self.refresh_attributes();
         }
         if kind == EffectKind::Absorption {
-            self.absorption = self.absorption.max(4.0 * (amplifier as f32 + 1.0));
+            self.set_absorption(self.absorption.max(4.0 * (1 + amplifier) as f32));
+        }
+        changed
+    }
+
+    /// `removeEffect`: whether it had it.
+    pub fn remove_effect(&mut self, kind: EffectKind) -> bool {
+        let removed = self.effects.remove(kind).is_some();
+        if removed {
+            self.refresh_attributes();
+        }
+        removed
+    }
+
+    /// `removeAllEffects` (milk): whether there were any.
+    pub fn remove_all_effects(&mut self) -> bool {
+        let any = self.effects.clear();
+        if any {
+            self.refresh_attributes();
+        }
+        any
+    }
+
+    /// `onAttributeUpdated` after the effects' modifiers change: health
+    /// and absorption are cut to their new maxima.
+    pub fn refresh_attributes(&mut self) {
+        self.max_health = self.effects.attribute(Attribute::MaxHealth, f64::from(BASE_MAX_HEALTH), &[]).clamp(1.0, 1024.0) as f32;
+        if self.health > self.max_health {
+            self.health = self.max_health;
+        }
+        self.max_absorption = self.effects.attribute(Attribute::MaxAbsorption, 0.0, &[]).clamp(0.0, 2048.0) as f32;
+        if self.absorption > self.max_absorption {
+            self.absorption = self.max_absorption;
         }
     }
 
-    pub fn remove_effect(&mut self, kind: EffectKind) {
-        self.effects[kind as usize] = None;
-        if kind == EffectKind::Absorption {
-            self.absorption = 0.0;
-        }
+    /// `hurtServer` for damage that skips armor (`#bypasses_armor`, as
+    /// magic, wither and fire do) and costs no food: the cooldown,
+    /// resistance and absorption still apply.
+    pub fn hurt_bypassing_armor(&mut self, amount: f32) {
+        self.hurt(amount, Armor::default(), 0.0);
     }
 
     pub fn damage(&mut self, amount: f32) {
@@ -286,7 +329,7 @@ impl SurvivalStatus {
             damage *= 1.0 - real / 25.0;
         }
         if let Some(effect) = self.effect(EffectKind::Resistance) {
-            let absorb = 25 - (i32::from(effect.amplifier) + 1) * 5;
+            let absorb = 25 - (effect.amplifier + 1) * 5;
             damage = (damage * absorb as f32 / 25.0).max(0.0);
         }
         if damage <= 0.0 {
@@ -318,60 +361,98 @@ impl SurvivalStatus {
             self.damage_cooldown = 20;
             amount
         };
-        let resistance = if bypass_effects {
-            0.0
-        } else {
-            self.effect(EffectKind::Resistance)
-                .map_or(0.0, |effect| (effect.amplifier as f32 + 1.0) * 0.2)
-        };
-        let mut remaining = amount * (1.0 - resistance).max(0.0);
+        let mut remaining = amount;
+        if let Some(effect) = self.effect(EffectKind::Resistance).filter(|_| !bypass_effects) {
+            let absorb = 25 - (effect.amplifier + 1) * 5;
+            remaining = (remaining * absorb as f32 / 25.0).max(0.0);
+        }
         let absorbed = remaining.min(self.absorption);
         self.absorption -= absorbed;
         remaining -= absorbed;
         self.health = (self.health - remaining).max(0.0);
     }
 
-    /// MobEffectInstance checks the remaining duration before decrementing.
+    /// `LivingEntity.tickEffects` for a vulnerable player.
     pub fn tick_effects(&mut self) {
+        self.tick_effects_as(false);
+    }
+
+    /// `LivingEntity.tickEffects`, `MobEffectInstance.tickServer` and
+    /// `tickClient`'s blend: each effect works if its interval falls on
+    /// this tick (an infinite one counts the entity's age), then counts
+    /// down, coming back to a hidden weaker effect when spent; it ends when
+    /// its time runs out or its work says so (absorption with its hearts
+    /// gone). An invulnerable (creative) player takes no harm from them.
+    pub fn tick_effects_as(&mut self, invulnerable: bool) {
         self.damage_cooldown = self.damage_cooldown.saturating_sub(1);
-        for kind in [
-            EffectKind::Hunger,
-            EffectKind::Poison,
-            EffectKind::Regeneration,
-            EffectKind::Absorption,
-            EffectKind::Resistance,
-            EffectKind::FireResistance,
-            EffectKind::Nausea,
-            EffectKind::Slowness,
-            EffectKind::Weakness,
-        ] {
-            let Some(mut effect) = self.effect(kind) else {
-                continue;
-            };
-            match kind {
-                EffectKind::Hunger => self
-                    .food
-                    .add_exhaustion(0.005 * (effect.amplifier as f32 + 1.0)),
-                EffectKind::Poison if self.health > 1.0 => {
-                    let interval = (25_u32 >> effect.amplifier.min(31)).max(1);
-                    if effect.duration % interval == 0 {
-                        self.damage(1.0);
-                    }
+        self.age = self.age.wrapping_add(1);
+        let kinds: Vec<EffectKind> = self.effects.iter().map(|e| e.effect).collect();
+        let mut changed = false;
+        for kind in kinds {
+            let Some(effect) = self.effects.get(kind) else { continue };
+            let mut keep = effect.has_remaining_duration();
+            if keep {
+                let ticks = if effect.infinite() { self.age } else { effect.duration };
+                let amplifier = effect.amplifier;
+                if kind.applies_this_tick(ticks, amplifier) {
+                    keep = self.apply_effect_tick(kind, amplifier, invulnerable);
                 }
-                EffectKind::Regeneration => {
-                    let interval = (50_u32 >> effect.amplifier.min(31)).max(1);
-                    if effect.duration % interval == 0 {
-                        self.health = (self.health + 1.0).min(self.max_health);
-                    }
-                }
-                _ => {}
             }
-            effect.duration -= 1;
-            if effect.duration == 0 {
-                self.remove_effect(kind);
-            } else {
-                self.effects[kind as usize] = Some(effect);
+            if let Some(effect) = self.effects.get_mut(kind).filter(|_| keep) {
+                effect.tick_down();
+                changed |= effect.downgrade_to_hidden();
+                keep = effect.has_remaining_duration();
             }
+            if !keep {
+                self.effects.remove(kind);
+                changed = true;
+            }
+        }
+        if changed {
+            self.refresh_attributes();
+        }
+        for effect in self.effects.iter_mut() {
+            effect.tick_blend();
+        }
+    }
+
+    /// `MobEffect.applyEffectTick` for the effects with work to do on
+    /// their ticks; false ends the effect.
+    fn apply_effect_tick(&mut self, kind: EffectKind, amplifier: i32, invulnerable: bool) -> bool {
+        // Java's shifts take their distance modulo 32.
+        let shifted = |base: i32| base.wrapping_shl(amplifier as u32);
+        match kind {
+            EffectKind::Regeneration if self.health < self.max_health => self.heal(1.0),
+            EffectKind::Poison if self.health > 1.0 && !invulnerable => self.hurt_bypassing_armor(1.0),
+            EffectKind::Wither if !invulnerable => self.hurt_bypassing_armor(1.0),
+            EffectKind::Hunger => self.food.add_exhaustion(0.005 * (amplifier + 1) as f32),
+            // `FoodData.eat(amplifier + 1, 1.0)`: saturation by modifier.
+            EffectKind::Saturation => {
+                let nutrition = (amplifier + 1).clamp(0, 255) as u8;
+                self.food.eat(nutrition, f32::from(nutrition) * 1.0 * 2.0);
+            }
+            EffectKind::InstantHealth => self.heal(shifted(4).max(0) as f32),
+            EffectKind::InstantDamage if !invulnerable => self.hurt_bypassing_armor(shifted(6) as f32),
+            EffectKind::Absorption => return self.absorption > 0.0,
+            _ => {}
+        }
+        true
+    }
+
+    /// `HealOrHarmMobEffect.applyInstantaneousEffect` on the player at a
+    /// splash's nearness: healing 4 or harm 6 doubling a level, scaled and
+    /// rounded.
+    pub fn apply_instant(&mut self, kind: EffectKind, amplifier: i32, scale: f64, invulnerable: bool) {
+        let shifted = |base: i32| base.wrapping_shl(amplifier as u32);
+        match kind {
+            EffectKind::InstantHealth => self.heal((scale * f64::from(shifted(4)) + 0.5) as i32 as f32),
+            EffectKind::InstantDamage if !invulnerable => {
+                self.hurt_bypassing_armor((scale * f64::from(shifted(6)) + 0.5) as i32 as f32);
+            }
+            EffectKind::Saturation => {
+                self.apply_effect_tick(kind, amplifier, invulnerable);
+            }
+            _ => {}
         }
     }
 
@@ -386,7 +467,7 @@ impl SurvivalStatus {
         if self.fire_ticks > 0 {
             if self.fire_ticks % 20 == 0
                 && !in_lava
-                && self.effect(EffectKind::FireResistance).is_none()
+                && !self.has_effect(EffectKind::FireResistance)
             {
                 self.damage(1.0);
             }
@@ -396,23 +477,26 @@ impl SurvivalStatus {
 
     pub fn touch_lava(&mut self) {
         self.fire_ticks = self.fire_ticks.max(300);
-        if self.effect(EffectKind::FireResistance).is_none() {
+        if !self.has_effect(EffectKind::FireResistance) {
             self.damage(4.0);
         }
     }
 
     /// LivingEntity.baseTick consumes one air per submerged tick. Without
-    /// oxygen-bonus or water-breathing effects, damage lands at -20 air and
-    /// resets air to zero; surfacing restores four air per tick.
+    /// oxygen-bonus or water-breathing effects (`hasWaterBreathing`),
+    /// damage lands at -20 air and resets air to zero; surfacing restores
+    /// four air per tick, as breathing under water does unless the
+    /// nautilus's breath alone holds it (`shouldEffectsRefillAirsupply`).
     pub fn tick_air(&mut self, eye_submerged: bool, invulnerable: bool) -> bool {
-        if eye_submerged && !invulnerable {
+        let can_drown = !invulnerable && !self.effects.water_breathing();
+        if eye_submerged && can_drown {
             self.air -= 1;
             if self.air <= -20 {
                 self.air = 0;
                 self.damage(2.0);
                 return true;
             }
-        } else if self.air < self.max_air {
+        } else if self.air < self.max_air && (!eye_submerged || self.effects.refill_air()) {
             self.air = (self.air + 4).min(self.max_air);
         }
         false

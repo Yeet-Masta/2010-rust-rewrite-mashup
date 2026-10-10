@@ -11,6 +11,7 @@ use minecraft_terrain::sections::CullCamera;
 use minecraftoss_entities::world::{PlayerAttack, PlayerHitKind};
 use minecraftoss_player::food::{FoodUse, FoodUseTick};
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::effects::{Attribute, EffectInstance, MobEffect};
 use minecraftoss_player::survival::{Armor, Difficulty};
 use minecraftoss_player::{GameMode, HitFrom, IncomingHit, Player};
 
@@ -213,7 +214,12 @@ impl Game {
             player.pos = DVec3::from_array(saved.position);
             player.yaw = saved.yaw;
             player.pitch = saved.pitch;
-            player.survival.health = saved.health.clamp(1.0, 20.0);
+            // `readAdditionalSaveData`: the effects, with their maxima,
+            // before the health and absorption they bound.
+            player.survival.effects = saved.effects.clone();
+            player.survival.refresh_attributes();
+            player.survival.health = saved.health.clamp(1.0, player.survival.max_health);
+            player.survival.set_absorption(saved.absorption);
             player.survival.food.level = saved.food;
             player.survival.food.saturation = saved.saturation;
             (
@@ -390,7 +396,13 @@ impl Game {
     }
 
     fn start_swing(&mut self) {
-        self.swing.start();
+        self.swing.start(self.swing_duration());
+    }
+
+    /// `getCurrentSwingDuration`: six ticks, quicker with haste and
+    /// slower with mining fatigue.
+    fn swing_duration(&self) -> i32 {
+        self.player.survival.effects.swing_duration(6)
     }
 
     /// Puts away what an open screen holds, and saves: the changed chunks,
@@ -461,6 +473,9 @@ impl Game {
                 )
             },
             day_ticks: self.world.day.ticks,
+            // Death clears them (`LivingEntity.die`'s `removeAllEffects`).
+            effects: if dead { Default::default() } else { status.effects.clone() },
+            absorption: if dead { 0.0 } else { status.absorption },
             flying: self.player.flying,
             selected: self.entities.selected,
             slots: self.entities.inventory.slots.clone(),
@@ -706,17 +721,12 @@ impl Game {
         for hit in events.hits {
             self.hurt_by_mob(hit);
         }
-        // `LivingEntity.addEffect` for a beacon's powers: those the player's
-        // effects have (no speed, haste, jump boost or strength yet).
+        // `BeaconBlockEntity.applyEffects`: each power as an ambient
+        // effect with particles.
         for (effect, duration, amplifier) in events.beacon_effects {
-            use minecraftoss_player::survival::EffectKind;
-            let kind = match effect {
-                "minecraft:regeneration" => EffectKind::Regeneration,
-                "minecraft:resistance" => EffectKind::Resistance,
-                _ => continue,
-            };
-            let (duration, amplifier) = (duration.max(0) as u32, amplifier.clamp(0, 255) as u8);
-            self.player.survival.add_effect(kind, duration, amplifier);
+            let Some(kind) = MobEffect::from_id(effect) else { continue };
+            let instance = EffectInstance::with_flags(kind, duration, amplifier, true, true, true);
+            self.player.survival.add_effect_instance(instance);
         }
         for (id, event) in events.mob_events {
             if let Some(bounds) = self.entities.mob_bounds(id) {
@@ -1168,7 +1178,7 @@ impl Game {
             self.mining.reset();
             self.eating = None;
         }
-        self.swing.tick();
+        self.swing.tick(self.swing_duration());
         if let Some((_, left)) = self.overlay.as_mut() {
             *left = left.saturating_sub(1);
         }
@@ -1277,6 +1287,7 @@ impl Game {
                 water,
                 self.creative,
                 attacked,
+                &self.player.survival.effects,
             );
             if target.is_some() {
                 self.start_swing();
@@ -1396,20 +1407,25 @@ impl Game {
                     .collect()
             })
             .unwrap_or_else(Vec::new);
+        // The item's modifiers, then the effects': strength and weakness
+        // add to the damage, haste and mining fatigue scale the speed.
+        let effects = &self.player.survival.effects;
         let damage = minecraftoss_player::item_catalog::attribute_value(
             1.0,
             modifiers
                 .iter()
                 .filter(|m| m.attribute == "minecraft:attack_damage"),
-            (0.0, 2048.0),
+            (f64::MIN, f64::MAX),
         );
+        let damage = effects.attribute(Attribute::AttackDamage, damage, &[]).clamp(0.0, 2048.0);
         let speed = minecraftoss_player::item_catalog::attribute_value(
             4.0,
             modifiers
                 .iter()
                 .filter(|m| m.attribute == "minecraft:attack_speed"),
-            (0.0, 1024.0),
+            (f64::MIN, f64::MAX),
         );
+        let speed = effects.attribute(Attribute::AttackSpeed, speed, &[]).clamp(0.0, 1024.0);
         let strength = self.player.attack_strength_scale(0.5, speed);
         let attack = PlayerAttack {
             player_id: 0,
@@ -1418,10 +1434,13 @@ impl Game {
             attack_damage: damage,
             strength,
             sprinting: self.player.sprinting,
+            // `canCriticalAttack`: blindness (`isMobilityRestricted`)
+            // spoils it too.
             can_critical: !self.player.on_ground
                 && self.player.velocity.y < 0.0
                 && !self.player.in_water
-                && !self.player.sprinting,
+                && !self.player.sprinting
+                && !self.player.survival.has_effect(MobEffect::Blindness),
             can_sweep: self.player.on_ground && held.is_some_and(|s| s.id.ends_with("_sword")),
         };
         if self.entities.attack(eye, look, self.entity_reach(), attack) {
@@ -1917,9 +1936,11 @@ impl Game {
             if !input.forward {
                 self.tap_sprint = false;
             }
-            let fed = self.creative || self.player.survival.food.level > 6;
+            // `isSprintingPossible`: fed enough, and not blind.
+            let fed = (self.creative || self.player.survival.food.level > 6)
+                && !self.player.survival.has_effect(MobEffect::Blindness);
             movement.sprint = (input.sprint || self.tap_sprint) && fed && self.eating.is_none();
-            // `LocalPlayer.aiStep`: too hungry to keep running.
+            // `LocalPlayer.aiStep`: too hungry (or blind) to keep running.
             if !fed {
                 self.player.sprinting = false;
                 self.tap_sprint = false;
@@ -1935,6 +1956,8 @@ impl Game {
         let was_in_water = self.player.in_water;
         let health = self.player.survival.health;
         if self.creative {
+            // Effects run out for creative players too, harmlessly.
+            self.player.survival.tick_effects_as(true);
             self.player.tick(&self.world.scene, movement);
         } else {
             self.player.tick_survival_with_rules(
@@ -2073,12 +2096,21 @@ impl Game {
         if self.creative || !self.alive() {
             return;
         }
+        // What lands with the hit: a husk's hunger (`Husk.doHurtTarget`)
+        // or a tipped arrow's effect (`Arrow.doPostHurtEffects`).
+        let mut after = None;
         let (from, kind) = match hit.kind {
-            PlayerHitKind::Melee { attacker, lift, .. } => {
+            PlayerHitKind::Melee { attacker, lift, hunger_ticks } => {
                 self.player.velocity.y += f64::from(lift);
+                if hunger_ticks > 0 {
+                    after = Some(EffectInstance::new(MobEffect::Hunger, hunger_ticks, 0));
+                }
                 (HitFrom::Position(attacker), "mob_attack")
             }
-            PlayerHitKind::Arrow { velocity, .. } => (HitFrom::Projectile(velocity), "arrow"),
+            PlayerHitKind::Arrow { velocity, effect } => {
+                after = effect.map(|(kind, ticks)| EffectInstance::new(kind, ticks as i32, 0));
+                (HitFrom::Projectile(velocity), "arrow")
+            }
             PlayerHitKind::Explosion { knockback } => {
                 self.player.velocity += knockback;
                 (HitFrom::Explosion, "player_explosion")
@@ -2105,6 +2137,9 @@ impl Game {
         {
             self.hurts.push((hit.source, kind));
             self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
+            if let Some(effect) = after {
+                self.player.survival.add_effect_instance(effect);
+            }
         }
     }
 

@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use minecraft_terrain::server::Weather;
+use minecraftoss_player::effects::ActiveEffects;
 use minecraftoss_player::inventory::ItemStack;
 use serde_json::{Value, json};
 
@@ -17,6 +18,9 @@ pub struct Saved {
     pub saturation: f32,
     pub experience: (u32, f32, u32),
     pub day_ticks: f64,
+    /// `active_effects` and `AbsorptionAmount`.
+    pub effects: ActiveEffects,
+    pub absorption: f32,
     /// A creative player in the air stays there.
     pub flying: bool,
     pub selected: usize,
@@ -61,6 +65,8 @@ pub fn read(dir: &Path) -> Option<Saved> {
             player["experience_total"].as_u64().unwrap_or(0) as u32,
         ),
         day_ticks: value["day_ticks"].as_f64().unwrap_or(1000.0),
+        effects: ActiveEffects::from_json(&player["active_effects"]),
+        absorption: player["absorption"].as_f64().unwrap_or(0.0) as f32,
         flying: player["flying"].as_bool().unwrap_or(false),
         selected: player["selected"].as_u64().unwrap_or(0).min(8) as usize,
         slots,
@@ -131,6 +137,8 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             "yaw": saved.yaw,
             "pitch": saved.pitch,
             "health": saved.health,
+            "absorption": saved.absorption,
+            "active_effects": saved.effects.to_json(),
             "food": saved.food,
             "saturation": saved.saturation,
             "experience_level": saved.experience.0,

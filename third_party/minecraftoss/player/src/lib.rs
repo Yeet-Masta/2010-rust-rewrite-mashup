@@ -11,6 +11,7 @@ pub mod collision;
 pub mod crafting;
 pub mod daylight;
 pub mod dropper;
+pub mod effects;
 pub mod food;
 pub mod furnace;
 pub mod hopper;
@@ -1405,9 +1406,13 @@ impl Player {
             if input.crouch {
                 self.velocity.y -= 0.04;
             }
-            self.velocity.y -= 0.005;
+            // `getFluidFallingAdjustedMovement`: a sixteenth of gravity.
+            self.velocity.y -= self.effective_gravity() / 16.0;
         } else if input.jump && self.on_ground {
-            self.velocity.y = 0.42_f32 as f64;
+            // `jumpFromGround` at `getJumpPower`: jump boost adds 0.1 a
+            // level.
+            let power = 0.42_f32 + self.survival.effects.jump_boost_power();
+            self.velocity.y = self.velocity.y.max(f64::from(power));
             if self.sprinting {
                 self.velocity.x -= sin * 0.2;
                 self.velocity.z += cos * 0.2;
@@ -1415,6 +1420,13 @@ impl Player {
         }
         self.velocity.x += (x * cos - z * sin) * acceleration;
         self.velocity.z += (z * cos + x * sin) * acceleration;
+        // `LivingEntity.aiStep`: slow falling and levitation forget the
+        // fall so far.
+        if self.survival.has_effect(survival::EffectKind::SlowFalling)
+            || self.survival.has_effect(survival::EffectKind::Levitation)
+        {
+            self.fall_distance = 0.0;
+        }
         // Player.travel restores this pre-travel Y speed after LivingEntity
         // movement, including on a tick where a block clips the descent.
         let flight_travel_y = self.velocity.y;
@@ -1466,12 +1478,23 @@ impl Player {
             self.velocity.y = 0.0;
         }
         // 26.3 travelInAir applies gravity after Entity.move has clipped the
-        // requested displacement, including a grounded tick.
+        // requested displacement, including a grounded tick; levitation
+        // eases the speed toward 0.05 up a level instead.
         if !self.flying && !self.in_water {
-            self.velocity.y -= 0.08;
+            if let Some(levitation) = self.survival.effect(survival::EffectKind::Levitation) {
+                let target = 0.05 * f64::from(levitation.amplifier + 1);
+                self.velocity.y += (target - self.velocity.y) * 0.2;
+            } else {
+                self.velocity.y -= self.effective_gravity();
+            }
         }
         let drag = if self.in_water {
-            0.8
+            // `travelInWater`: dolphin's grace keeps the speed.
+            if self.survival.has_effect(survival::EffectKind::DolphinsGrace) {
+                0.96_f32 as f64
+            } else {
+                0.8
+            }
         } else if was_on_ground {
             ((friction as f32) * 0.91_f32) as f64
         } else {
@@ -1498,14 +1521,24 @@ impl Player {
     /// and slowness's -15% a level (applied in that order here; vanilla's
     /// order is its modifier map's).
     pub fn movement_speed(&self) -> f32 {
-        let mut value = f64::from(0.1_f32);
-        if self.sprinting {
-            value *= 1.0 + f64::from(0.3_f32);
-        }
-        if let Some(slowness) = self.survival.effect(survival::EffectKind::Slowness) {
-            value *= 1.0 + f64::from(-0.15_f32) * (f64::from(slowness.amplifier) + 1.0);
-        }
+        let sprint = [(f64::from(0.3_f32), effects::Operation::AddMultipliedTotal)];
+        let own: &[_] = if self.sprinting { &sprint } else { &[] };
+        let value = self.survival.effects.attribute(effects::Attribute::MovementSpeed, f64::from(0.1_f32), own);
         value.clamp(0.0, 1024.0) as f32
+    }
+
+    /// `getEffectiveGravity`: 0.08, or 0.01 falling under slow falling.
+    pub fn effective_gravity(&self) -> f64 {
+        if self.velocity.y <= 0.0 && self.survival.has_effect(survival::EffectKind::SlowFalling) {
+            0.01
+        } else {
+            0.08
+        }
+    }
+
+    /// `SAFE_FALL_DISTANCE`'s value: 3, and a block a level of jump boost.
+    pub fn safe_fall_distance(&self) -> f64 {
+        self.survival.effects.attribute(effects::Attribute::SafeFallDistance, 3.0, &[]).clamp(-1024.0, 1024.0)
     }
 
     /// Run one server-style survival tick around the shared movement core.
@@ -1643,8 +1676,8 @@ impl Player {
             }
             if self.on_ground {
                 // The scene's solid terrain uses the ordinary fall reduction
-                // and the default player SAFE_FALL_DISTANCE attribute (3.0).
-                let damage = (self.fall_distance as f64 + 1.0e-6 - 3.0).floor() as f32;
+                // and the player's SAFE_FALL_DISTANCE attribute.
+                let damage = (self.fall_distance as f64 + 1.0e-6 - self.safe_fall_distance()).floor() as f32;
                 if damage > 0.0 {
                     self.survival.damage_with_difficulty(
                         damage,

@@ -93,7 +93,9 @@ pub fn apply_consumed_food_effects(
             status.add_effect(FireResistance, 6000, 0);
             status.add_effect(Absorption, 2400, 3);
         }
-        "minecraft:honey_bottle" => status.remove_effect(Poison),
+        "minecraft:honey_bottle" => {
+            status.remove_effect(Poison);
+        }
         "minecraft:chorus_fruit" => return true,
         _ => {}
     }

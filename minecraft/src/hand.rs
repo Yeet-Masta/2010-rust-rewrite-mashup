@@ -8,9 +8,6 @@ use glam::{Mat3, Mat4, Vec3};
 use minecraft_terrain::mesh::{Atlas, SectionVertex};
 use minecraft_terrain::pack::ResourceId;
 
-/// Ticks of a swing (`LivingEntity.getCurrentSwingDuration`).
-const SWING_TICKS: i32 = 6;
-
 /// The arm's swing as `LivingEntity` keeps it: `swing`, `updateSwingTime`
 /// and `getAttackAnim`.
 #[derive(Default)]
@@ -24,26 +21,27 @@ pub struct Swing {
 impl Swing {
     /// `swing()`: starts over, unless the last one is under half done, so
     /// holding the button keeps the arm going in an even rhythm.
-    pub fn start(&mut self) {
-        if !self.swinging || self.time >= SWING_TICKS / 2 || self.time < 0 {
+    /// `duration` is `getCurrentSwingDuration`.
+    pub fn start(&mut self, duration: i32) {
+        if !self.swinging || self.time >= duration / 2 || self.time < 0 {
             self.time = -1;
             self.swinging = true;
         }
     }
 
     /// `updateSwingTime`, once a tick after the tick's input.
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, duration: i32) {
         self.previous = self.anim;
         if self.swinging {
             self.time += 1;
-            if self.time >= SWING_TICKS {
+            if self.time >= duration {
                 self.time = 0;
                 self.swinging = false;
             }
         } else {
             self.time = 0;
         }
-        self.anim = self.time as f32 / SWING_TICKS as f32;
+        self.anim = self.time as f32 / duration.max(1) as f32;
     }
 
     /// `getAttackAnim`: how far through the swing the arm is, 0 to 1, a

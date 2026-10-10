@@ -73,7 +73,7 @@ fn effects(player: &Player) -> Vec<(String, u32, u8)> {
         (EffectKind::Nausea, "minecraft:nausea"),
     ]
     .into_iter()
-    .filter_map(|(kind, id)| player.survival.effect(kind).map(|e| (id.to_owned(), e.duration, e.amplifier)))
+    .filter_map(|(kind, id)| player.survival.effect(kind).map(|e| (id.to_owned(), e.duration as u32, e.amplifier as u8)))
     .collect()
 }
 

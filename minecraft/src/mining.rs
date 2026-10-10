@@ -238,6 +238,7 @@ impl Mining {
         eyes_in_water: bool,
         creative: bool,
         pressed: bool,
+        effects: &minecraftoss_player::effects::ActiveEffects,
     ) -> Swing {
         // `startDestroyBlock`, on a press, doesn't wait out the delay that
         // holding the button does.
@@ -288,7 +289,8 @@ impl Mining {
                 cracked: None,
             };
         }
-        let mut speed = dig.speed;
+        // Haste, conduit power and mining fatigue.
+        let mut speed = effects.destroy_speed(dig.speed);
         if eyes_in_water {
             speed *= 0.2;
         }
