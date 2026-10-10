@@ -963,6 +963,9 @@ pub enum Command {
     /// `/weather`: rain, and thunder with it, for vanilla's default time.
     SetWeather { raining: bool, thundering: bool },
     Attack(BlockPos),
+    /// A splash or lingering potion the player threw: its contents, the
+    /// eyes, the look (pitch, yaw) and the player's motion.
+    ThrowPotion { contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3] },
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
     RecipeBook(Arc<minecraftoss_player::crafting::RecipeBook>),
@@ -1310,6 +1313,12 @@ impl ServerHandle {
         self.send(Command::SummonOrb { position, value });
     }
 
+    /// The player throws a splash or lingering potion; where it breaks
+    /// arrives in an output (`potion_breaks`, `player_splashes`).
+    pub fn throw_potion(&mut self, contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3]) {
+        self.send(Command::ThrowPotion { contents, lingering, eye, rotation, motion });
+    }
+
     /// `/summon` for a mob; what it did arrives in an output. The new
     /// mob's yaw comes from its own random (`LivingEntity`'s constructor:
     /// `nextFloat() * (float)(Math.PI * 2)`, in degrees), seeded here from
@@ -1435,6 +1444,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
+                Command::ThrowPotion { contents, lingering, eye, rotation, motion } => {
+                    sim.mobs.throw_potion(0, contents, lingering, glam::DVec3::from_array(eye), rotation.0, rotation.1, glam::DVec3::from_array(motion));
+                }
                 Command::Summon { kind, position, nbt, y_rot } => {
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }

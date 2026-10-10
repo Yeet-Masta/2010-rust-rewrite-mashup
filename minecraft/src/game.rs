@@ -728,6 +728,12 @@ impl Game {
             let instance = EffectInstance::with_flags(kind, duration, amplifier, true, true, true);
             self.player.survival.add_effect_instance(instance);
         }
+        for splash in events.splashes {
+            self.splashed(splash);
+        }
+        for broke in events.potion_breaks {
+            self.potion_broke(broke);
+        }
         for (id, event) in events.mob_events {
             if let Some(bounds) = self.entities.mob_bounds(id) {
                 crate::emitters::entity_event(&mut self.particles, &self.world, bounds, event);
@@ -815,6 +821,60 @@ impl Game {
         };
         let pitch = pitch.unwrap_or_else(|| self.sounds.random() * 0.1 + 0.9);
         self.play(event, Some(at), 1.0, pitch);
+    }
+
+    /// A potion that broke near the player (`ThrownSplashPotion.onHitAsPotion`
+    /// and `affectEntitiesAround` on the player's side): its lasting
+    /// effects, its instant ones at the splash's nearness, and water's
+    /// dousing.
+    fn splashed(&mut self, splash: minecraftoss_entities::world::PlayerSplash) {
+        if !self.alive() {
+            return;
+        }
+        let health = self.player.survival.health;
+        for effect in splash.effects {
+            self.player.survival.add_effect_instance(effect);
+        }
+        for (kind, amplifier, scale) in splash.instant {
+            self.player.survival.apply_instant(kind, amplifier, scale, self.creative);
+        }
+        if splash.extinguish {
+            self.player.survival.fire_ticks = 0;
+        }
+        if self.player.survival.health < health {
+            self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
+            self.player.hurt_time = 10;
+        }
+    }
+
+    /// `LevelEventHandler.potionSplashParticles` (events 2002 and 2007)
+    /// and the break's sound (1053 and 1054): eight shards of the bottle
+    /// and a hundred motes in the potion's colour flung out in a ring.
+    fn potion_broke(&mut self, broke: minecraftoss_entities::world::PotionBreak) {
+        use crate::particles::{Options, Type};
+        let block = broke.position.floor();
+        let at = DVec3::new(block.x + 0.5, block.y, block.z + 0.5);
+        let shard = Options::Item("minecraft:splash_potion".to_owned());
+        for _ in 0..8 {
+            let random = &mut self.particles.random;
+            let motion = DVec3::new(random.next_gaussian() * 0.15, random.next_double() * 0.2, random.next_gaussian() * 0.15);
+            self.particles.spawn(&self.world, &shard, at, motion);
+        }
+        let rgb = [(broke.color >> 16) & 255, (broke.color >> 8) & 255, broke.color & 255].map(|c| c as f32 / 255.0);
+        let kind = if broke.instant { Type::InstantEffect } else { Type::Effect };
+        for _ in 0..100 {
+            let random = &mut self.particles.random;
+            let distance = random.next_double() * 4.0;
+            let angle = random.next_double() * std::f64::consts::PI * 2.0;
+            let (vx, vz) = (angle.cos() * distance, angle.sin() * distance);
+            let vy = 0.01 + random.next_double() * 0.5;
+            let brightness = 0.75 + random.next_float() * 0.25;
+            let options = Options::Spell(kind, rgb.map(|c| c * brightness), distance as f32);
+            let pos = DVec3::new(at.x + vx * 0.1, at.y + 0.3, at.z + vz * 0.1);
+            self.particles.spawn(&self.world, &options, pos, DVec3::new(vx, vy, vz));
+        }
+        let pitch = self.sounds.random() * 0.1 + 0.9;
+        self.play("minecraft:entity.splash_potion.break", Some(at), 1.0, pitch);
     }
 
     /// `LevelEventHandler.shootParticles`: ten particles out of the face
@@ -1341,24 +1401,32 @@ impl Game {
                         }
                     }
                     FoodUseTick::Finished { overflow } => {
-                        let id = eating.stack.id.clone();
+                        let stack = eating.stack.clone();
+                        let id = stack.id.clone();
                         let crumbs = eating.info.particles;
                         self.eating = None;
                         if crumbs {
                             self.item_crumbs(&id, 16);
                         }
                         let sounds = &mut self.sounds;
-                        let teleport = minecraftoss_player::food::apply_consumed_food_effects(
-                            &id,
+                        let teleport = minecraftoss_player::food::apply_consumed_effects(
+                            &stack,
                             &mut self.player.survival,
+                            self.creative,
                             || sounds.random(),
                         );
                         if teleport {
                             self.teleport_randomly();
                         }
                         self.throw(overflow.into_iter().collect());
-                        let pitch = self.sounds.random() * 0.1 + 0.9;
-                        self.play("minecraft:entity.player.burp", None, 0.5, pitch);
+                        // `FoodProperties.onConsume`'s burp, for food only;
+                        // an ominous bottle's sound after it is drunk.
+                        if minecraftoss_player::food::catalog().contains_key(&id) {
+                            let pitch = self.sounds.random() * 0.1 + 0.9;
+                            self.play("minecraft:entity.player.burp", None, 0.5, pitch);
+                        } else if id == "minecraft:ominous_bottle" {
+                            self.play("minecraft:item.ominous_bottle.dispose", None, 1.0, 1.0);
+                        }
                     }
                     FoodUseTick::Cancelled => self.eating = None,
                 }
@@ -1655,10 +1723,44 @@ impl Game {
         if target.is_some() && self.place(stack) {
             return;
         }
+        if matches!(stack.id.as_str(), "minecraft:splash_potion" | "minecraft:lingering_potion") {
+            self.throw_potion(stack);
+            return;
+        }
         let food = &self.player.survival.food;
         if let Some(eating) = FoodUse::start(self.entities.selected, stack, food, self.mode()) {
             self.eating = Some(eating);
         }
+    }
+
+    /// `ThrowablePotionItem.use`: the throw's sound, the potion in flight
+    /// (the server's), one spent, and the arm swings.
+    fn throw_potion(&mut self, stack: &ItemStack) {
+        let lingering = stack.id == "minecraft:lingering_potion";
+        let sound = if lingering {
+            "minecraft:entity.lingering_potion.throw"
+        } else {
+            "minecraft:entity.splash_potion.throw"
+        };
+        let pitch = 0.4 / (self.sounds.random() * 0.4 + 0.8);
+        self.play(sound, Some(self.player.pos), 0.5, pitch);
+        let contents = minecraftoss_player::effects::PotionContents::from_components(stack.components.as_ref())
+            .unwrap_or_else(minecraftoss_player::effects::PotionContents::default);
+        // `getKnownMovement`: this tick's motion.
+        let motion = self.player.pos - self.previous;
+        let motion = if self.player.on_ground { DVec3::new(motion.x, 0.0, motion.z) } else { motion };
+        let rotation = (self.player.pitch as f32, self.player.yaw as f32);
+        self.entities.throw_potion(contents, lingering, self.player.eye().to_array(), rotation, motion.to_array());
+        if !self.creative {
+            let selected = self.entities.selected;
+            if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                held.count -= 1;
+                if held.count == 0 {
+                    self.entities.inventory.slots[selected] = None;
+                }
+            }
+        }
+        self.start_swing();
     }
 
     /// Places the held item as a block; whether it did.

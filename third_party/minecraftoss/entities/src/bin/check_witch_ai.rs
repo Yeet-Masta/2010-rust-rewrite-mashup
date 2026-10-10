@@ -398,12 +398,12 @@ fn main() {
                     ] {
                         exact(&v[field], actual, &format!("{at} {field}"));
                     }
-                    assert_eq!(v["potion"].as_str(), Some(potion.potion.id()), "{at} kind");
+                    assert_eq!(v["potion"].as_str(), potion.contents.potion.map(|p| format!("minecraft:{}", p.id)).as_deref(), "{at} kind");
                     assert_eq!(v["entity_tick_count"], potion.tick_count, "{at} age");
                     assert_eq!(v["left_owner"], potion.left_owner, "{at} left owner");
                     assert_eq!(v["owner_numeric_id"].as_u64(), potion.owner, "{at} owner");
                     if potion.tick_count == 0 {
-                        *thrown.entry(potion.potion.id().to_owned()).or_default() += 1;
+                        *thrown.entry(potion.contents.potion.map_or_else(String::new, |p| format!("minecraft:{}", p.id))).or_default() += 1;
                     }
                     potion_frames += 1;
                 }

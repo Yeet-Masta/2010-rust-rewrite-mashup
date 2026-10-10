@@ -786,6 +786,21 @@ impl PotionContents {
         })
     }
 
+    /// The component as saved (`PotionContents.CODEC`'s full form).
+    pub fn to_json(&self) -> Value {
+        let mut value = json!({});
+        if let Some(potion) = self.potion {
+            value["potion"] = json!(format!("minecraft:{}", potion.id));
+        }
+        if let Some(color) = self.custom_color {
+            value["custom_color"] = json!(color);
+        }
+        if !self.custom_effects.is_empty() {
+            value["custom_effects"] = Value::Array(self.custom_effects.iter().map(EffectInstance::to_json).collect());
+        }
+        value
+    }
+
     /// `getAllEffects`: the potion's, then the custom ones.
     pub fn all_effects(&self) -> Vec<EffectInstance> {
         let mut effects: Vec<EffectInstance> = self.potion.map_or_else(Vec::new, |p| p.effects().collect());

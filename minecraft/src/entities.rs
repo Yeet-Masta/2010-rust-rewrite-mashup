@@ -96,6 +96,10 @@ pub struct Events {
     /// Blasts, for their particles (`ClientboundExplodePacket`); their
     /// sound is already in `Entities.sounds`.
     pub explosions: Vec<ExplosionView>,
+    /// Potions that broke near the player, for its effects.
+    pub splashes: Vec<minecraftoss_entities::world::PlayerSplash>,
+    /// Where potions broke (level events 2002 and 2007, 1053 and 1054).
+    pub potion_breaks: Vec<minecraftoss_entities::world::PotionBreak>,
 }
 
 pub struct Entities {
@@ -691,6 +695,18 @@ impl Entities {
         self.server.ignite_tnt(pos);
     }
 
+    /// The player throws a splash or lingering potion (the server's).
+    pub fn throw_potion(
+        &mut self,
+        contents: minecraftoss_player::effects::PotionContents,
+        lingering: bool,
+        eye: [f64; 3],
+        rotation: (f32, f32),
+        motion: [f64; 3],
+    ) {
+        self.server.throw_potion(contents, lingering, eye, rotation, motion);
+    }
+
     /// `FlintAndSteelItem.useOn` or `FireChargeItem.useOn` on a clicked
     /// face; what it lit arrives with the server's output.
     pub fn use_igniter(&mut self, pos: (i32, i32, i32), face: &'static str, flint_and_steel: bool) {
@@ -941,6 +957,14 @@ impl Entities {
                     .into_iter()
                     .filter(|h| h.player_id == PLAYER),
             );
+            events.splashes.extend(
+                output
+                    .player_splashes
+                    .into_iter()
+                    .filter(|(player, _)| *player == PLAYER)
+                    .map(|(_, splash)| splash),
+            );
+            events.potion_breaks.extend(output.potion_breaks);
         }
     }
 

@@ -53,16 +53,15 @@ pub struct PotionBreak {
     pub instant: bool,
 }
 
-/// A potion breaking near a player: its lasting effect for the player's
-/// side (with its level and ticks), or its instant heal or harm, and where
-/// it broke.
-#[derive(Clone, Copy, Debug)]
+/// A potion breaking near a player, for the player's side: the lasting
+/// effects as they land (their time scaled by nearness), the instant ones
+/// with the nearness they work at (`applyInstantaneousEffect`), whether a
+/// water potion puts out the player's fire, and where it broke.
+#[derive(Clone, Debug)]
 pub struct PlayerSplash {
-    pub effect: MobEffect,
-    pub amplifier: i32,
-    pub duration: i32,
-    /// The instant effect's amount (`applyInstantaneousEffect`).
-    pub instant: Option<EffectWork>,
+    pub effects: Vec<minecraftoss_player::effects::EffectInstance>,
+    pub instant: Vec<(minecraftoss_player::effects::MobEffect, i32, f64)>,
+    pub extinguish: bool,
     pub at: DVec3,
 }
 
@@ -349,7 +348,7 @@ impl EntityWorld {
             let start = DVec3::new(from.x, from.y + f64::from(witch::EYE_HEIGHT) - f64::from(0.1_f32), from.z);
             let seed = self.arrow_shoot_seed.unwrap_or_else(|| self.projectile_seed_random.next_long());
             let mut random = LegacyRandom::new(seed);
-            let potion = ThrownPotion::shoot(throw.potion, id, start, throw.direction, throw.power, witch::UNCERTAINTY, &mut random);
+            let potion = ThrownPotion::shoot(throw.potion.contents(), id, start, throw.direction, throw.power, witch::UNCERTAINTY, &mut random);
             self.spawn_potion(potion);
         }
     }
@@ -375,9 +374,29 @@ impl EntityWorld {
             id: PLAYER_TARGET + p.id,
             min: p.position - DVec3::new(0.3, 0.0, 0.3),
             max: p.position + DVec3::new(0.3, 1.8, 0.3),
-            owner: false,
+            owner: owner == Some(PLAYER_TARGET + p.id),
         }));
         targets
+    }
+
+    /// A potion a player threw (`ThrowablePotionItem.use`): from the
+    /// eyes less 0.1, `shootFromRotation` 20 degrees above the look at 0.5
+    /// with an uncertainty of 1, carrying the thrower's motion (none
+    /// upward on the ground).
+    #[allow(clippy::too_many_arguments)]
+    pub fn throw_potion(&mut self, player_id: u64, contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: DVec3, x_rot: f32, y_rot: f32, motion: DVec3) {
+        use minecraftoss_player::mth::{cos, sin};
+        // `Mth.DEG_TO_RAD`, a float.
+        let rad = |degrees: f32| f64::from(degrees * (std::f32::consts::PI / 180.0));
+        let (x, y) = (rad(x_rot), rad(y_rot));
+        let direction = DVec3::new(f64::from(-sin(y) * cos(x)), f64::from(-sin(rad(x_rot - 20.0))), f64::from(cos(y) * cos(x)));
+        let start = DVec3::new(eye.x, eye.y - f64::from(0.1_f32), eye.z);
+        let seed = self.projectile_seed_random.next_long();
+        let mut random = LegacyRandom::new(seed);
+        let mut potion = ThrownPotion::shoot(contents, PLAYER_TARGET + player_id, start, direction, 0.5, 1.0, &mut random);
+        potion.velocity += motion;
+        potion.lingering = lingering;
+        self.spawn_potion(potion);
     }
 
     /// One potion's tick; a break splashes its effect.
@@ -385,29 +404,39 @@ impl EntityWorld {
         let Some(owner) = self.potions.iter().find(|p| p.id == id).map(|p| p.potion.owner) else { return };
         let targets = self.potion_targets(owner, players);
         // The thrower's box while it is in the world (`getOwner`).
-        let owner_box = owner.and_then(|o| self.mob_body(o)).map(|(body, _)| {
-            let half = f64::from(body.width / 2.0);
-            let p = body.position;
-            (DVec3::new(p.x - half, p.y, p.z - half), DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half))
-        });
+        let player_box = |p: &PlayerCandidate| (p.position - DVec3::new(0.3, 0.0, 0.3), p.position + DVec3::new(0.3, 1.8, 0.3));
+        let owner_box = match owner {
+            Some(o) if o >= PLAYER_TARGET => players.iter().find(|p| p.id == o - PLAYER_TARGET && p.alive).map(player_box),
+            _ => owner.and_then(|o| self.mob_body(o)).map(|(body, _)| {
+                let half = f64::from(body.width / 2.0);
+                let p = body.position;
+                (DVec3::new(p.x - half, p.y, p.z - half), DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half))
+            }),
+        };
         let Some(entity) = self.potions.iter_mut().find(|p| p.id == id) else { return };
         entity.previous_position = entity.potion.position;
         if let Some(hit) = entity.potion.tick(&*world, &targets, owner_box) {
             let potion = entity.potion.clone();
-            self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.potion.color(), instant: potion.potion.instant() });
+            self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.color(), instant: potion.instant() });
             self.splash(&potion, hit, players);
         }
     }
 
-    /// `ThrownSplashPotion.onHitAsPotion`: every living thing within reach
-    /// of the break (not dying) takes the potion's effect scaled by how
-    /// near it is: an instant effect at once, a lasting one for a share of
-    /// its time unless that would end within a second.
+    /// `AbstractThrownPotion.onHit` and `ThrownSplashPotion.onHitAsPotion`:
+    /// every living thing within reach of the break (not dying) takes each
+    /// of the potion's effects scaled by how near it is: an instant effect
+    /// at once, a lasting one for a share of its time unless that would end
+    /// within a second. Mobs take the effects they have; players all of
+    /// them, and water puts out their fire (`#extinguishes_entities`).
     fn splash(&mut self, potion: &ThrownPotion, _hit: PotionHit, players: &[PlayerCandidate]) {
         let at = potion.position;
         let margin = potion.margin();
-        let effect = potion.potion.effect();
+        let effects = potion.contents.all_effects();
+        let owner = potion.owner.filter(|&o| o < PLAYER_TARGET);
         for key in self.order.clone() {
+            if effects.is_empty() {
+                break;
+            }
             let id = key.id();
             let Some((body, health)) = self.mob_body(id) else { continue };
             if health <= 0.0 {
@@ -417,25 +446,39 @@ impl EntityWorld {
             let p = body.position;
             let (min, max) = (DVec3::new(p.x - half, p.y, p.z - half), DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half));
             let Some(scale) = splash_scale(at, margin, min, max) else { continue };
-            if effect.effect.instantaneous() {
-                self.splash_instant(id, effect.effect, effect.amplifier, scale, at, potion.owner);
-            } else if let Some(splashed) = splashed_effect(&effect, scale) {
-                self.add_mob_effect(id, splashed);
+            for effect in &effects {
+                let Some(kind) = MobEffect::from_id(&effect.effect.id()) else { continue };
+                let effect = EffectInstance::new(kind, effect.duration, effect.amplifier);
+                if kind.instantaneous() {
+                    self.splash_instant(id, kind, effect.amplifier, scale, at, owner);
+                } else if let Some(splashed) = splashed_effect(&effect, scale) {
+                    self.add_mob_effect(id, splashed);
+                }
             }
         }
         if self.players_pickable {
+            let water = potion.contents.potion.is_some_and(|p| p.id == "water");
             for player in players.iter().filter(|p| p.alive && !p.spectator) {
                 let (min, max) = (player.position - DVec3::new(0.3, 0.0, 0.3), player.position + DVec3::new(0.3, 1.8, 0.3));
-                let Some(scale) = splash_scale(at, margin, min, max) else { continue };
-                let (instant, duration) = if effect.effect.instantaneous() {
-                    (instant_work(effect.effect, effect.amplifier, false, scale), 0)
-                } else {
-                    match splashed_effect(&effect, scale) {
-                        Some(splashed) => (None, splashed.duration),
-                        None => continue,
+                let extinguish = water && player.position.distance_squared(at) < 16.0;
+                let mut splash = PlayerSplash { effects: Vec::new(), instant: Vec::new(), extinguish, at };
+                if let Some(scale) = splash_scale(at, margin, min, max) {
+                    for effect in &effects {
+                        if effect.effect.instantaneous() {
+                            splash.instant.push((effect.effect, effect.amplifier, scale));
+                            continue;
+                        }
+                        let mut splashed = effect.copy();
+                        splashed.duration = effect.map_duration(|d| (scale * f64::from(d) + 0.5) as i32);
+                        splashed.show_icon = splashed.visible;
+                        if !splashed.ends_within(20) {
+                            splash.effects.push(splashed);
+                        }
                     }
-                };
-                self.player_splashes.push((player.id, PlayerSplash { effect: effect.effect, amplifier: effect.amplifier, duration, instant, at }));
+                }
+                if extinguish || !splash.effects.is_empty() || !splash.instant.is_empty() {
+                    self.player_splashes.push((player.id, splash));
+                }
             }
         }
     }

@@ -12,6 +12,7 @@
 use crate::effects::{EffectInstance, MobEffect};
 use crate::sight;
 use glam::DVec3;
+use minecraftoss_player::effects::PotionContents;
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_player::World;
 
@@ -87,6 +88,11 @@ impl Potion {
         self.effect().effect.instantaneous()
     }
 
+    /// Its stack's `potion_contents`.
+    pub fn contents(self) -> PotionContents {
+        PotionContents { potion: minecraftoss_player::effects::Potion::from_id(self.id()), ..PotionContents::default() }
+    }
+
     /// `PotionContents.getColor`: its effect's colour (RGB).
     pub fn color(self) -> u32 {
         match self.effect().effect {
@@ -126,7 +132,10 @@ pub struct PotionHit {
 pub struct ThrownPotion {
     pub position: DVec3,
     pub velocity: DVec3,
-    pub potion: Potion,
+    /// What it holds (`potion_contents`).
+    pub contents: PotionContents,
+    /// A lingering potion (`ThrownLingeringPotion`), which leaves a cloud.
+    pub lingering: bool,
     /// Who threw it (`getOwner`).
     pub owner: Option<u64>,
     /// `tickCount`, raised before each tick.
@@ -145,7 +154,7 @@ impl ThrownPotion {
     /// `ThrowableItemProjectile(type, owner, level, item)` and
     /// `Projectile.shoot`: at the thrower's eyes less 0.1, along
     /// (`xd`, `yd`, `zd`) at `power` with the potion's own random's spread.
-    pub fn shoot(potion: Potion, owner: u64, position: DVec3, direction: DVec3, power: f32, uncertainty: f32, random: &mut LegacyRandom) -> Self {
+    pub fn shoot(contents: PotionContents, owner: u64, position: DVec3, direction: DVec3, power: f32, uncertainty: f32, random: &mut LegacyRandom) -> Self {
         // `Vec3.normalize`: none under 1.0E-5F long.
         let length = (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).sqrt();
         let unit = if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(direction.x / length, direction.y / length, direction.z / length) };
@@ -158,7 +167,18 @@ impl ThrownPotion {
         let horizontal = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
         let yaw = (crate::control::minecraft_atan2(velocity.x, velocity.z) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
         let pitch = (crate::control::minecraft_atan2(velocity.y, horizontal) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
-        Self { position, velocity, potion, owner: Some(owner), tick_count: 0, left_owner: false, in_water: false, yaw, pitch, alive: true, first_tick: true }
+        Self { position, velocity, contents, lingering: false, owner: Some(owner), tick_count: 0, left_owner: false, in_water: false, yaw, pitch, alive: true, first_tick: true }
+    }
+
+    /// `PotionContents.getColor`.
+    pub fn color(&self) -> u32 {
+        self.contents.color()
+    }
+
+    /// Whether its potion is an instant one (`Potion.hasInstantEffects`),
+    /// which breaks with the instant kind's particles and sound.
+    pub fn instant(&self) -> bool {
+        self.contents.potion.is_some_and(|p| p.effects().any(|e| e.effect.instantaneous()))
     }
 
     /// Its box (`makeBoundingBox`: 0.125 either side, 0.25 up).
@@ -332,6 +352,7 @@ mod tests {
         assert_eq!(scale, 1.0 - 1.5 / 4.0);
         assert!(splash_scale(at, 0.0, DVec3::new(5.0, 0.0, -0.3), DVec3::new(5.6, 1.8, 0.3)).is_none());
         let poison = splashed_effect(&Potion::Poison.effect(), 0.625).unwrap();
+        assert_eq!(Potion::Poison.contents().color(), Potion::Poison.color());
         assert_eq!(poison.duration, 563);
         assert!(splashed_effect(&Potion::Poison.effect(), 0.01).is_none());
     }

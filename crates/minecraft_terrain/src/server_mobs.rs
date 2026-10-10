@@ -723,21 +723,17 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:splash_potion" => {
+        "minecraft:splash_potion" | "minecraft:lingering_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
             // forgotten.
-            let potion = tag
-                .get("Item")
-                .and_then(|item| item.get("components"))
-                .and_then(|c| c.get("minecraft:potion_contents"))
-                .and_then(|c| c.get("potion").or(Some(c)))
-                .and_then(Tag::as_str)
-                .and_then(minecraftoss_entities::potion::Potion::from_id)?;
+            let components = tag.get("Item").and_then(|item| item.get("components")).map(tag_json);
+            let contents = minecraftoss_player::effects::PotionContents::from_components(components.as_ref())?;
             let motion = tag.get("Motion").and_then(Tag::as_list).map(|m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0))).unwrap_or(DVec3::ZERO);
-            let mut thrown = minecraftoss_entities::potion::ThrownPotion::shoot(potion, 0, pos, motion, 1.0, 0.0, &mut LegacyRandom::new(0));
+            let mut thrown = minecraftoss_entities::potion::ThrownPotion::shoot(contents, 0, pos, motion, 1.0, 0.0, &mut LegacyRandom::new(0));
             thrown.owner = None;
             thrown.velocity = motion;
             thrown.yaw = yaw;
+            thrown.lingering = kind == "minecraft:lingering_potion";
             thrown.left_owner = int(tag, "LeftOwner").unwrap_or(1) != 0;
             return Some(world.spawn_potion(thrown));
         }
@@ -1185,14 +1181,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             continue;
         }
         let mut map = std::collections::BTreeMap::new();
-        map.insert("id".to_owned(), Tag::String("minecraft:splash_potion".to_owned()));
+        let kind = if potion.lingering { "minecraft:lingering_potion" } else { "minecraft:splash_potion" };
+        map.insert("id".to_owned(), Tag::String(kind.to_owned()));
         map.insert("Pos".to_owned(), doubles(potion.position.to_array()));
         map.insert("Motion".to_owned(), doubles(potion.velocity.to_array()));
         map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(potion.yaw), Tag::Float(potion.pitch)]));
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(potion.left_owner)));
-        let contents = Tag::Compound([("potion".to_owned(), Tag::String(potion.potion.id().to_owned()))].into_iter().collect());
-        let components = Tag::Compound([("minecraft:potion_contents".to_owned(), contents)].into_iter().collect());
-        let item = [("id".to_owned(), Tag::String("minecraft:splash_potion".to_owned())), ("count".to_owned(), Tag::Int(1)), ("components".to_owned(), components)];
+        let components = json_tag(&serde_json::json!({ "minecraft:potion_contents": potion.contents.to_json() }));
+        let item = [("id".to_owned(), Tag::String(kind.to_owned())), ("count".to_owned(), Tag::Int(1)), ("components".to_owned(), components)];
         map.insert("Item".to_owned(), Tag::Compound(item.into_iter().collect()));
         map.insert("UUID".to_owned(), fresh_uuid(p.id, potion.position));
         out.push((p.id, Tag::Compound(map)));

@@ -65,6 +65,76 @@ pub fn catalog() -> &'static HashMap<String, FoodInfo> {
     })
 }
 
+/// The drinks that are not food (`Consumables.DEFAULT_DRINK`, 1.6 seconds
+/// with the generic drink sound and no crumbs, drunk at any hunger): potions
+/// leave their bottle and milk its bucket (`usingConvertsTo`); an ominous
+/// bottle is spent.
+pub fn drink_info(id: &str) -> Option<FoodInfo> {
+    let remainder = match id {
+        "minecraft:potion" => Some(ItemStack::new("minecraft:glass_bottle", 1)),
+        "minecraft:milk_bucket" => Some(ItemStack::new("minecraft:bucket", 1)),
+        "minecraft:ominous_bottle" => None,
+        _ => return None,
+    };
+    Some(FoodInfo {
+        nutrition: 0,
+        saturation: 0.0,
+        can_always_eat: true,
+        consume_ticks: 32,
+        animation: "DRINK".to_owned(),
+        sound: "entity.generic.drink".to_owned(),
+        particles: false,
+        remainder,
+    })
+}
+
+/// `Consumable.onConsume`'s effects for a stack: a potion's contents
+/// (`PotionContents.applyToLivingEntity`: instant effects at once, the
+/// rest added), a suspicious stew's effects, milk clearing every effect,
+/// an ominous bottle's bad omen, then the item's default effects (see
+/// [`apply_consumed_food_effects`]). An invulnerable (creative) player
+/// takes no harm. Returns whether chorus fruit's teleport is due.
+pub fn apply_consumed_effects(
+    stack: &ItemStack,
+    status: &mut SurvivalStatus,
+    invulnerable: bool,
+    next_random: impl FnMut() -> f32,
+) -> bool {
+    use crate::effects::{stew_effects, EffectInstance, PotionContents};
+    let components = stack.components.as_ref();
+    match stack.id.as_str() {
+        "minecraft:potion" => {
+            let effects = PotionContents::from_components(components).map_or_else(Vec::new, |c| c.all_effects());
+            for effect in effects {
+                if effect.effect.instantaneous() {
+                    status.apply_instant(effect.effect, effect.amplifier, 1.0, invulnerable);
+                } else {
+                    status.add_effect_instance(effect);
+                }
+            }
+        }
+        "minecraft:suspicious_stew" => {
+            for effect in stew_effects(components) {
+                status.add_effect_instance(effect);
+            }
+        }
+        "minecraft:milk_bucket" => {
+            status.remove_all_effects();
+        }
+        // `OminousBottleAmplifier.onConsume`: bad omen for 100 minutes,
+        // without particles.
+        "minecraft:ominous_bottle" => {
+            let amplifier = components
+                .and_then(|c| c["minecraft:ominous_bottle_amplifier"].as_i64())
+                .unwrap_or(0)
+                .clamp(0, 4) as i32;
+            status.add_effect_instance(EffectInstance::with_flags(EffectKind::BadOmen, 120000, amplifier, false, false, true));
+        }
+        _ => {}
+    }
+    apply_consumed_food_effects(&stack.id, status, next_random)
+}
+
 /// Default 26.3 Consumables.onConsume effects. The boolean requests the
 /// separate collision-checked random teleport used by chorus fruit.
 pub fn apply_consumed_food_effects(
@@ -119,7 +189,7 @@ pub enum FoodUseTick {
 
 impl FoodUse {
     pub fn start(slot: usize, stack: &ItemStack, food: &FoodData, mode: GameMode) -> Option<Self> {
-        let info = catalog().get(&stack.id)?.clone();
+        let info = catalog().get(&stack.id).cloned().or_else(|| drink_info(&stack.id))?;
         if stack.count == 0
             || (mode != GameMode::Creative && food.level >= 20 && !info.can_always_eat)
         {
