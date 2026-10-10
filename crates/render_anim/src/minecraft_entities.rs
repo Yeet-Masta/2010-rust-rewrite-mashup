@@ -445,7 +445,7 @@ impl Entities {
             // `ServerExplosion`'s sound: loud, pitched down.
             for blast in &output.explosions {
                 let pitch = (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
-                self.sounds.push(("minecraft:entity.generic.explode".to_owned(), blast.position, 4.0, pitch));
+                self.sounds.push(("minecraft:entity.generic.explode".to_owned(), DVec3::from_array(blast.center), 4.0, pitch));
             }
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;

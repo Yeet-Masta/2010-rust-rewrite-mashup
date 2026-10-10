@@ -18,7 +18,8 @@ use minecraft_terrain::poof_particles::PoofParticles;
 use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
-    EntitySnapshot, MovingBlockView, PlayerEdit, ServerHandle, ServerItem, ServerSim, TickInput,
+    EntitySnapshot, ExplosionView, MovingBlockView, PlayerEdit, ServerHandle, ServerItem,
+    ServerSim, ServerTnt, TickInput,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -89,6 +90,9 @@ pub struct Events {
     pub level_events: Vec<((i32, i32, i32), i32, i32)>,
     /// The powers beacons gave the player: effect, duration, amplifier.
     pub beacon_effects: Vec<(&'static str, i32, i32)>,
+    /// Blasts, for their particles (`ClientboundExplodePacket`); their
+    /// sound is already in `Entities.sounds`.
+    pub explosions: Vec<ExplosionView>,
 }
 
 pub struct Entities {
@@ -129,6 +133,8 @@ pub struct Entities {
     /// with the server, whose answer is written over the inventory.
     pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
+    /// Primed TNT, as of the last server tick.
+    primed_tnt: Vec<ServerTnt>,
     server_handled: u64,
     /// Chunks unloaded from the server, each with the commands sent as of
     /// its unload: the chunk map keeps them until the outputs through it
@@ -206,6 +212,7 @@ impl Entities {
             server_picked: Vec::new(),
             hold_pickups: false,
             server_snapshot: None,
+            primed_tnt: Vec::new(),
             server_handled: 0,
             unloads: Vec::new(),
             sounds: Vec::new(),
@@ -645,6 +652,13 @@ impl Entities {
         self.server.set_ender_items(items);
     }
 
+    /// `TntBlock.useItemOn` with flint and steel or a fire charge: the
+    /// server primes the TNT, and the block's removal comes back with its
+    /// changes.
+    pub fn ignite_tnt(&mut self, pos: (i32, i32, i32)) {
+        self.server.ignite_tnt(pos);
+    }
+
     /// `BoneMealItem.useOn` on a clicked face; whether it took arrives with
     /// the server's output.
     pub fn bone_meal(&mut self, pos: (i32, i32, i32), face: &'static str) {
@@ -780,7 +794,8 @@ impl Entities {
     fn receive(&mut self, events: &mut Events) {
         for output in self.server.poll() {
             self.server_handled = output.handled;
-            if let Some(snapshot) = output.entities {
+            if let Some(mut snapshot) = output.entities {
+                self.primed_tnt = std::mem::take(&mut snapshot.tnt);
                 self.server_snapshot = Some(snapshot);
             }
             self.server_picked.extend(output.picked);
@@ -856,17 +871,19 @@ impl Entities {
                     }
                 }
             }
-            // `ServerExplosion`'s sound: loud, pitched down.
+            // `ClientPacketListener.handleExplosion`'s sound: loud, pitched
+            // down. Creepers and TNT are never silent.
             for blast in &output.explosions {
                 let pitch =
                     (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push((
                     "minecraft:entity.generic.explode".to_owned(),
-                    blast.position,
+                    DVec3::from_array(blast.center),
                     4.0,
                     pitch,
                 ));
             }
+            events.explosions.extend(output.explosions);
             if let Some(mobs) = output.mobs {
                 self.world = *mobs;
                 for (feet, width, height) in self.client.receive(server_mobs(&self.world)) {
@@ -1087,6 +1104,19 @@ impl Entities {
                 .indices
                 .extend(items.indices.iter().map(|i| i + base));
         }
+        // `TntRenderer`, with `getFuse() - partialTick + 1` left.
+        let tnt: Vec<_> = self
+            .primed_tnt
+            .iter()
+            .map(|t| {
+                let at = DVec3::from_array(t.previous_position)
+                    .lerp(DVec3::from_array(t.position), f64::from(partial));
+                (at.as_vec3(), t.fuse as f32 - partial + 1.0)
+            })
+            .collect();
+        let _ = self
+            .items
+            .append_primed_tnt(&mut out.items, &tnt, packs, atlas, light);
         self.poof
             .append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal
@@ -1148,7 +1178,17 @@ impl Entities {
             atlas,
         );
         // Their shadows, at `getMaxLocalRawBrightness`.
-        let casters = client_mobs::shadow_casters(w, poses, camera, partial);
+        let mut casters = client_mobs::shadow_casters(w, poses, camera, partial);
+        // `TntRenderer`'s shadow is 0.5.
+        casters.extend(self.primed_tnt.iter().map(|t| {
+            let position = DVec3::from_array(t.position);
+            mesh::ShadowCaster {
+                position: DVec3::from_array(t.previous_position).lerp(position, f64::from(partial)),
+                distance_squared: position.distance_squared(camera),
+                radius: 0.5,
+                strength: 1.0,
+            }
+        }));
         let raw = |pos: (i32, i32, i32)| {
             light
                 .get(pos)

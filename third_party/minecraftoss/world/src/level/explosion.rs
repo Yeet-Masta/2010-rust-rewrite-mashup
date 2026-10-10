@@ -39,6 +39,22 @@ pub struct Explosion {
     pub source: Option<i32>,
 }
 
+/// A blast as the clients near it hear of it (`ClientboundExplodePacket`).
+/// Every blast here comes through `Level.explode`'s defaults: the
+/// `entity.generic.explode` sound and the default block particles (poof
+/// and smoke).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExplosionView {
+    pub center: [f64; 3],
+    pub radius: f32,
+    /// `blockCount`: the blocks the rays picked, which weigh the blast's
+    /// share of the block particles.
+    pub block_count: usize,
+    /// `ServerExplosion.isSmall` (under 2 in radius, or keeping the
+    /// blocks): `EXPLOSION` rather than `EXPLOSION_EMITTER`.
+    pub small: bool,
+}
+
 /// `Mth.lerp`.
 fn lerp(delta: f64, a: f64, b: f64) -> f64 {
     a + delta * (b - a)
@@ -51,8 +67,22 @@ impl Level<'_> {
             return false;
         }
         let tnt = self.new_primed_tnt([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5]);
+        let at = tnt.pos;
         self.add_entity(tnt);
-        // The priming sound's seed comes from the sound seed generator.
+        // The priming sound's seed comes from the sound seed generator,
+        // not the level random.
+        self.play_sound("minecraft:entity.tnt.primed", at, 1.0, 1.0);
+        true
+    }
+
+    /// `TntBlock.useItemOn` with flint and steel or a fire charge: the TNT
+    /// at `pos` primes and its block goes (flags 11). Whether it primed;
+    /// the item is spent only then. Not TNT: false.
+    pub fn use_item_on_tnt(&mut self, pos: BlockPos) -> bool {
+        if !self.is_a(self.block(pos), "TntBlock") || !self.prime_tnt(pos) {
+            return false;
+        }
+        self.set_block(pos, BlockStateId::AIR, update::ALL | 8, update::LIMIT);
         true
     }
 
@@ -110,7 +140,15 @@ impl Level<'_> {
         if ex.fire {
             self.unsupported.push("fire from explosions".to_owned());
         }
+        // `ServerLevel.explode` tells the players within 64 blocks.
+        let small = ex.radius < 2.0 || ex.interaction == BlockInteraction::Keep;
+        self.explosions.push(ExplosionView { center: ex.center, radius: ex.radius, block_count: to_blow.len(), small });
         to_blow.len()
+    }
+
+    /// The blasts since the last call.
+    pub fn take_explosions(&mut self) -> Vec<ExplosionView> {
+        std::mem::take(&mut self.explosions)
     }
 
     /// `ExplosionDamageCalculator.getBlockExplosionResistance`.
