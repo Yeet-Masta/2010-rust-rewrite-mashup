@@ -257,7 +257,7 @@ impl CreatureSpawns {
         for chunk in order {
             level.add_inhabited_time(chunk);
             if (input.entity_ticking_range)(chunk) && context.raining && context.thundering && level.random().next_i32_bound(100_000) == 0 {
-                level.note_unsupported("lightning from thunder");
+                level.tick_thunder(chunk);
             }
             if !categories.is_empty() && (context.can_spawn_in_chunk)(chunk) {
                 for &category in &categories {

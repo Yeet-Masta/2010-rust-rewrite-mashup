@@ -81,6 +81,9 @@ pub struct LightningData {
     pub life: i32,
     pub flashes: i32,
     pub visual_only: bool,
+    /// `LightningBolt.seed`, which shapes the bolt the client draws; a new
+    /// one with each flash.
+    pub seed: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -604,19 +607,25 @@ impl Level<'_> {
     /// (unseeded in vanilla).
     pub fn summon_lightning(&mut self, pos: [f64; 3]) -> i32 {
         use minecraftoss_core::random::RandomSource;
-        self.entity_random.next_i64();
+        let seed = self.entity_random.next_i64();
         let flashes = self.entity_random.next_i32_bound(3) + 1;
-        let data = LightningData { life: 2, flashes, visual_only: false };
+        let data = LightningData { life: 2, flashes, visual_only: false, seed };
         let entity = Entity::new(0, EntityKind::LightningBolt(data), pos, 0.0, 0.0);
         self.add_entity(entity)
     }
 
-    /// `LightningBolt.tick` on a peaceful server without players: no fire.
+    /// `LightningBolt.tick`: on its first tick fire (normal and hard),
+    /// the lightning rod and the copper; then its flashes, each lighting
+    /// fire again, and the hits while it shines.
     fn tick_lightning(&mut self, e: &mut Entity) {
         use minecraftoss_core::random::RandomSource;
         self.base_tick(e);
         let EntityKind::LightningBolt(data) = &e.kind else { return };
         if data.life == 2 {
+            if self.difficulty >= 2 {
+                let data = data.clone();
+                self.lightning_fire(&data, e.pos, 4);
+            }
             let strike = BlockPos::new(floor(e.pos[0]), floor(e.pos[1] - 1.0e-6), floor(e.pos[2]));
             let state = self.block(strike);
             if self.redstone_kind(state) == Some(super::redstone::Kind::LightningRod) {
@@ -632,16 +641,14 @@ impl Level<'_> {
             } else if data.life < -self.entity_random.next_i32_bound(10) {
                 data.flashes -= 1;
                 data.life = 1;
-                self.entity_random.next_i64();
+                data.seed = self.entity_random.next_i64();
+                let data = data.clone();
+                self.lightning_fire(&data, e.pos, 0);
             }
         }
         let EntityKind::LightningBolt(data) = &e.kind else { return };
         if data.life >= 0 && !data.visual_only {
-            let (x, y, z) = (e.pos[0], e.pos[1], e.pos[2]);
-            let area = Aabb::new(x - 3.0, y - 3.0, z - 3.0, x + 3.0, y + 6.0 + 3.0, z + 3.0);
-            if self.entities_in(&area).any(|o| o.id != e.id) {
-                self.unsupported.push("lightning hitting entities".to_owned());
-            }
+            self.lightning_hit_entities(e.id, e.pos);
         }
     }
 

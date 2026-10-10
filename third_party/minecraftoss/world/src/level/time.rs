@@ -27,6 +27,13 @@ pub struct Weather {
     pub thunder_level: f32,
 }
 
+impl Weather {
+    /// `Level.getThunderLevel(1)`: the thunder level scaled by the rain's.
+    pub fn thunder(&self) -> f32 {
+        self.thunder_level * self.rain_level
+    }
+}
+
 /// A dimension's time and sky: its environment, clocks and weather.
 pub struct Sky {
     pub environment: EnvironmentSystem,
@@ -98,6 +105,26 @@ impl Level<'_> {
         }
     }
 
+    /// The weather as it is saved (`WeatherData`), with the levels.
+    pub fn weather(&self) -> Option<&Weather> {
+        self.sky.as_ref().map(|s| &s.weather)
+    }
+
+    /// The saved weather back (`ServerLevel.prepareWeather`): rain and
+    /// thunder that were on start at full strength.
+    pub fn load_weather(&mut self, weather: &Weather) {
+        if let Some(sky) = &mut self.sky {
+            let w = &mut sky.weather;
+            w.clear_time = weather.clear_time;
+            w.rain_time = weather.rain_time;
+            w.thunder_time = weather.thunder_time;
+            w.raining = weather.raining;
+            w.thundering = weather.thundering;
+            w.rain_level = if w.raining { 1.0 } else { 0.0 };
+            w.thunder_level = if w.raining && w.thundering { 1.0 } else { 0.0 };
+        }
+    }
+
     /// `/weather clear|rain|thunder <duration>` (`setWeatherParameters`).
     pub fn set_weather(&mut self, clear_time: i32, rain_time: i32, raining: bool, thundering: bool) {
         if let Some(sky) = &mut self.sky {
@@ -107,6 +134,27 @@ impl Level<'_> {
             w.thunder_time = rain_time;
             w.raining = raining;
             w.thundering = thundering;
+        }
+    }
+
+    /// `/weather clear|rain|thunder` without a duration: the default
+    /// duration drawn from the level random (`WeatherCommand.getDuration`
+    /// with `RAIN_DELAY`, `RAIN_DURATION` or `THUNDER_DURATION`).
+    pub fn weather_command(&mut self, raining: bool, thundering: bool) {
+        let mut uniform = |min: i32, max: i32| self.random.next_i32_bound(max - min + 1) + min;
+        match (raining, thundering) {
+            (false, _) => {
+                let clear = uniform(12000, 180000);
+                self.set_weather(clear, 0, false, false);
+            }
+            (true, false) => {
+                let rain = uniform(12000, 24000);
+                self.set_weather(0, rain, true, false);
+            }
+            (true, true) => {
+                let rain = uniform(3600, 15600);
+                self.set_weather(0, rain, true, true);
+            }
         }
     }
 
@@ -168,7 +216,7 @@ impl Level<'_> {
     fn environment_value(&self, name: &str, biome: u16) -> f32 {
         let Some(sky) = &self.sky else { return 0.0 };
         let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
-        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder_level, biome_weights: None, biome };
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome };
         sky.environment.value_named(name, &sample).as_f32()
     }
 
@@ -178,7 +226,7 @@ impl Level<'_> {
             ["full_moon", "waning_gibbous", "third_quarter", "waning_crescent", "new_moon", "waxing_crescent", "first_quarter", "waxing_gibbous"];
         let Some(sky) = &self.sky else { return 0 };
         let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
-        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder_level, biome_weights: None, biome: 0 };
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome: 0 };
         match sky.environment.value_named("visual/moon_phase", &sample) {
             minecraftoss_core::environment::Value::Text(name) => PHASES.iter().position(|p| *p == name).unwrap_or(0),
             _ => 0,
@@ -205,7 +253,7 @@ impl Level<'_> {
     pub fn monsters_burn(&self) -> bool {
         let Some(sky) = &self.sky else { return false };
         let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
-        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder_level, biome_weights: None, biome: 0 };
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome: 0 };
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 

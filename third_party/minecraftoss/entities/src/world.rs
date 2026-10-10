@@ -25,6 +25,7 @@ mod endermen;
 mod golems;
 mod wolves;
 mod hazards;
+mod lightning;
 mod living;
 mod pushing;
 mod slimes;
@@ -572,6 +573,9 @@ pub enum PlayerHitKind {
     /// A creeper's blast (`player_explosion`, no default knockback): the
     /// push `ServerExplosion` hands the player (`hitPlayers`).
     Explosion { knockback: DVec3 },
+    /// A lightning bolt (`lightning_bolt`: no knockback, no difficulty
+    /// scaling).
+    Lightning,
 }
 
 /// A mob's death as its drops see it (`LivingEntity.die`,

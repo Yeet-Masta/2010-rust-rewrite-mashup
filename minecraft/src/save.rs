@@ -2,6 +2,7 @@
 //! generated from and the player, as `level.json`.
 use std::path::Path;
 
+use minecraft_terrain::server::Weather;
 use minecraftoss_player::inventory::ItemStack;
 use serde_json::{Value, json};
 
@@ -24,6 +25,9 @@ pub struct Saved {
     pub ender: Vec<Option<ItemStack>>,
     /// `XpSeed`: the enchantment seed the enchanting table offers from.
     pub enchantment_seed: i32,
+    /// The weather (`level.dat`'s `clearWeatherTime`, `rainTime`,
+    /// `thunderTime`, `raining`, `thundering`); its levels are not saved.
+    pub weather: Option<Weather>,
 }
 
 const FILE: &str = "level.json";
@@ -65,6 +69,19 @@ pub fn read(dir: &Path) -> Option<Saved> {
             .as_i64()
             .and_then(|seed| i32::try_from(seed).ok())
             .unwrap_or(0),
+        weather: weather(&value["weather"]),
+    })
+}
+
+fn weather(value: &Value) -> Option<Weather> {
+    let time = |key: &str| value[key].as_i64().and_then(|t| i32::try_from(t).ok()).unwrap_or(0);
+    value.is_object().then(|| Weather {
+        clear_time: time("clear_time"),
+        rain_time: time("rain_time"),
+        thunder_time: time("thunder_time"),
+        raining: value["raining"].as_bool().unwrap_or(false),
+        thundering: value["thundering"].as_bool().unwrap_or(false),
+        ..Weather::default()
     })
 }
 
@@ -95,10 +112,20 @@ fn slots_json(slots: &[Option<ItemStack>]) -> Vec<Value> {
 
 pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
     let inventory = slots_json(&saved.slots);
+    let weather = saved.weather.as_ref().map(|w| {
+        json!({
+            "clear_time": w.clear_time,
+            "rain_time": w.rain_time,
+            "thunder_time": w.thunder_time,
+            "raining": w.raining,
+            "thundering": w.thundering,
+        })
+    });
     let value = json!({
         "seed": saved.seed,
         "creative": saved.creative,
         "day_ticks": saved.day_ticks,
+        "weather": weather,
         "player": {
             "position": saved.position,
             "yaw": saved.yaw,
@@ -144,6 +171,7 @@ mod tests {
             slots: vec![None; 43],
             ender,
             enchantment_seed: -1_234_567,
+            weather: Some(Weather { rain_time: 1234, raining: true, ..Weather::default() }),
         }
     }
 
@@ -174,6 +202,8 @@ mod tests {
         write(&dir, &saved(Vec::new())).unwrap();
         let loaded = read(&dir).unwrap();
         assert_eq!(loaded.enchantment_seed, -1_234_567);
+        let weather = loaded.weather.expect("the weather saves");
+        assert!(weather.raining && weather.rain_time == 1234 && !weather.thundering);
         // A world saved before the seed was kept reads 0, which the game
         // replaces with a random one (`readAdditionalSaveData`).
         let value = json!({"seed": 1, "player": {"position": [0, 0, 0], "inventory": []}});
@@ -181,5 +211,6 @@ mod tests {
         let old = read(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(old.enchantment_seed, 0);
+        assert!(old.weather.is_none());
     }
 }

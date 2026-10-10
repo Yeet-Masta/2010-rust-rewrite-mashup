@@ -19,7 +19,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
     EntitySnapshot, ExplosionView, MovingBlockView, PlayerEdit, ServerHandle, ServerItem,
-    ServerSim, ServerTnt, TickInput,
+    ServerSim, ServerTnt, TickInput, Weather,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -133,6 +133,9 @@ pub struct Entities {
     /// with the server, whose answer is written over the inventory.
     pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
+    /// The level's weather as of the last server tick: its rain and
+    /// thunder levels (`ClientboundGameEventPacket`), and what is saved.
+    pub weather: Option<Weather>,
     /// Primed TNT, as of the last server tick.
     primed_tnt: Vec<ServerTnt>,
     server_handled: u64,
@@ -212,6 +215,7 @@ impl Entities {
             server_picked: Vec::new(),
             hold_pickups: false,
             server_snapshot: None,
+            weather: None,
             primed_tnt: Vec::new(),
             server_handled: 0,
             unloads: Vec::new(),
@@ -609,6 +613,17 @@ impl Entities {
     }
 
     /// A mob of `kind` (`cow`, `zombie`) at a point, as a spawn egg makes one.
+    /// The saved weather, as the world loads.
+    pub fn load_weather(&mut self, weather: Weather) {
+        self.weather = Some(weather.clone());
+        self.server.load_weather(weather);
+    }
+
+    /// `/weather clear`, `rain` or `thunder`.
+    pub fn set_weather(&mut self, raining: bool, thundering: bool) {
+        self.server.set_weather(raining, thundering);
+    }
+
     pub fn summon(&mut self, kind: &str, at: [f64; 3]) {
         self.server.summon(format!("minecraft:{kind}"), at, None);
     }
@@ -797,6 +812,9 @@ impl Entities {
             if let Some(mut snapshot) = output.entities {
                 self.primed_tnt = std::mem::take(&mut snapshot.tnt);
                 self.server_snapshot = Some(snapshot);
+            }
+            if let Some(weather) = output.weather {
+                self.weather = Some(weather);
             }
             self.server_picked.extend(output.picked);
             events.changes.extend(output.changes);

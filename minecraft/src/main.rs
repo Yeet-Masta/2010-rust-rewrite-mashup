@@ -52,6 +52,8 @@ Usage: minecraft [options]
   --view-distance N     chunks to render around the player (default: 8)
   --time TICKS          the time of day to start at (1000 morning, 6000 noon,
                         13000 dusk, 18000 midnight)
+  --weather KIND        start with clear, rain or thunder weather, for as long
+                        as vanilla's /weather sets it
   --temporary           play a fresh world that is not saved
   --no-vsync            draw frames without waiting for the display (up to
                         120 a second), as vanilla's VSync setting turned off
@@ -461,7 +463,7 @@ fn main() {
     let mut vsync = true;
     let (mut seed, mut creative, mut view_distance, mut time, mut temporary) =
         (None, false, 8, None, false);
-    let (mut data, mut capture) = (None, None);
+    let (mut data, mut capture, mut weather) = (None, None, None);
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
@@ -483,6 +485,14 @@ fn main() {
                         .parse::<f64>()
                         .unwrap_or_else(|_| exit_with("--time needs a number")),
                 )
+            }
+            "--weather" => {
+                weather = Some(match value().as_str() {
+                    "clear" => (false, false),
+                    "rain" => (true, false),
+                    "thunder" => (true, true),
+                    _ => exit_with("--weather needs clear, rain or thunder"),
+                })
             }
             "--temporary" => temporary = true,
             "--no-vsync" => vsync = false,
@@ -517,6 +527,7 @@ fn main() {
         creative,
         save,
         time,
+        weather,
         vsync,
     };
     let event_loop =

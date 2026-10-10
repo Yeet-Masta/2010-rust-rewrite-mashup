@@ -24,7 +24,7 @@ pub enum Precipitation {
 
 impl Level<'_> {
     /// `Level.getBlockRandomPos(x, y, z, 15)`.
-    fn block_random_pos(&mut self, x: i32, y: i32, z: i32) -> BlockPos {
+    pub(super) fn block_random_pos(&mut self, x: i32, y: i32, z: i32) -> BlockPos {
         self.rand_value = self.rand_value.wrapping_mul(3).wrapping_add(1_013_904_223);
         let value = self.rand_value >> 2;
         BlockPos::new(x + (value & 15), y + (value >> 16 & 15), z + (value >> 8 & 15))

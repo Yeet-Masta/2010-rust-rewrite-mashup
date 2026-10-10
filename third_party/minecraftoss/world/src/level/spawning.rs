@@ -151,7 +151,7 @@ impl Level<'_> {
             overworld_time: self.sky.as_ref().and_then(|s| s.clocks.get("minecraft:overworld").copied()).unwrap_or(0),
             moon_brightness: MOON_BRIGHTNESS_PER_PHASE[self.moon_phase()],
             raining: self.is_raining(),
-            thundering: self.sky.as_ref().is_some_and(|s| s.can_have_weather && s.weather.thunder_level > 0.9),
+            thundering: self.sky.as_ref().is_some_and(|s| s.can_have_weather && s.weather.thunder() > 0.9),
             difficulty: self.difficulty,
             seed: self.random_sequences.world_seed,
         }
@@ -283,5 +283,9 @@ impl SpawnLevel for Level<'_> {
 
     fn note_unsupported(&mut self, what: &str) {
         self.unsupported.push(what.to_owned());
+    }
+
+    fn tick_thunder(&mut self, chunk: ChunkPos) {
+        self.draw_thunder(chunk);
     }
 }

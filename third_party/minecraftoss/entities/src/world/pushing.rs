@@ -153,7 +153,7 @@ impl Sections {
 impl EntityWorld {
     /// A living mob's body and whether it lives (an exploded creeper is
     /// gone); none for bats, projectiles and the removed.
-    fn push_body(&mut self, key: EntityKey) -> Option<(&mut Body, bool)> {
+    pub(super) fn push_body(&mut self, key: EntityKey) -> Option<(&mut Body, bool)> {
         match key {
             EntityKey::Zombie(id) => self.zombies.iter_mut().find(|e| e.id == id).map(|e| (&mut e.zombie.body, e.zombie.health > 0.0)),
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| (&mut e.skeleton.body, e.skeleton.health > 0.0)),

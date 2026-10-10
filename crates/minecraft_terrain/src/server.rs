@@ -137,7 +137,22 @@ pub struct EntitySnapshot {
     pub tnt: Vec<ServerTnt>,
     pub falling: Vec<ServerFallingBlock>,
     pub orbs: Vec<ServerOrb>,
+    pub lightning: Vec<ServerLightning>,
 }
+
+/// A lightning bolt as the client shows it (`LightningBolt`): `life` 2 on
+/// its first tick, below 0 between flashes; `seed` shapes the bolt.
+#[derive(Clone, Copy, Debug)]
+pub struct ServerLightning {
+    pub id: i32,
+    pub position: [f64; 3],
+    pub life: i32,
+    pub seed: i64,
+}
+
+/// The level's weather as saved (`WeatherData`) and its rain and thunder
+/// levels.
+pub use minecraftoss_world::level::time::Weather;
 
 pub use minecraftoss_world::level::explosion::ExplosionView;
 
@@ -763,6 +778,44 @@ impl ServerSim {
         self.level.unsupported.clear();
     }
 
+    /// What the level's tick left for the entity world: the columns the
+    /// thunder drew (`ServerLevel.tickThunder`, whose lightning rods are
+    /// points of interest and whose targets may be mobs) and the bolts'
+    /// hits on the mobs and players (`LightningBolt.tick`).
+    pub fn strike_lightning(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate], spawn_mobs: bool) {
+        use minecraftoss_entities::poi::{Occupancy, PoiType};
+        for pos in std::mem::take(&mut self.level.pending_thunder) {
+            let center = self.level.lightning_column(pos);
+            let rods: Vec<minecraftoss_core::BlockPos> = self
+                .mobs
+                .pois
+                .in_range(&|t| t == PoiType::LightningRod, (center.x, center.y, center.z), 128, Occupancy::Any)
+                .into_iter()
+                .map(|r| minecraftoss_core::BlockPos::new(r.pos.0, r.pos.1, r.pos.2))
+                .collect();
+            let mut living: Vec<[f64; 3]> = self.mobs.living_feet().into_iter().map(|p| p.to_array()).collect();
+            living.extend(players.iter().filter(|p| p.alive && !p.spectator).map(|p| p.position.to_array()));
+            self.level.strike_thunder(pos, &rods, &living, spawn_mobs);
+        }
+        let difficulty = self.level.difficulty;
+        for hit in std::mem::take(&mut self.level.lightning_hits) {
+            self.mobs.lightning_hits(hit.bolt as u64, glam::DVec3::from_array(hit.pos), difficulty, players);
+        }
+    }
+
+    /// The lightning bolts.
+    pub fn lightning(&self) -> Vec<ServerLightning> {
+        use minecraftoss_world::level::entity::EntityKind;
+        self.level
+            .entities
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EntityKind::LightningBolt(d) => Some(ServerLightning { id: e.id, position: e.pos, life: d.life, seed: d.seed }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Hands an item entity the client created (a drop, a spill) to the
     /// server, which simulates it from then on; returns its entity ID.
     #[allow(clippy::too_many_arguments)]
@@ -890,6 +943,10 @@ pub enum Command {
     BoneMeal { pos: BlockPos, face: &'static str },
     /// Flint and steel or a fire charge used on TNT.
     IgniteTnt(BlockPos),
+    /// The saved weather, as the world loads (`prepareWeather`).
+    LoadWeather(Weather),
+    /// `/weather`: rain, and thunder with it, for vanilla's default time.
+    SetWeather { raining: bool, thundering: bool },
     Attack(BlockPos),
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
@@ -1020,6 +1077,9 @@ pub struct Output {
     pub bone_meal_used: Vec<BlockPos>,
     /// The powers beacons gave the players (`BeaconBlockEntity.applyEffects`).
     pub beacon_effects: Vec<minecraftoss_world::level::beacon::BeaconEffect>,
+    /// The weather after a tick (`ClientboundGameEventPacket`'s rain and
+    /// thunder levels, and what the client saves).
+    pub weather: Option<Weather>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1180,6 +1240,16 @@ impl ServerHandle {
         self.send(Command::IgniteTnt(pos));
     }
 
+    /// The saved weather, as the world loads.
+    pub fn load_weather(&mut self, weather: Weather) {
+        self.send(Command::LoadWeather(weather));
+    }
+
+    /// `/weather clear`, `rain` or `thunder`.
+    pub fn set_weather(&mut self, raining: bool, thundering: bool) {
+        self.send(Command::SetWeather { raining, thundering });
+    }
+
     /// Bone meal on a clicked face; whether it was used arrives in an output.
     pub fn bone_meal(&mut self, pos: BlockPos, face: &'static str) {
         self.send(Command::BoneMeal { pos, face });
@@ -1325,6 +1395,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::IgniteTnt(pos) => {
                     sim.ignite_tnt(pos);
                 }
+                Command::LoadWeather(weather) => sim.level.load_weather(&weather),
+                Command::SetWeather { raining, thundering } => sim.level.weather_command(raining, thundering),
                 Command::Attack(pos) => {
                     sim.attack_block(pos);
                 }
@@ -1366,6 +1438,8 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.prepare_spawning(&input.mob_players);
                     sim.prepare_menus(&input.mob_players);
                     sim.tick();
+                    sim.strike_lightning(&input.mob_players, input.spawn_mobs);
+                    out.weather = sim.level.weather().cloned();
                     out.moving_blocks = Some(sim.moving_blocks());
                     let mobs_started = std::time::Instant::now();
                     sim.take_spawned();
@@ -1408,7 +1482,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
-                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs() });
+                    out.entities = Some(EntitySnapshot { items: sim.items(), tnt: sim.primed_tnt(), falling: sim.falling_blocks(), orbs: sim.orbs(), lightning: sim.lightning() });
                     let (solves, ms) = sim.level.light_solves.replace((0, 0.0));
                     out.tick_phases = Some((sim.level.last_tick_phases, (solves, ms), started.elapsed().as_secs_f64() * 1000.0));
                 }
@@ -3068,5 +3142,45 @@ mod tests {
         assert!(held(&server.level, top).is_empty() && held(&server.level, hopper).is_empty());
         drop(map);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `LightningBolt.tick` on normal difficulty: fire where it lands, a
+    /// charged creeper and a villager turned witch.
+    #[test]
+    fn lightning_lights_fire_charges_creepers_and_makes_witches() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 0).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 0, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 2, 4);
+        let mut server = ServerSim::new(worldgen, states.clone(), "minecraft:overworld");
+        let mut scene = HandcraftedScene::streamed(states);
+        for x in -1..=1 {
+            for z in -1..=1 {
+                let chunk = map.load_now(ChunkPos::new(x, z));
+                server.load_chunk(&chunk);
+                scene.insert_chunk(chunk);
+            }
+        }
+        // A grass floor high above the terrain, under the open sky.
+        for x in 4..=12 {
+            for z in 4..=12 {
+                scene.set((x, 200, z), Some(Block::new("minecraft:grass_block")));
+                server.player_edit(&scene, (x, 200, z), PlayerEdit::Place);
+            }
+        }
+        server.level.difficulty = 2;
+        server.level.players = vec![[8.5, 201.0, 8.5]];
+        let creeper = server.mobs.spawn_creeper(minecraftoss_entities::creeper::Creeper::new(glam::DVec3::new(8.5, 201.0, 9.5)), true);
+        server.mobs.spawn_villager(minecraftoss_entities::villager::Villager::new(glam::DVec3::new(9.5, 201.0, 8.5)), true);
+        server.level.summon_lightning([8.5, 201.0, 8.5]);
+        for _ in 0..3 {
+            server.tick();
+            server.strike_lightning(&[], false);
+        }
+        assert!(server.take_changes().iter().any(|(_, block)| block.as_ref().is_some_and(|b| b.id.path == "fire")), "the bolt lights fire");
+        assert!(server.mobs.creepers().iter().any(|c| c.id == creeper && c.creeper.powered), "the creeper is charged");
+        assert!(server.mobs.villagers().is_empty() && server.mobs.witches().len() == 1, "the villager is a witch");
     }
 }

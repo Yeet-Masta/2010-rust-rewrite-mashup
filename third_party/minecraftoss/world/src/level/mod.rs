@@ -32,6 +32,7 @@ pub mod redstone;
 pub mod spawning;
 pub mod ticks;
 pub mod time;
+pub mod weather;
 
 use minecraftoss_core::block::flags;
 use minecraftoss_core::chunk::HeightmapKind;
@@ -173,6 +174,11 @@ pub struct Level<'a> {
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
     pub sky: Option<time::Sky>,
+    /// Columns thunder drew this tick, for the server to strike
+    /// ([`Level::strike_thunder`]).
+    pub pending_thunder: Vec<BlockPos>,
+    /// Lightning bolts' hits this tick, for the mobs and players.
+    pub lightning_hits: Vec<weather::LightningHit>,
     /// Entities in tick order (`entityTickList`).
     pub entities: Vec<entity::Entity>,
     /// Mobs spawned naturally (saved tags), for the entity world to take.
@@ -299,6 +305,8 @@ impl<'a> Level<'a> {
             beacons: HashMap::new(),
             beacon_effects: Vec::new(),
             unsupported: Vec::new(),
+            pending_thunder: Vec::new(),
+            lightning_hits: Vec::new(),
             sky: None,
             entities: Vec::new(),
             spawned: Vec::new(),

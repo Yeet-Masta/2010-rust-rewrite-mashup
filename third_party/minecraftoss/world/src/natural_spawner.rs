@@ -61,6 +61,8 @@ pub trait SpawnLevel {
     fn add_inhabited_time(&mut self, _chunk: ChunkPos) {}
     /// Types the rules here do not cover yet.
     fn note_unsupported(&mut self, _what: &str) {}
+    /// `ServerLevel.tickThunder` once its odds came up for a chunk.
+    fn tick_thunder(&mut self, _chunk: ChunkPos) {}
 }
 
 /// `SpawnerData`: a type, its weight and its group size.

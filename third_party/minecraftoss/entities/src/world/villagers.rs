@@ -852,6 +852,16 @@ impl EntityWorld {
             }
         }
     }
+
+    /// `Villager.releaseAllPois` for one villager (a conversion).
+    pub(super) fn release_villager_pois(&mut self, id: u64) {
+        if let Some(entity) = self.villagers.iter_mut().find(|e| e.id == id) {
+            if let Some(ai) = entity.ai.as_deref_mut().filter(|ai| !ai.pois_released) {
+                ai.pois_released = true;
+                release_all_pois(&ai.brain.memories, entity.villager.profession, &mut self.pois);
+            }
+        }
+    }
 }
 
 /// `#minecraft:beds`.

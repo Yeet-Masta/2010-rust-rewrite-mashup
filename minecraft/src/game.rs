@@ -93,6 +93,8 @@ pub struct Options {
     pub creative: bool,
     pub save: Option<PathBuf>,
     pub time: Option<f64>,
+    /// `/weather` at the start: rain, and thunder with it.
+    pub weather: Option<(bool, bool)>,
     /// Vanilla's VSync video setting, on by default; off, the frame rate
     /// is held to its default maximum of 120.
     pub vsync: bool,
@@ -239,6 +241,12 @@ impl Game {
             }
             let ender: Vec<Option<ItemStack>> = saved.ender.iter().map(sized).collect();
             entities.set_ender_items(ender);
+            if let Some(weather) = saved.weather.clone() {
+                entities.load_weather(weather);
+            }
+        }
+        if let Some((raining, thundering)) = options.weather {
+            entities.set_weather(raining, thundering);
         }
         if let Some(ticks) = options.time {
             world.day.set(ticks);
@@ -455,6 +463,7 @@ impl Game {
             slots: self.entities.inventory.slots.clone(),
             ender: self.ender_items.clone(),
             enchantment_seed: self.enchantment_seed,
+            weather: self.entities.weather.clone(),
         };
         match crate::save::write(dir, &saved) {
             Ok(()) => log!("Saved the world to {}", dir.display()),
@@ -1995,6 +2004,8 @@ impl Game {
                 self.player.velocity += knockback;
                 (HitFrom::Explosion, "player_explosion")
             }
+            // `lightning_bolt`: `#no_knockback`, like a blast's own push.
+            PlayerHitKind::Lightning => (HitFrom::Explosion, "lightning_bolt"),
         };
         let inventory = &self.entities.inventory;
         let (toughness, resistance) = inventory.armor_toughness();
@@ -2004,7 +2015,9 @@ impl Game {
         let incoming = IncomingHit {
             damage: hit.damage,
             from,
-            scales_with_difficulty: true,
+            // `DamageScaling.WHEN_CAUSED_BY_LIVING_NON_PLAYER`: a bolt has
+            // no living cause.
+            scales_with_difficulty: !matches!(hit.kind, PlayerHitKind::Lightning),
             exhaustion: 0.1,
         };
         if self
