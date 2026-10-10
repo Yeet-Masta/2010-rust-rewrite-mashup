@@ -62,8 +62,6 @@ pub struct ServerSim {
     /// Spawned or loaded mobs the entity world does not simulate yet, each
     /// with its riders, and the tag that saves them unchanged.
     pub(crate) dormant: Vec<(Vec<CensusMob>, minecraftoss_core::nbt::Tag)>,
-    /// Creeper blasts since the client last heard of them.
-    explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
     /// The player's `takeXpDelay`: ticks until it can take another orb.
     take_xp_delay: i32,
     /// The block entities of chunks unloaded lately, by chunk, with the
@@ -141,6 +139,8 @@ pub struct EntitySnapshot {
     pub orbs: Vec<ServerOrb>,
 }
 
+pub use minecraftoss_world::level::explosion::ExplosionView;
+
 /// A primed TNT entity as the client shows it.
 #[derive(Clone, Copy, Debug)]
 pub struct ServerTnt {
@@ -187,7 +187,6 @@ impl ServerSim {
             entity_loot: None,
             shearing_loot: None,
             dormant: Vec::new(),
-            explosions: Vec::new(),
             take_xp_delay: 0,
             unloaded_block_entities: std::collections::HashMap::new(),
             menus: crate::menus::Menus::default(),
@@ -568,13 +567,19 @@ impl ServerSim {
         for blast in self.mobs.take_creeper_explosions() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
             self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None });
-            self.explosions.push(blast);
         }
     }
 
-    /// The blasts since the last call, for the client's sound and particles.
-    pub fn take_explosions(&mut self) -> Vec<minecraftoss_entities::creeper::CreeperExplosion> {
-        std::mem::take(&mut self.explosions)
+    /// The blasts since the last call (creepers' and TNT's), for the
+    /// client's sound and particles.
+    pub fn take_explosions(&mut self) -> Vec<minecraftoss_world::level::explosion::ExplosionView> {
+        self.level.take_explosions()
+    }
+
+    /// `TntBlock.useItemOn` with flint and steel or a fire charge: whether
+    /// the TNT at `pos` primed (and its block went).
+    pub fn ignite_tnt(&mut self, pos: BlockPos) -> bool {
+        self.level.use_item_on_tnt(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
     }
 
     /// The mobs a player at `position` tracks (`ChunkMap.TrackedEntity`:
@@ -883,6 +888,8 @@ pub enum Command {
     /// The player's ender inventory as saved, at world load.
     SetEnderItems(Vec<Option<minecraftoss_player::inventory::ItemStack>>),
     BoneMeal { pos: BlockPos, face: &'static str },
+    /// Flint and steel or a fire charge used on TNT.
+    IgniteTnt(BlockPos),
     Attack(BlockPos),
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
@@ -1001,8 +1008,8 @@ pub struct Output {
     pub entity_events: Vec<(u64, u8)>,
     /// The blocks pistons are moving, after a tick.
     pub moving_blocks: Option<Vec<MovingBlockView>>,
-    /// Creeper blasts this tick (`ClientboundExplodePacket`).
-    pub explosions: Vec<minecraftoss_entities::creeper::CreeperExplosion>,
+    /// Blasts, creepers' and TNT's (`ClientboundExplodePacket`).
+    pub explosions: Vec<minecraftoss_world::level::explosion::ExplosionView>,
     /// Sounds mobs made this tick.
     pub mob_sounds: Vec<minecraftoss_entities::world::MobSound>,
     /// Items the player picked up: (entity ID, position, item, count, components).
@@ -1165,6 +1172,12 @@ impl ServerHandle {
         self.send(Command::SetEnderItems(items));
     }
 
+    /// `TntBlock.useItemOn` with flint and steel or a fire charge: the TNT
+    /// primes, and its block's removal arrives in an output.
+    pub fn ignite_tnt(&mut self, pos: BlockPos) {
+        self.send(Command::IgniteTnt(pos));
+    }
+
     /// Bone meal on a clicked face; whether it was used arrives in an output.
     pub fn bone_meal(&mut self, pos: BlockPos, face: &'static str) {
         self.send(Command::BoneMeal { pos, face });
@@ -1307,6 +1320,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         out.bone_meal_used.push(pos);
                     }
                 }
+                Command::IgniteTnt(pos) => {
+                    sim.ignite_tnt(pos);
+                }
                 Command::Attack(pos) => {
                     sim.attack_block(pos);
                 }
@@ -1373,7 +1389,6 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // Entity events (hearts, a villager's anger and
                     // happiness), for the client's particles.
                     out.entity_events.extend(sim.mobs.take_entity_events());
-                    out.explosions.extend(sim.take_explosions());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
@@ -1400,6 +1415,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         out.changes = sim.take_changes();
         out.block_entities = sim.take_block_entity_changes();
         out.sounds = sim.level.take_sounds();
+        out.explosions = sim.take_explosions();
         out.block_events = sim.take_block_events();
         out.level_events = sim.take_level_events();
         sim.block_entities_sent(handled);
@@ -2423,7 +2439,8 @@ mod tests {
         assert_eq!(blasts.len(), 1, "the creeper explodes");
         assert!(server.mobs.creepers().iter().all(|c| c.id != id), "and is gone");
         let blast = blasts[0];
-        assert!(blast.position.distance(player.position) < 3.5, "beside the player: {:?}", blast.position);
+        let center = glam::DVec3::from_array(blast.center);
+        assert!(center.distance(player.position) < 3.5, "beside the player: {center:?}");
         assert!(broken > 0, "the blast breaks planks");
         let hit = hits.iter().find(|h| matches!(h.kind, minecraftoss_entities::world::PlayerHitKind::Explosion { .. })).expect("the blast hits the player");
         assert!(hit.damage > 10.0, "a close blast hurts: {}", hit.damage);
@@ -2668,8 +2685,9 @@ mod tests {
         assert_eq!(now.get(&(12, 201, 6)).map(|b| b.id.path.as_str()), Some("piston_head"));
     }
 
-    /// TNT primed by a placed redstone block becomes an entity the client
-    /// can render, explodes, and leaves items the player can pick up.
+    /// TNT primed by a placed redstone block, or lit with flint and steel,
+    /// becomes an entity the client can render, hisses, explodes for the
+    /// client to hear and see, and leaves items the player can pick up.
     #[test]
     fn primed_tnt_explodes_and_drops_items() {
         let Ok(paths) = DataPaths::discover() else { return };
@@ -2698,12 +2716,23 @@ mod tests {
         server.player_edit(&scene, (8, 201, 8), PlayerEdit::Place);
         scene.set((9, 201, 8), Some(Block::new("minecraft:redstone_block")));
         server.player_edit(&scene, (9, 201, 8), PlayerEdit::Place);
+        scene.set((6, 201, 6), Some(Block::new("minecraft:tnt")));
+        server.player_edit(&scene, (6, 201, 6), PlayerEdit::Place);
         server.take_changes();
         assert_eq!(server.primed_tnt().len(), 1, "the TNT should prime");
+        // `TntBlock.useItemOn`: the other is lit by hand.
+        assert!(!server.ignite_tnt((7, 201, 7)), "only TNT lights");
+        assert!(server.ignite_tnt((6, 201, 6)), "flint and steel primes TNT");
+        assert!(server.take_changes().iter().any(|(pos, block)| *pos == (6, 201, 6) && block.is_none()), "the lit TNT's block goes");
+        assert_eq!(server.primed_tnt().len(), 2);
+        let hisses = server.level.take_sounds().iter().filter(|s| s.event == "minecraft:entity.tnt.primed").count();
+        assert_eq!(hisses, 2, "each TNT hisses as it primes");
         for _ in 0..90 {
             server.tick();
         }
         assert!(server.primed_tnt().is_empty(), "the TNT should have exploded");
+        let blasts = server.take_explosions();
+        assert!(blasts.len() == 2 && blasts.iter().all(|b| !b.small && b.block_count > 0), "two large blasts: {blasts:?}");
         let changes = server.take_changes();
         assert!(changes.iter().any(|(pos, block)| *pos == (8, 200, 8) && block.is_none()), "the blast should break the planks under it");
         let items = server.items();

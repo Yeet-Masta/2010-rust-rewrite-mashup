@@ -528,6 +528,9 @@ pub struct Particles {
     pub player: Option<(DVec3, f64)>,
     /// Sounds particles made (drips landing): event, where, volume, pitch.
     pub sounds: Vec<(&'static str, DVec3, f32, f32)>,
+    /// `ClientExplosionTracker`: the blasts since the last tick, each a
+    /// centre, radius and block count.
+    explosions: Vec<(DVec3, f32, i32)>,
     live: Vec<Particle>,
     adding: Vec<Particle>,
 }
@@ -540,6 +543,7 @@ impl Particles {
             tint: BiomeTint::from_pack(packs).unwrap_or_else(|_| BiomeTint::empty()),
             player: None,
             sounds: Vec::new(),
+            explosions: Vec::new(),
             live: Vec::new(),
             adding: Vec::new(),
         }
@@ -677,8 +681,93 @@ impl Particles {
         }
     }
 
+    /// `ClientPacketListener.handleExplosion`'s particles: the flash at the
+    /// centre (`EXPLOSION`, or `EXPLOSION_EMITTER` unless the blast is
+    /// small), and the blast's share of the block particles at the next
+    /// tick (`ClientLevel.trackExplosionEffects`).
+    pub fn explosion(
+        &mut self,
+        world: &World,
+        center: DVec3,
+        radius: f32,
+        block_count: usize,
+        small: bool,
+    ) {
+        let flash = if small {
+            Type::Explosion
+        } else {
+            Type::ExplosionEmitter
+        };
+        self.spawn(world, &flash.into(), center, DVec3::new(1.0, 0.0, 0.0));
+        let count = i32::try_from(block_count).unwrap_or(i32::MAX);
+        self.explosions.push((center, radius, count));
+    }
+
+    /// `ClientExplosionTracker.tick`: up to 512 block particles, each from
+    /// a blast picked by its block count, at a random point inside it that
+    /// is air, flying outwards: a poof or a smoke
+    /// (`Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES`, which every blast here
+    /// carries).
+    pub fn tick_explosions(&mut self, world: &World) {
+        let blasts = std::mem::take(&mut self.explosions);
+        let total = blasts.iter().fold(0i32, |sum, b| sum.saturating_add(b.2));
+        for _ in 0..total.min(512) {
+            // `WeightedRandom.getRandomItem`.
+            let mut pick = self.random.next_int(total);
+            let Some(&(center, radius, _)) = blasts.iter().find(|b| {
+                pick -= b.2;
+                pick < 0
+            }) else {
+                continue;
+            };
+            let random = &mut self.random;
+            let raw = DVec3::new(
+                f64::from(random.next_float() * 2.0 - 1.0),
+                f64::from(random.next_float() * 2.0 - 1.0),
+                f64::from(random.next_float() * 2.0 - 1.0),
+            );
+            // `Vec3.normalize`.
+            let length = raw.length();
+            let direction = if length < 1.0e-5 {
+                DVec3::ZERO
+            } else {
+                raw / length
+            };
+            let distance = f64::from(random.next_float()).cbrt() as f32 * radius;
+            let local = direction * f64::from(distance);
+            let at = center + local;
+            let cell = (
+                at.x.floor() as i32,
+                at.y.floor() as i32,
+                at.z.floor() as i32,
+            );
+            let air = world
+                .block(cell)
+                .is_none_or(|b| matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air"));
+            if !air {
+                continue;
+            }
+            let speed =
+                0.5 / (distance / radius + 0.1) * random.next_float() * random.next_float() + 0.3;
+            // Poof (scaling 0.5) and smoke (1), weighing one each, both
+            // at speed 1.
+            let (kind, scaling) = if random.next_int(2) == 0 {
+                (Type::Poof, 0.5)
+            } else {
+                (Type::Smoke, 1.0)
+            };
+            self.spawn(
+                world,
+                &kind.into(),
+                center + local * scaling,
+                direction * f64::from(speed),
+            );
+        }
+    }
+
     pub fn clear(&mut self) {
         self.live.clear();
+        self.explosions.clear();
         self.adding.clear();
     }
 

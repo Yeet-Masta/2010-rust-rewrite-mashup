@@ -728,6 +728,16 @@ impl Game {
         for (pos, id, data) in events.level_events {
             self.level_event(pos, id, data);
         }
+        for blast in events.explosions {
+            let center = DVec3::from_array(blast.center);
+            self.particles.explosion(
+                &self.world,
+                center,
+                blast.radius,
+                blast.block_count,
+                blast.small,
+            );
+        }
         for update in events.menu {
             self.menu_update(update);
         }
@@ -1145,7 +1155,9 @@ impl Game {
         }
         self.entities.tick_scene(&self.world.scene);
         self.tick_menu();
+        // `ClientLevel.tick`'s explosion block particles, then
         // `ClientLevel.animateTick`, then `ParticleEngine.tick`.
+        self.particles.tick_explosions(&self.world);
         let mut sounds = Vec::new();
         if self.landed {
             let eye = self.player.eye().floor();
@@ -1412,6 +1424,34 @@ impl Game {
                 if pressed {
                     self.screen = Screen::Crafting;
                 }
+                return;
+            }
+            // `TntBlock.useItemOn`: flint and steel (worn by one) or a fire
+            // charge (spent) primes the TNT, which the server turns into
+            // an entity. The `tnt_explodes` rule that would refuse it
+            // always holds here, so the item is spent at once.
+            if block.id.path == "tnt"
+                && let Some(stack) = held
+                && matches!(
+                    stack.id.as_str(),
+                    "minecraft:flint_and_steel" | "minecraft:fire_charge"
+                )
+            {
+                self.entities.ignite_tnt(hit.pos);
+                if !self.creative {
+                    let selected = self.entities.selected;
+                    if stack.id == "minecraft:fire_charge" {
+                        if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                            held.count -= 1;
+                            if held.count == 0 {
+                                self.entities.inventory.slots[selected] = None;
+                            }
+                        }
+                    } else if self.entities.inventory.wear_tool(selected, 1) {
+                        self.item_broke(&stack.id);
+                    }
+                }
+                self.start_swing();
                 return;
             }
             let (facing, _) = horizontal_facing(self.player.yaw);

@@ -133,6 +133,8 @@ pub struct Level<'a> {
     sounds: Vec<openers::LevelSound>,
     /// `Level.levelEvent`s since last taken: position, event id, data.
     level_events: Vec<(BlockPos, i32, i32)>,
+    /// Blasts since last taken, as the clients hear of them.
+    explosions: Vec<explosion::ExplosionView>,
     /// The players with a menu open on block containers, for the openers'
     /// rechecks.
     pub container_users: Vec<openers::ContainerUser>,
@@ -275,6 +277,7 @@ impl<'a> Level<'a> {
             sent_block_events: Vec::new(),
             sounds: Vec::new(),
             level_events: Vec::new(),
+            explosions: Vec::new(),
             container_users: Vec::new(),
             openers: HashMap::new(),
             shulker_lids: HashMap::new(),
