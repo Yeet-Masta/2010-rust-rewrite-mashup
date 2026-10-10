@@ -323,6 +323,23 @@ pub(crate) fn chest_model(chest_type: &str) -> Vec<Part> {
     ]
 }
 
+/// `BookModel.createBodyLayer` posed by `setupAnim` for its state's
+/// openness and two leafing pages (each 0 to 1): the lids open about the
+/// spine, the page blocks and the leaves stand out by the opening's sine.
+pub(crate) fn book_model(openness: f32, flip1: f32, flip2: f32) -> Vec<Part> {
+    let out = openness.sin();
+    let leaf = |flip: f32| part([out, 0.0, 0.0], vec![cube(24.0, 10.0, [0.0, -4.0, 0.0], [5.0, 8.0, 0.005])]).rotated([0.0, openness - openness * 2.0 * flip, 0.0]);
+    vec![
+        part([0.0, 0.0, -1.0], vec![cube(0.0, 0.0, [-6.0, -5.0, -0.005], [6.0, 10.0, 0.005])]).rotated([0.0, std::f32::consts::PI + openness, 0.0]),
+        part([0.0, 0.0, 1.0], vec![cube(16.0, 0.0, [0.0, -5.0, -0.005], [6.0, 10.0, 0.005])]).rotated([0.0, -openness, 0.0]),
+        part([0.0; 3], vec![cube(12.0, 0.0, [-1.0, -5.0, 0.0], [2.0, 10.0, 0.005])]).rotated([0.0, std::f32::consts::FRAC_PI_2, 0.0]),
+        part([out, 0.0, 0.0], vec![cube(0.0, 10.0, [0.0, -4.0, -0.99], [5.0, 8.0, 1.0])]).rotated([0.0, openness, 0.0]),
+        part([out, 0.0, 0.0], vec![cube(12.0, 10.0, [0.0, -4.0, -0.01], [5.0, 8.0, 1.0])]).rotated([0.0, -openness, 0.0]),
+        leaf(flip1),
+        leaf(flip2),
+    ]
+}
+
 /// `ShulkerModel.createBoxLayer` (`createShellMesh`): the lid, then the
 /// base, both at 24 down in the model's flipped space.
 pub(crate) fn shulker_box_model() -> Vec<Part> {

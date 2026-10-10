@@ -683,6 +683,7 @@ impl Entities {
             // entity ticks.
             self.client.tick();
             self.lids.tick();
+            self.lids.tick_books(Some(player.feet));
             for enderman in self.world.endermen() {
                 if let Some(mob) = self.client.get(enderman.id) {
                     self.portal.emit_enderman(mob.position, 0.6, 2.9);
@@ -1104,9 +1105,12 @@ impl Entities {
             let _ = mesh::append_moving_blocks(&mut out.items, scene, &parts, packs, atlas, tint, light);
         }
         // The containers' block entities (`ChestRenderer`,
-        // `ShulkerBoxRenderer`).
+        // `ShulkerBoxRenderer`), and the enchanting tables' books
+        // (`EnchantTableRenderer`).
         self.lids.retain_present(scene);
-        for pos in container_render::containers_near(scene, camera) {
+        let near = container_render::containers_near(scene, camera);
+        self.lids.track_books(scene, &near);
+        for pos in near {
             container_render::append_container(
                 &mut out.culled,
                 &mut out.models,

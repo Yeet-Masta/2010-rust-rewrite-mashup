@@ -206,6 +206,17 @@ fn cube(
     }
 }
 
+/// A model texture's pixels (y down, z toward the viewer) to clip space,
+/// `setOrtho(0, w, h, 0, -1000, 1000)` with reverse-Z depth.
+pub fn clip_from_texture(width: f32, tall: f32) -> Mat4 {
+    Mat4::from_cols(
+        glam::Vec4::new(2.0 / width, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, -2.0 / tall, 0.0, 0.0),
+        glam::Vec4::new(0.0, 0.0, 1.0 / 2000.0, 0.0),
+        glam::Vec4::new(-1.0, 1.0, 0.5, 1.0),
+    )
+}
+
 /// Steve's skin in the atlas.
 pub fn skin(atlas: &Atlas) -> Option<[f32; 4]> {
     let skin = ResourceId::parse("minecraft:entity/player/wide/steve").ok()?;
@@ -459,19 +470,11 @@ pub fn model(
             * Mat4::from_rotation_y(180.0f32.to_radians())
             * Mat4::from_translation(Vec3::new(side / 16.0, 2.0 / 16.0, -10.0 / 16.0))
     });
-    // The texture's pixels (y down, z toward the viewer) to clip space,
-    // `setOrtho(0, w, h, 0, -1000, 1000)` with reverse-Z depth.
-    let clip_from_model = Mat4::from_cols(
-        glam::Vec4::new(2.0 / width, 0.0, 0.0, 0.0),
-        glam::Vec4::new(0.0, -2.0 / tall, 0.0, 0.0),
-        glam::Vec4::new(0.0, 0.0, 1.0 / 2000.0, 0.0),
-        glam::Vec4::new(-1.0, 1.0, 0.5, 1.0),
-    );
     (
         GuiModel {
             vertices,
             indices,
-            clip_from_model,
+            clip_from_model: clip_from_texture(width, tall),
             size: (width as u32, tall as u32),
         },
         hands,

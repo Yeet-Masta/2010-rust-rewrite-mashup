@@ -4,7 +4,9 @@
 //! pose them: `ChestLidController` and `ShulkerBoxBlockEntity`'s progress,
 //! both moved by the server's block event 1 and ticked by the client level.
 //! Their blocks' own models have no elements, so this is all there is of
-//! them in the world.
+//! them in the world. Also `EnchantTableRenderer`: the book floating over
+//! an enchanting table, turning to the nearest player and opening for them
+//! as `EnchantingTableBlockEntity.bookAnimationTick` moves it.
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 
@@ -15,7 +17,8 @@ use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
 use crate::scene::{Block, BlockPos, Scene};
-use crate::special_icon::{chest_model, emit_part, shulker_box_model};
+use crate::special_icon::{book_model, chest_model, emit_part, shulker_box_model};
+use minecraftoss_player::rng::LegacyRandom;
 
 /// `ChestLidController`: whether the lid should be open, and its openness
 /// this tick and the last.
@@ -120,12 +123,117 @@ enum Lid {
     Shulker(ShulkerLid),
 }
 
+/// `EnchantingTableBlockEntity`'s book: its time, leafing (`flip`, its
+/// target and speed), opening and turn (`rot`, toward `tRot`), with the
+/// last tick's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TableBook {
+    time: i32,
+    flip: f32,
+    o_flip: f32,
+    flip_t: f32,
+    flip_a: f32,
+    open: f32,
+    o_open: f32,
+    rot: f32,
+    o_rot: f32,
+    t_rot: f32,
+}
+
+/// An angle into `[-pi, pi)`, as the ticks' loops wrap it.
+fn wrap(mut angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    while angle >= PI {
+        angle -= TAU;
+    }
+    while angle < -PI {
+        angle += TAU;
+    }
+    angle
+}
+
+impl TableBook {
+    /// `bookAnimationTick`: with a player within 3 blocks of the table's
+    /// middle the book turns to face them, opens, and leafs (on opening,
+    /// and now and then); without, it turns slowly and closes.
+    pub fn tick(&mut self, centre: DVec3, player: Option<DVec3>, random: &mut LegacyRandom) {
+        self.o_open = self.open;
+        self.o_rot = self.rot;
+        match player.filter(|feet| feet.distance_squared(centre) < 9.0) {
+            Some(feet) => {
+                self.t_rot = (feet.z - centre.z).atan2(feet.x - centre.x) as f32;
+                self.open += 0.1;
+                if self.open < 0.5 || random.next_int(40) == 0 {
+                    let old = self.flip_t;
+                    while self.flip_t == old {
+                        self.flip_t += random.next_int(4) as f32 - random.next_int(4) as f32;
+                    }
+                }
+            }
+            None => {
+                self.t_rot += 0.02;
+                self.open -= 0.1;
+            }
+        }
+        self.rot = wrap(self.rot);
+        self.t_rot = wrap(self.t_rot);
+        self.rot += wrap(self.t_rot - self.rot) * 0.4;
+        self.open = self.open.clamp(0.0, 1.0);
+        self.time += 1;
+        self.o_flip = self.flip;
+        let diff = ((self.flip_t - self.flip) * 0.4).clamp(-0.2, 0.2);
+        self.flip_a += (diff - self.flip_a) * 0.9;
+        self.flip += self.flip_a;
+    }
+
+    /// `EnchantTableRenderer.extractRenderState`: the time, leafing,
+    /// opening and turn between the last tick and this one.
+    pub fn pose(&self, partial: f32) -> (f32, f32, f32, f32) {
+        let lerp = |old: f32, now: f32| old + (now - old) * partial;
+        let turn = self.o_rot + wrap(self.rot - self.o_rot) * partial;
+        (self.time as f32 + partial, lerp(self.o_flip, self.flip), lerp(self.o_open, self.open), turn)
+    }
+}
+
+/// `BookModel.State.forAnimation` for a book at `time`, leafed to `flip`
+/// (its two pages a quarter and three quarters on) and opened to `open`:
+/// the openness, breathing with the time, and each page's turn.
+pub fn book_state(time: f32, flip: f32, open: f32) -> [f32; 3] {
+    let page = |offset: f32| {
+        let at = flip + offset;
+        ((at - at.floor()) * 1.6 - 0.3).clamp(0.0, 1.0)
+    };
+    [((time * 0.02).sin() * 0.1 + 1.25) * open, page(0.25), page(0.75)]
+}
+
+/// The enchanting table's book's sheet (`EnchantTableRenderer.BOOK_TEXTURE`).
+pub const BOOK_SHEET: &str = "minecraft:entity/enchantment/enchanting_table_book";
+
+/// `BookModel` in a state ([`book_state`]) under `pose`, from its 64 by 32
+/// sheet at `region`: the enchanting table's book, in the world and on
+/// its screen.
+pub fn append_book(
+    mesh: &mut ChunkMesh,
+    pose: Mat4,
+    region: [f32; 4],
+    shade: &dyn Fn(Vec3) -> f32,
+    light: [f32; 2],
+    [openness, flip1, flip2]: [f32; 3],
+) {
+    for part in &book_model(openness, flip1, flip2) {
+        emit_part(mesh, part, pose, region, [64.0, 32.0], [1.0; 3], shade, light);
+    }
+}
+
 /// The lids of the client's container block entities, by position. A lid
 /// that is shut and still is the same as none, so only moving or open ones
-/// are kept.
+/// are kept. The enchanting tables' books too, for the tables in view.
 #[derive(Default)]
 pub struct ContainerLids {
     lids: HashMap<BlockPos, Lid>,
+    books: HashMap<BlockPos, TableBook>,
+    /// `EnchantingTableBlockEntity.RANDOM`.
+    random: LegacyRandom,
 }
 
 impl ContainerLids {
@@ -150,7 +258,26 @@ impl ContainerLids {
                     lid.trigger(b);
                 }
             }
-            None => {}
+            Some(Renderer::EnchantingTable) | None => {}
+        }
+    }
+
+    /// The enchanting tables among `positions` have their books, which
+    /// tick from then on.
+    pub fn track_books<S: Scene>(&mut self, scene: &S, positions: &[BlockPos]) {
+        for &pos in positions {
+            if scene.block(pos).and_then(|block| renderer_of(&block.id.path)) == Some(Renderer::EnchantingTable) {
+                self.books.entry(pos).or_default();
+            }
+        }
+    }
+
+    /// The books' ticks (`bookAnimationTick`), with the player's feet
+    /// (none for a spectator, whom `getNearestPlayer` passes over).
+    pub fn tick_books(&mut self, player: Option<DVec3>) {
+        for (pos, book) in &mut self.books {
+            let centre = DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2)) + 0.5;
+            book.tick(centre, player, &mut self.random);
         }
     }
 
@@ -176,6 +303,7 @@ impl ContainerLids {
             let renderer = scene.block(pos).and_then(|block| renderer_of(&block.id.path));
             matches!((lid, renderer), (Lid::Chest(_), Some(Renderer::Chest(_))) | (Lid::Shulker(_), Some(Renderer::ShulkerBox(_))))
         });
+        self.books.retain(|&pos, _| scene.block(pos).and_then(|block| renderer_of(&block.id.path)) == Some(Renderer::EnchantingTable));
     }
 
     /// `getOpenNess` of the chest at `pos`.
@@ -238,6 +366,8 @@ enum Renderer {
     Chest(ChestMaterial),
     /// `ShulkerBoxRenderer`, with the box's dye colour (none: the plain box).
     ShulkerBox(Option<&'static str>),
+    /// `EnchantTableRenderer`.
+    EnchantingTable,
 }
 
 /// `DyeColor`'s names, in order.
@@ -252,6 +382,7 @@ fn renderer_of(path: &str) -> Option<Renderer> {
         "trapped_chest" => ChestMaterial::Trapped,
         "ender_chest" => ChestMaterial::EnderChest,
         "shulker_box" => return Some(Renderer::ShulkerBox(None)),
+        "enchanting_table" => return Some(Renderer::EnchantingTable),
         _ => {
             if let Some(color) = path.strip_suffix("_shulker_box") {
                 return DYES.iter().find(|dye| **dye == color).map(|dye| Renderer::ShulkerBox(Some(dye)));
@@ -304,6 +435,7 @@ pub fn sheets() -> Vec<String> {
     }
     sheets.push("minecraft:entity/shulker/shulker".to_owned());
     sheets.extend(DYES.iter().map(|dye| format!("minecraft:entity/shulker/shulker_{dye}")));
+    sheets.push(BOOK_SHEET.to_owned());
     sheets
 }
 
@@ -466,6 +598,23 @@ pub fn append_container<S: Scene>(
                 emit_part(cutout, part, pose, region, [64.0; 2], [1.0; 3], &entity_shade, light_at(light, pos));
             }
         }
+        Some(Renderer::EnchantingTable) => {
+            let Ok(sheet) = ResourceId::parse(BOOK_SHEET) else {
+                return;
+            };
+            if !atlas.contains(&sheet) {
+                return;
+            }
+            // `submit`: three quarters up and bobbing, turned to its `rot`
+            // and tipped 80 degrees.
+            let (time, flip, open, turn) = lids.books.get(&pos).map_or((partial, 0.0, 0.0, 0.0), |book| book.pose(partial));
+            let pose = Mat4::from_translation(cell + Vec3::new(0.5, 0.75, 0.5))
+                * Mat4::from_translation(Vec3::new(0.0, 0.1 + (time * 0.1).sin() * 0.01, 0.0))
+                * Mat4::from_rotation_y(-turn)
+                * Mat4::from_rotation_z(80f32.to_radians());
+            let state = book_state(time, flip, open);
+            append_book(culled, pose, atlas.entity_region(&sheet), &entity_shade, light_at(light, pos), state);
+        }
         None => {}
     }
 }
@@ -493,6 +642,35 @@ pub fn containers_near(scene: &crate::scene::HandcraftedScene, camera: DVec3) ->
 mod tests {
     use super::*;
     use crate::scene::HandcraftedScene;
+
+    #[test]
+    fn a_tables_book_opens_and_turns_to_a_near_player() {
+        let mut book = TableBook::default();
+        let mut random = LegacyRandom::new(0);
+        let centre = DVec3::new(0.5, 64.5, 0.5);
+        // Two blocks south: `tRot` is atan2(dz, dx), a quarter turn.
+        let near = Some(DVec3::new(0.5, 64.0, 2.5));
+        book.tick(centre, near, &mut random);
+        assert!(book.flip_t != 0.0, "opening leafs it");
+        for _ in 0..20 {
+            book.tick(centre, near, &mut random);
+        }
+        let (time, _, open, turn) = book.pose(1.0);
+        assert_eq!((time, open), (22.0, 1.0));
+        assert!((turn - FRAC_PI_2).abs() < 1e-3, "{turn}");
+        // Three blocks off it closes, a tenth a tick, and turns on slowly.
+        let far = Some(DVec3::new(0.5, 64.0, 3.6));
+        book.tick(centre, far, &mut random);
+        assert!((book.pose(1.0).2 - 0.9).abs() < 1e-6);
+        for _ in 0..10 {
+            book.tick(centre, far, &mut random);
+        }
+        assert_eq!(book.pose(1.0).2, 0.0);
+        // `forAnimation`: the pages a quarter and three quarters on.
+        let [openness, first, second] = book_state(0.0, 0.0, 1.0);
+        assert!((openness - 1.25).abs() < 1e-6 && (first - 0.1).abs() < 1e-6 && (second - 0.9).abs() < 1e-6);
+        assert_eq!(book_state(0.0, 2.0, 0.0)[0], 0.0);
+    }
 
     #[test]
     fn chest_lid_steps_a_tenth_a_tick_and_eases() {
@@ -581,7 +759,7 @@ mod tests {
         assert_eq!(renderer_of("waxed_weathered_copper_chest"), Some(Renderer::Chest(ChestMaterial::CopperWeathered)));
         assert_eq!(renderer_of("light_blue_shulker_box"), Some(Renderer::ShulkerBox(Some("light_blue"))));
         assert_eq!(renderer_of("barrel"), None);
-        assert_eq!(sheets().len(), 1 + 7 * 3 + 17);
+        assert_eq!(sheets().len(), 1 + 7 * 3 + 17 + 1);
     }
 
     /// An atlas holding every sheet over the whole texture, a light map of
@@ -603,6 +781,26 @@ mod tests {
 
     fn near(a: Vec3, b: Vec3) -> bool {
         (a - b).abs().max_element() < 1e-4
+    }
+
+    #[test]
+    fn a_tables_book_floats_over_it() {
+        let mut scene = HandcraftedScene::default();
+        let pos = (3, 5, -2);
+        scene.set(pos, Some(Block::new("minecraft:enchanting_table")));
+        let mut lids = ContainerLids::default();
+        lids.track_books(&scene, &[pos]);
+        assert_eq!(lids.books.len(), 1);
+        let (culled, cutout) = draw(&scene, pos, &lids);
+        // Seven cuboids of six faces, over the table's top, in its cell.
+        assert!(cutout.vertices.is_empty());
+        assert_eq!(culled.faces, 42);
+        let (low, high) = bounds(&culled);
+        assert!(low.y > 5.75 && high.y < 6.5 && low.x > 3.0 && high.x < 4.0 && low.z > -2.0 && high.z < -1.0, "{low} {high}");
+        // A book goes with its table.
+        scene.set(pos, None);
+        lids.retain_present(&scene);
+        assert!(lids.books.is_empty());
     }
 
     #[test]

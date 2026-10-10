@@ -38,6 +38,13 @@
 //! (its yes and no, the trades) is told it then, and the screen is sent the
 //! offers with its slots ([`MenuExtra::Merchant`]).
 //!
+//! An enchanting table's menu ([`MenuKind::Enchantment`]) keeps its item
+//! and lapis itself, at the table's block (`ContainerLevelAccess`): they go
+//! back to the player as it closes. Its offers come from the data pack's
+//! enchantments ([`TableRegistry`]) and the bookshelves around the table,
+//! counted again before every batch, and its enchanting spends the
+//! player's levels and draws its enchantment seed again.
+//!
 //! A container generation left with a loot table is filled from it as it
 //! opens (`unpackLootTable`), each half of a double chest in turn, with the
 //! player's luck, which is always 0 here (no luck effects).
@@ -48,12 +55,16 @@
 use crate::server::ServerSim;
 use crate::stacks::{self, LevelStack, PlayerStack};
 use minecraftoss_core::nbt::Tag;
-use minecraftoss_core::BlockStateId;
+use minecraftoss_core::enchantment::Enchantments;
+use minecraftoss_core::item::ItemCatalog;
+use minecraftoss_core::random::RandomSource;
+use minecraftoss_core::{BlockId, BlockStateId};
 use minecraftoss_entities::merchant::{MerchantMenu, Offers};
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_player::inventory::Inventory;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
-use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu, CrafterMenu, DispenserMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
+use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu, CrafterMenu, DispenserMenu, EnchantmentMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
+use minecraftoss_player::menu::enchanting::{self, EnchantingTable, TableAccess};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -96,6 +107,8 @@ pub enum MenuKind {
     Crafter,
     /// `brewing_stand` (`BrewingStandMenu`).
     BrewingStand,
+    /// `enchantment` (`EnchantmentMenu`).
+    Enchantment,
 }
 
 impl MenuKind {
@@ -117,6 +130,7 @@ impl MenuKind {
             Self::Merchant => "minecraft:merchant",
             Self::Crafter => "minecraft:crafter_3x3",
             Self::BrewingStand => "minecraft:brewing_stand",
+            Self::Enchantment => "minecraft:enchantment",
         }
     }
 
@@ -134,6 +148,7 @@ impl MenuKind {
             Self::Merchant => Box::new(MerchantMenu::new(own)),
             Self::Crafter => Box::new(CrafterMenu::new(own)),
             Self::BrewingStand => Box::new(BrewingStandMenu::new(own)),
+            Self::Enchantment => Box::new(EnchantmentMenu::new(own)),
         }
     }
 }
@@ -219,6 +234,70 @@ fn merchant_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut MerchantMenu> {
     menu.as_any_mut()?.downcast_mut()
 }
 
+fn enchantment_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut EnchantmentMenu> {
+    menu.as_any_mut()?.downcast_mut()
+}
+
+/// The enchanting table's registries on the server: the data pack's
+/// enchantments, chosen from by `#in_enchanting_table`, and the items'
+/// `enchantable` from the item catalog.
+pub struct TableRegistry {
+    enchantments: Enchantments,
+    source: Vec<usize>,
+    items: ItemCatalog,
+}
+
+impl TableRegistry {
+    pub fn new(registries: &minecraftoss_core::Registries) -> Self {
+        let enchantments = Enchantments::load(&registries.datapack).unwrap_or_else(|_| Enchantments::default());
+        let source = enchantments.source(Some(&json!("#minecraft:in_enchanting_table")));
+        Self { enchantments, source, items: registries.items.clone() }
+    }
+}
+
+/// The menu's random as the registry's selection draws on it.
+struct Draws<'a>(&'a mut LegacyRandom);
+
+impl RandomSource for Draws<'_> {
+    fn next_i32(&mut self) -> i32 {
+        self.0.next_i32()
+    }
+    fn next_i32_bound(&mut self, bound: i32) -> i32 {
+        self.0.next_int(bound as u32) as i32
+    }
+    fn next_i64(&mut self) -> i64 {
+        self.0.next_long() as i64
+    }
+    fn next_f32(&mut self) -> f32 {
+        self.0.next_float()
+    }
+    fn next_f64(&mut self) -> f64 {
+        self.0.next_double()
+    }
+    fn next_bool(&mut self) -> bool {
+        self.0.next_boolean()
+    }
+    fn next_gaussian(&mut self) -> f64 {
+        self.0.next_gaussian()
+    }
+}
+
+impl EnchantingTable for TableRegistry {
+    fn enchantable(&self, item: &str) -> Option<i32> {
+        self.items.enchantable(item)
+    }
+
+    fn select(&self, random: &mut LegacyRandom, item: &str, enchantable: i32, cost: i32) -> Vec<(i32, i32)> {
+        let chosen = self.enchantments.select(&mut Draws(random), item, Some(enchantable), cost, &self.source);
+        chosen.into_iter().map(|(index, level)| (index as i32, level)).collect()
+    }
+
+    fn enchantment(&self, id: i32) -> Option<&str> {
+        let index = usize::try_from(id).ok()?;
+        self.enchantments.list.get(index).map(|enchantment| enchantment.id.as_str())
+    }
+}
+
 /// A menu's state for the client, after a batch, an opening, or a tick
 /// that changed what it shows.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -278,12 +357,14 @@ pub(crate) struct Menus {
     /// The level events the menus made at their blocks since the client
     /// last heard of them: position, event id.
     level_events: Vec<(BlockPos, i32, i32)>,
+    /// The enchanting table's registries, read at its first opening.
+    table: Option<std::sync::Arc<TableRegistry>>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed), level_events: Vec::new() }
+        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed), level_events: Vec::new(), table: None }
     }
 }
 
@@ -316,6 +397,9 @@ enum Source {
     EnderChest(LevelPos),
     /// The menu's own container, trading with this villager.
     Merchant(u64),
+    /// A workstation's own container, at its block (`ContainerLevelAccess`),
+    /// which must stay that block.
+    Station(LevelPos, BlockId),
 }
 
 impl Source {
@@ -324,7 +408,7 @@ impl Source {
         match self {
             Self::Container(c) => c.positions(),
             Self::EnderChest(pos) => vec![pos],
-            Self::Merchant(_) => Vec::new(),
+            Self::Merchant(_) | Self::Station(..) => Vec::new(),
         }
     }
 
@@ -332,7 +416,7 @@ impl Source {
     /// block, the first half of a double chest. A trading screen has none.
     fn block(self) -> Option<LevelPos> {
         match self {
-            Self::Container(ContainerRef::Single(pos, _) | ContainerRef::Double(pos, _)) | Self::EnderChest(pos) => Some(pos),
+            Self::Container(ContainerRef::Single(pos, _) | ContainerRef::Double(pos, _)) | Self::EnderChest(pos) | Self::Station(pos, _) => Some(pos),
             Self::Merchant(_) => None,
         }
     }
@@ -353,6 +437,7 @@ enum MenuBlock {
     Smoker,
     Crafter,
     BrewingStand,
+    EnchantingTable,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -369,6 +454,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("SmokerBlock", MenuBlock::Smoker),
     ("CrafterBlock", MenuBlock::Crafter),
     ("BrewingStandBlock", MenuBlock::BrewingStand),
+    ("EnchantingTableBlock", MenuBlock::EnchantingTable),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -645,6 +731,7 @@ impl ServerSim {
         let own = self.source_items(target.source);
         let mut menu = target.kind.menu(own);
         self.load_data(menu.as_mut(), target.source);
+        self.open_station(menu.as_mut(), target.source, &player);
         let sent = (menu.own().items().to_vec(), menu.data());
         let open = OpenMenu { id: self.menus.counter, kind: target.kind, menu, source: target.source, seq: 0, sent: sent.clone(), sent_extra: None, closing: false, creative: player.creative };
         // The menu's `startOpen`.
@@ -778,6 +865,14 @@ impl ServerSim {
             MenuBlock::Smoker => single(MenuKind::Smoker, "container.smoker", "interact_with_smoker"),
             MenuBlock::Crafter => single(MenuKind::Crafter, "container.crafter", ""),
             MenuBlock::BrewingStand => single(MenuKind::BrewingStand, "container.brewing", "interact_with_brewingstand"),
+            // `EnchantingTableBlock.getMenuProvider`: none without its block
+            // entity, whose name it takes.
+            MenuBlock::EnchantingTable => {
+                level.block_entity(at)?;
+                let block = level.registries().blocks.block_of(level.block(at));
+                let title = custom_name(at).unwrap_or_else(|| translated("container.enchant"));
+                Some(Target { kind: MenuKind::Enchantment, source: Source::Station(at, block), title, stat: "", locked_by: Vec::new(), centre: centre(at) })
+            }
         }
     }
 
@@ -917,13 +1012,42 @@ impl ServerSim {
                 own
             }
             Source::EnderChest(_) => self.menus.ender.clone(),
-            Source::Merchant(_) => Vec::new(),
+            Source::Merchant(_) | Source::Station(..) => Vec::new(),
         }
     }
 
+    /// A workstation's menu as it opens: an enchanting table's reaches the
+    /// registries and the bookshelves around it, and starts from the
+    /// player's enchantment seed.
+    fn open_station(&mut self, menu: &mut (dyn Menu + Send), source: Source, player: &PlayerContext) {
+        let Source::Station(pos, _) = source else { return };
+        if let Some(enchanting) = enchantment_mut(menu) {
+            let registries = self.level.registries();
+            let table = self.menus.table.get_or_insert_with(|| std::sync::Arc::new(TableRegistry::new(registries))).clone();
+            enchanting.set_access(Some(TableAccess { table, bookshelves: self.bookshelves(pos) }));
+            enchanting.set_data(enchanting::SEED, player.enchantment_seed);
+        }
+    }
+
+    /// `EnchantingTableBlock.isValidBookShelf` around a table, counted.
+    fn bookshelves(&self, pos: LevelPos) -> i32 {
+        let registries = self.level.registries();
+        let tags = &registries.block_tags;
+        let (Ok(provider), Ok(transmitter)) = (tags.require("minecraft:enchantment_power_provider"), tags.require("minecraft:enchantment_power_transmitter")) else { return 0 };
+        let is = |[x, y, z]: [i32; 3], tag| registries.block_in_tag(self.level.block(pos.offset(x, y, z)), tag);
+        enchanting::bookshelf_count(|offset| is(offset, provider), |offset| is(offset, transmitter))
+    }
+
     /// The menu reads its storage again (what hoppers and dispensers did),
-    /// and its data values.
+    /// and its data values. A workstation's own slots are its own; an
+    /// enchanting table counts its bookshelves again.
     fn reload(&self, open: &mut OpenMenu) {
+        if let Source::Station(pos, _) = open.source {
+            if let Some(enchanting) = enchantment_mut(open.menu.as_mut()) {
+                enchanting.set_bookshelves(self.bookshelves(pos));
+            }
+            return;
+        }
         if let Source::Merchant(_) = open.source {
             return;
         }
@@ -993,7 +1117,7 @@ impl ServerSim {
                 }
                 self.menus.ender_changed = true;
             }
-            Source::Merchant(_) => {}
+            Source::Merchant(_) | Source::Station(..) => {}
         }
     }
 
@@ -1003,6 +1127,10 @@ impl ServerSim {
     fn still_valid(&self, open: &OpenMenu, eye: [f64; 3]) -> bool {
         if let Source::Merchant(villager) = open.source {
             return self.mobs.merchant_still_valid(villager, 0, glam::DVec3::from_array(eye), open.creative);
+        }
+        // `stillValid(access, player, block)`: the block is still there.
+        if let Source::Station(pos, block) = open.source {
+            return self.level.registries().blocks.block_of(self.level.block(pos)) == block && within_reach(pos, eye, open.creative);
         }
         open.source.positions().into_iter().all(|p| self.level.block_entity_still_there(p) && within_reach(p, eye, open.creative))
     }
@@ -2121,5 +2249,96 @@ mod tests {
         }
         assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
         assert_eq!(items(&server, pos)[0], None);
+    }
+
+    #[test]
+    fn enchanting_a_sword_spends_levels_and_lapis_and_draws_a_new_seed() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:enchanting_table"));
+        // 15 shelves: the north row and both sides on the table's level,
+        // and four of the north row above.
+        let ring = enchanting::bookshelf_offsets().filter(|&[x, y, z]| if y == 0 { z <= 1 } else { z == -2 && x < 2 });
+        for [x, y, z] in ring {
+            place(&mut server, &mut scene, (pos.0 + x, pos.1 + y, pos.2 + z), Block::new("minecraft:bookshelf"));
+        }
+        let at = LevelPos::new(pos.0, pos.1, pos.2);
+        assert_eq!(server.bookshelves(at), 15);
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(stack("minecraft:diamond_sword", 1, 1));
+        inventory.slots[1] = Some(stack("minecraft:lapis_lazuli", 5, 64));
+        let enchanter = |inventory: &Inventory| PlayerContext { xp_level: 30, enchantment_seed: 12345, ..player(inventory) };
+
+        let (result, updates) = server.use_block_with(pos, "north", enchanter(&inventory));
+        assert!(result.opened && result.stats.is_empty(), "{result:?}");
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Enchantment, title: json!({"translate": "container.enchant"}) }));
+        assert_eq!((&opening.slots[..], &opening.data[..]), (&[None, None][..], &[0, 0, 0, 12345, -1, -1, -1, -1, -1, -1][..]));
+        // The sword and the lapis in: the seed's costs at 15 shelves
+        // (`getEnchantmentCost` worked in Java), each with its clue.
+        let update = server.menu_batch(opening.id, 1, &[click(29, ContainerInput::QuickMove), click(30, ContainerInput::QuickMove)], enchanter(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(update.data[..4], [6, 20, 30, 12345]);
+        let table = TableRegistry::new(server.level.registries());
+        let clue = table.enchantment(update.data[6]).expect("a clue").to_owned();
+        assert!(update.data[9] > 0);
+
+        server.level.take_sounds();
+        let update = server.menu_batch(opening.id, 2, &[MenuInput::Button(2)], enchanter(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(update.xp_levels, 3, "the third row's 3 levels, not its cost");
+        assert!(update.enchantment_seed.is_some_and(|seed| seed != 12345));
+        assert_eq!(update.data[3], update.enchantment_seed.unwrap_or(0));
+        assert_eq!(update.data[..3], [0, 0, 0], "an enchanted sword is offered nothing");
+        assert_eq!(update.slots[1], Some(stack("minecraft:lapis_lazuli", 2, 64)));
+        let sword = update.slots[0].clone().expect("the sword stays");
+        let enchantments = sword.components.as_ref().and_then(|c| c["minecraft:enchantments"].as_object().cloned()).expect("enchantments");
+        assert!(enchantments.contains_key(&clue), "the clue {clue} is among {enchantments:?}");
+        for (id, level) in &enchantments {
+            let index = table.enchantments.index(id).expect("a known enchantment");
+            assert!(table.source.contains(&index), "{id} is in the table's tag");
+            assert!((1..=table.enchantments.list[index].max_level).contains(&(level.as_i64().unwrap_or(0) as i32)));
+        }
+        assert_eq!(update.stats, vec![("minecraft:custom".to_owned(), "minecraft:enchant_item".to_owned(), 1)]);
+        let sounds = server.level.take_sounds();
+        assert_eq!(sounds.iter().map(|s| (s.event, s.position)).collect::<Vec<_>>(), [("minecraft:block.enchantment_table.use", [8.5, 200.5, 8.5])]);
+
+        // A table with a block in the gap before three of its shelves.
+        place(&mut server, &mut scene, (pos.0 - 1, pos.1, pos.2), Block::new("minecraft:stone"));
+        assert_eq!(server.bookshelves(at), 12);
+        // Closing gives the sword and the lapis back.
+        let update = server.menu_batch(opening.id, 3, &[MenuInput::Close], enchanter(&inventory));
+        apply(&mut inventory, &update);
+        assert!(update.closed);
+        assert_eq!(inventory.slots[0], Some(sword));
+        assert_eq!(inventory.slots[1], Some(stack("minecraft:lapis_lazuli", 2, 64)));
+    }
+
+    #[test]
+    fn the_tables_choices_keep_exclusive_enchantments_apart() {
+        let Some((server, _)) = world() else { return };
+        let table = TableRegistry::new(server.level.registries());
+        let id = |name: &str| table.enchantments.index(name).map(|i| i as i32);
+        let damage = ["minecraft:sharpness", "minecraft:smite", "minecraft:bane_of_arthropods"].map(id);
+        let protection = ["minecraft:protection", "minecraft:fire_protection", "minecraft:blast_protection", "minecraft:projectile_protection"].map(id);
+        let mut several = 0;
+        for seed in 0..400 {
+            let mut random = LegacyRandom::new(seed);
+            let sword = table.select(&mut random, "minecraft:diamond_sword", 10, 30);
+            let boots = table.select(&mut random, "minecraft:diamond_boots", 10, 30);
+            for (chosen, set) in [(&sword, &damage[..]), (&boots, &protection[..])] {
+                assert!(chosen.iter().filter(|(e, _)| set.contains(&Some(*e))).count() <= 1, "{chosen:?}");
+                let mut ids: Vec<i32> = chosen.iter().map(|&(e, _)| e).collect();
+                ids.dedup();
+                assert_eq!(ids.len(), chosen.len(), "each once: {chosen:?}");
+                several += usize::from(chosen.len() > 1);
+            }
+            // Never a treasure: mending and frost walker are not offered.
+            for (e, _) in sword.iter().chain(&boots) {
+                assert!(table.source.contains(&(*e as usize)));
+            }
+        }
+        assert!(several > 100, "level 30 often gives more than one");
+        assert_eq!(id("minecraft:mending").map(|m| table.source.contains(&(m as usize))), Some(false));
     }
 }

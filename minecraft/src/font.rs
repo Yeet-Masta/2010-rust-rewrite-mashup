@@ -1,6 +1,8 @@
-//! Minecraft's default font: the pack's `ascii.png` bitmap provider, with
-//! each glyph's width measured from its pixels as vanilla's
-//! `BitmapProvider` measures it, and a space four pixels wide.
+//! Minecraft's bitmap fonts: the default font's `ascii.png` provider, and
+//! the `alt` font's standard galactic alphabet (`ascii_sga.png`, the
+//! enchanting table's glyphs), with each glyph's width measured from its
+//! pixels as vanilla's `BitmapProvider` measures it, and a space four
+//! pixels wide.
 use std::collections::HashMap;
 
 use minecraft_terrain::pack::{PackStack, ResourceId};
@@ -24,19 +26,37 @@ pub struct Font {
 }
 
 impl Font {
+    /// The default font.
     pub fn load(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {
+        Self::bitmap(packs, renderer, "minecraft:include/default", "font/ascii")
+    }
+
+    /// The `alt` font (`EnchantmentNames.ALT_FONT`).
+    pub fn load_alt(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {
+        Self::bitmap(packs, renderer, "minecraft:alt", "font/ascii_sga")
+    }
+
+    /// The bitmap provider of the font `definition` drawing from the
+    /// texture `file`.
+    fn bitmap(
+        packs: &PackStack,
+        renderer: &mut Renderer,
+        definition: &str,
+        file: &str,
+    ) -> anyhow::Result<Self> {
         let bytes = packs
-            .texture(&ResourceId::parse("minecraft:font/ascii")?)?
-            .ok_or_else(|| anyhow::anyhow!("the pack has no font/ascii.png"))?;
+            .texture(&ResourceId::parse(&format!("minecraft:{file}"))?)?
+            .ok_or_else(|| anyhow::anyhow!("the pack has no {file}.png"))?;
         let image = image::load_from_memory(&bytes)?.to_rgba8();
-        let definition = packs.font(&ResourceId::parse("minecraft:include/default")?)?;
+        let definition = packs.font(&ResourceId::parse(definition)?)?;
+        let provider = format!("minecraft:{file}.png");
         let rows: Vec<Vec<char>> = definition
             .as_ref()
             .and_then(|d| d["providers"].as_array())
             .and_then(|providers| {
                 providers
                     .iter()
-                    .find(|p| p["file"].as_str() == Some("minecraft:font/ascii.png"))
+                    .find(|p| p["file"].as_str() == Some(provider.as_str()))
             })
             .and_then(|provider| provider["chars"].as_array())
             .map(|rows| {
@@ -95,9 +115,24 @@ impl Font {
 
     /// Width of a line in font pixels.
     pub fn width(&self, text: &str) -> f32 {
-        text.chars()
-            .map(|c| self.glyphs.get(&c).map_or(6.0, |g| g.advance))
-            .sum()
+        text.chars().map(|c| self.advance(c)).sum()
+    }
+
+    fn advance(&self, c: char) -> f32 {
+        self.glyphs.get(&c).map_or(6.0, |g| g.advance)
+    }
+
+    /// `StringSplitter.headByWidth`: the longest start of `text` no wider
+    /// than `width`.
+    pub fn head_by_width<'a>(&self, text: &'a str, width: f32) -> &'a str {
+        let mut left = width;
+        for (at, c) in text.char_indices() {
+            left -= self.advance(c);
+            if left < 0.0 {
+                return &text[..at];
+            }
+        }
+        text
     }
 
     /// Draws text at a GUI point (`scale` window pixels per font pixel),

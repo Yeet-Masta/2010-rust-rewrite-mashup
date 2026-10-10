@@ -790,6 +790,13 @@ impl Inventory {
         ));
     }
 
+    /// `Player.awardStat` for a custom statistic (`Stats.CUSTOM`), such as
+    /// `enchant_item`.
+    pub fn record_custom(&mut self, id: &str) {
+        self.pending_stats
+            .push((crate::statistics::CUSTOM.into(), format!("minecraft:{id}"), 1));
+    }
+
     pub(crate) fn record_dropped(&mut self, stack: &ItemStack) {
         self.pending_stats.push((
             crate::statistics::DROPPED.into(),

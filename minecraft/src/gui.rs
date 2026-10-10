@@ -15,7 +15,9 @@ use crate::render::{Renderer, TextureId, UiList};
 
 #[path = "menu_gui.rs"]
 mod menu_gui;
-pub use menu_gui::{MenuSlotView, MenuView, SlotDrag, TradeList};
+pub use menu_gui::{
+    EnchantingBook, MenuSlotView, MenuView, SlotDrag, TradeList, book_model, enchanting_row_at,
+};
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
 /// item and its variants.
@@ -124,6 +126,8 @@ struct Icons {
 
 pub struct Gui {
     pub font: Font,
+    /// The `alt` font, for the enchanting table's glyphs.
+    alt_font: Option<Font>,
     /// The texture the inventory's player is drawn into.
     model_texture: TextureId,
     /// When the GUI was made, for the glint's scroll.
@@ -331,16 +335,68 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/brewing_stand/bubbles",
         0.0,
     ),
+    // The enchanting table (`EnchantmentScreen`).
+    ("enchanting_table", "gui/container/enchanting_table", 0.0),
+    (
+        "enchantment_slot",
+        "gui/sprites/container/enchanting_table/enchantment_slot",
+        0.0,
+    ),
+    (
+        "enchantment_slot_disabled",
+        "gui/sprites/container/enchanting_table/enchantment_slot_disabled",
+        0.0,
+    ),
+    (
+        "enchantment_slot_highlighted",
+        "gui/sprites/container/enchanting_table/enchantment_slot_highlighted",
+        0.0,
+    ),
+    (
+        "enchanting_level_1",
+        "gui/sprites/container/enchanting_table/level_1",
+        0.0,
+    ),
+    (
+        "enchanting_level_2",
+        "gui/sprites/container/enchanting_table/level_2",
+        0.0,
+    ),
+    (
+        "enchanting_level_3",
+        "gui/sprites/container/enchanting_table/level_3",
+        0.0,
+    ),
+    (
+        "enchanting_level_1_disabled",
+        "gui/sprites/container/enchanting_table/level_1_disabled",
+        0.0,
+    ),
+    (
+        "enchanting_level_2_disabled",
+        "gui/sprites/container/enchanting_table/level_2_disabled",
+        0.0,
+    ),
+    (
+        "enchanting_level_3_disabled",
+        "gui/sprites/container/enchanting_table/level_3_disabled",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
 /// `SlotDef.icon`), loaded under their own ids from `gui/sprites/`. New
 /// ones are appended.
-const SLOT_ICONS: &[&str] = &["container/slot/potion", "container/slot/brewing_fuel"];
+const SLOT_ICONS: &[&str] = &[
+    "container/slot/potion",
+    "container/slot/brewing_fuel",
+    "container/slot/lapis_lazuli",
+];
 
 impl Gui {
     pub fn load(packs: &PackStack, renderer: &mut Renderer) -> anyhow::Result<Self> {
         let font = Font::load(packs, renderer)?;
+        let alt_font = Font::load_alt(packs, renderer).ok();
         let mut sprites = HashMap::new();
         // The creative screen's backgrounds and tabs.
         let mut creative = Vec::new();
@@ -399,6 +455,7 @@ impl Gui {
         }
         Ok(Self {
             font,
+            alt_font,
             model_texture: renderer.model_texture(),
             started: std::time::Instant::now(),
             sprites,
@@ -1128,14 +1185,23 @@ impl Gui {
     /// `TooltipRenderUtil` and `DefaultTooltipPositioner`: lines in their
     /// colours, the first set 2 pixels apart from the rest.
     fn tooltip_lines(&self, ui: &mut UiList, lines: &[(String, u32)]) {
+        let runs: Vec<Vec<(String, u32)>> = lines.iter().map(|line| vec![line.clone()]).collect();
+        self.tooltip_runs(ui, &runs);
+    }
+
+    /// [`Gui::tooltip_lines`] for lines made of runs in colours of their
+    /// own (a component's styled parts).
+    fn tooltip_runs(&self, ui: &mut UiList, lines: &[Vec<(String, u32)>]) {
         if lines.is_empty() {
             return;
         }
         let (mx, my) = self.mouse;
-        let width = lines
-            .iter()
-            .map(|(line, _)| self.font.width(line))
-            .fold(0.0, f32::max);
+        let line_width = |line: &Vec<(String, u32)>| {
+            line.iter()
+                .map(|(run, _)| self.font.width(run))
+                .sum::<f32>()
+        };
+        let width = lines.iter().map(line_width).fold(0.0, f32::max);
         let height = if lines.len() == 1 {
             8.0
         } else {
@@ -1159,8 +1225,12 @@ impl Gui {
             );
         }
         let mut line_y = y;
-        for (i, (line, color)) in lines.iter().enumerate() {
-            self.text(ui, line, x, line_y, rgb(*color), true);
+        for (i, line) in lines.iter().enumerate() {
+            let mut run_x = x;
+            for (run, color) in line {
+                self.text(ui, run, run_x, line_y, rgb(*color), true);
+                run_x += self.font.width(run);
+            }
             line_y += if i == 0 { 12.0 } else { 10.0 };
         }
     }

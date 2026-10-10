@@ -20,11 +20,14 @@ use crate::render::UiList;
 mod brewing_stand;
 #[path = "screens/crafter.rs"]
 mod crafter;
+#[path = "screens/enchanting.rs"]
+mod enchanting;
 #[path = "screens/furnace.rs"]
 mod furnace;
 #[path = "screens/merchant.rs"]
 mod merchant;
 
+pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
 pub use merchant::TradeList;
 
 /// The labels' colour (`-12566464`, without a shadow).
@@ -112,6 +115,7 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::Crafter => Layout::plain("crafter", 166.0, TitleX::Centred),
         // `BrewingStandScreen.init` centres the title.
         MenuKind::BrewingStand => Layout::plain("brewing_stand", 166.0, TitleX::Centred),
+        MenuKind::Enchantment => Layout::plain("enchanting_table", 166.0, TitleX::At(8.0)),
     }
 }
 
@@ -162,6 +166,10 @@ pub struct MenuView<'a> {
     pub menu: &'a (dyn Menu + Send),
     /// The trade list's state (the merchant's screen).
     pub trades: &'a TradeList,
+    /// `Player.experienceLevel` and `hasInfiniteMaterials`, for what the
+    /// player can pay (the enchanting table's rows).
+    pub xp_level: i32,
+    pub creative: bool,
 }
 
 impl Gui {
@@ -295,6 +303,7 @@ impl Gui {
             MenuKind::Merchant => self.merchant_extras(ui, packs, view, left, top),
             MenuKind::Crafter => self.crafter_extras(ui, view, left, top),
             MenuKind::BrewingStand => self.brewing_stand_extras(ui, view, left, top),
+            MenuKind::Enchantment => self.enchanting_extras(ui, view, left, top),
         }
     }
 
@@ -320,6 +329,7 @@ impl Gui {
         match view.kind {
             MenuKind::Merchant => self.merchant_tooltips(ui, view, left, top),
             MenuKind::Crafter => self.crafter_tooltip(ui, view),
+            MenuKind::Enchantment => self.enchanting_tooltip(ui, view, left, top),
             _ => {}
         }
     }
@@ -406,6 +416,7 @@ mod tests {
             MenuKind::Merchant,
             MenuKind::Crafter,
             MenuKind::BrewingStand,
+            MenuKind::Enchantment,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

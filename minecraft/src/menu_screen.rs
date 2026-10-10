@@ -24,7 +24,10 @@ use minecraftoss_player::rng::LegacyRandom;
 use serde_json::Value;
 
 use super::{Game, Input, Key};
-use crate::gui::{Gui, MenuSlotView, MenuView, Screen, SlotDrag, TradeList};
+use crate::gui::{
+    EnchantingBook, Gui, MenuSlotView, MenuView, Screen, SlotDrag, TradeList, enchanting_row_at,
+};
+use crate::render::GuiModel;
 
 /// `MouseHandler.DOUBLE_CLICK_THRESHOLD_MS`.
 const DOUBLE_CLICK_MS: u128 = 250;
@@ -123,6 +126,10 @@ pub(super) struct ClientMenu {
     /// Sounds the screen played for the player (`Player.playSound`):
     /// event, volume, pitch.
     sounds: Vec<(&'static str, f32, f32)>,
+    /// `Player.experienceLevel`, for the copies.
+    xp_level: i32,
+    /// The enchanting table screen's book.
+    book: EnchantingBook,
 }
 
 impl ClientMenu {
@@ -155,6 +162,8 @@ impl ClientMenu {
             last_quick_moved: None,
             mouse: (f32::NAN, f32::NAN),
             sounds: Vec::new(),
+            xp_level: game.xp_level(),
+            book: EnchantingBook::new(game.ticks),
         }
     }
 
@@ -164,6 +173,7 @@ impl ClientMenu {
         let mut cx = MenuContext::new(&mut self.shown, &mut random);
         cx.selected = self.selected;
         cx.creative = self.creative;
+        cx.xp_level = self.xp_level;
         f(self.menu.as_mut(), &mut cx)
     }
 
@@ -576,11 +586,59 @@ impl ClientMenu {
             data: self.menu.data(),
             menu: self.menu.as_ref(),
             trades: &self.trades,
+            xp_level: self.xp_level,
+            creative: self.creative,
         }
+    }
+
+    /// `EnchantmentScreen.mouseClicked`: a press in a row the menu would
+    /// take (`clickMenuButton` on the copy) sends its button. Whether it
+    /// did.
+    fn press_enchanting_row(&mut self, x: f32, y: f32) -> bool {
+        let Some(row) = enchanting_row_at(x, y).filter(|_| self.kind == MenuKind::Enchantment)
+        else {
+            return false;
+        };
+        if !self.with(|menu, cx| menu.click_button(cx, row)) {
+            return false;
+        }
+        self.send(MenuInput::Button(row));
+        true
     }
 }
 
 impl Game {
+    /// `Player.experienceLevel`.
+    fn xp_level(&self) -> i32 {
+        self.player.survival.experience_level.min(i32::MAX as u32) as i32
+    }
+
+    /// `containerTick`: the enchanting table's screen moves its book
+    /// (`tickBook`).
+    pub(super) fn tick_menu(&mut self) {
+        let level = self.xp_level();
+        let Some(menu) = self.menu.as_mut().filter(|menu| !menu.closed) else {
+            return;
+        };
+        menu.xp_level = level;
+        if menu.kind == MenuKind::Enchantment {
+            let offers = menu.menu.data().iter().take(3).any(|&cost| cost != 0);
+            let item = menu.item(0).cloned();
+            menu.book.tick(item.as_ref(), offers);
+        }
+    }
+
+    /// The enchanting table screen's book, drawn this frame
+    /// (`extractBook`).
+    pub(super) fn enchanting_book(&self, gui: &Gui, partial: f32) -> Option<GuiModel> {
+        let menu = self
+            .menu
+            .as_ref()
+            .filter(|menu| !menu.closed && menu.kind == MenuKind::Enchantment)?;
+        let (open, flip) = menu.book.at(partial);
+        crate::gui::book_model(&self.world.atlas, gui.scale, open, flip)
+    }
+
     /// What the server reads of the player with a use or a menu batch.
     pub(super) fn player_context(&self) -> PlayerContext {
         PlayerContext {
@@ -589,7 +647,7 @@ impl Game {
             eye: self.player.eye().to_array(),
             feet: self.player.pos.to_array(),
             creative: self.creative,
-            xp_level: self.player.survival.experience_level.min(i32::MAX as u32) as i32,
+            xp_level: self.xp_level(),
             enchantment_seed: self.enchantment_seed,
         }
     }
@@ -634,11 +692,18 @@ impl Game {
                 inventory.unlock_recipe(recipe);
             }
             // The client keeps no statistics yet: `update.stats` go unread.
-            // `giveExperienceLevels` with the levels spent, which the
-            // server only spends from a player who has them.
+            // The levels spent (`onEnchantmentPerformed`, and
+            // `giveExperienceLevels` with fewer): none below 0, where the
+            // progress and the total go too.
             let levels = u32::try_from(update.xp_levels).unwrap_or(0);
             let survival = &mut self.player.survival;
-            survival.experience_level = survival.experience_level.saturating_sub(levels);
+            if levels > survival.experience_level {
+                survival.experience_level = 0;
+                survival.experience_progress = 0.0;
+                survival.total_experience = 0;
+            } else {
+                survival.experience_level -= levels;
+            }
             if let Some(seed) = update.enchantment_seed {
                 self.enchantment_seed = seed;
             }
@@ -758,9 +823,11 @@ impl Game {
                     .map(|pressed| (Mouse::Middle, pressed)),
             )
             .collect();
+        let level = self.xp_level();
         let Some(menu) = self.menu.as_mut() else {
             return;
         };
+        menu.xp_level = level;
         let (hovered, outside) = gui.menu_slot_at(menu.kind, menu.menu.slots());
         // The trading screen's list: the wheel scrolls it, and a held
         // scroller follows the mouse (`mouseScrolled`, `mouseDragged`).
@@ -785,6 +852,7 @@ impl Game {
                 match taken {
                     Some(Some(index)) => menu.send(MenuInput::SelectTrade(index)),
                     Some(None) => {}
+                    None if menu.press_enchanting_row(mx, my) => {}
                     None => menu.press(button, hovered, outside, input.shift),
                 }
             } else {
@@ -885,6 +953,8 @@ mod tests {
             last_quick_moved: None,
             mouse: (0.0, 0.0),
             sounds: Vec::new(),
+            xp_level: 0,
+            book: EnchantingBook::new(0),
         }
     }
 
@@ -1411,5 +1481,30 @@ mod tests {
         let trader = merchant(menu.menu.as_ref()).expect("a trading menu");
         assert_eq!((trader.offers().xp, trader.future_xp()), (9, 2));
         assert_eq!(menu.item(0).map(|s| s.count), Some(25));
+    }
+
+    #[test]
+    fn an_enchanting_row_sends_its_button_when_the_copy_would_take_it() {
+        let own = vec![
+            Some(stack("minecraft:diamond_sword", 1)),
+            Some(stack("minecraft:lapis_lazuli", 2)),
+        ];
+        let mut menu = screen(MenuKind::Enchantment, own, Inventory::default());
+        for (id, cost) in [(0, 5), (1, 10), (2, 30)] {
+            menu.menu.set_data(id, cost);
+        }
+        menu.xp_level = 12;
+        // Rows of 108 by 19 from (60, 14); the third costs too much.
+        assert!(menu.press_enchanting_row(60.0, 14.0));
+        assert!(menu.press_enchanting_row(167.5, 51.5));
+        assert!(!menu.press_enchanting_row(100.0, 60.0));
+        assert!(!menu.press_enchanting_row(59.0, 20.0));
+        assert_eq!(menu.queued, [MenuInput::Button(0), MenuInput::Button(1)]);
+        // Creative pays nothing.
+        menu.creative = true;
+        assert!(menu.press_enchanting_row(100.0, 60.0));
+        // Another kind's screen has no rows.
+        let mut chest = chest(Vec::new(), Inventory::default());
+        assert!(!chest.press_enchanting_row(100.0, 20.0));
     }
 }

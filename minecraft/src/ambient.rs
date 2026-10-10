@@ -38,6 +38,25 @@ impl Level<'_> {
         self.block(pos).map_or("air", |b| b.id.path.as_str())
     }
 
+    /// `BlockState.is(tag)` (air where the world has no block).
+    fn in_tag(&self, pos: BlockPos, tag: &str) -> bool {
+        let Some(states) = self.world.scene.states() else {
+            return false;
+        };
+        let registries = states.registries();
+        let name = self.block(pos).map_or_else(
+            || "minecraft:air".to_owned(),
+            |block| format!("{}:{}", block.id.namespace, block.id.path),
+        );
+        let (Ok(tag), Some(block)) = (
+            registries.block_tags.require(tag),
+            registries.blocks.block_by_name(&name),
+        ) else {
+            return false;
+        };
+        registries.block_tags.contains(tag, usize::from(block.0))
+    }
+
     fn is_air(&self, pos: BlockPos) -> bool {
         matches!(self.path(pos), "air" | "cave_air" | "void_air")
     }
@@ -1031,33 +1050,33 @@ fn sand_ambient(emit: &mut Emit, pos: BlockPos) {
     }
 }
 
-/// `EnchantingTableBlock.animateTick`: glyphs from bookshelves around it.
+/// `EnchantingTableBlock.animateTick`: glyphs drift to the table from each
+/// bookshelf it counts (`isValidBookShelf`, by the block tags), one in
+/// sixteen each tick.
 fn enchanting_table(emit: &mut Emit, pos: BlockPos) {
-    for ox in -2..=2 {
-        for oy in 0..=1 {
-            for oz in -2..=2 {
-                if ox != 2 && ox != -2 && oz != 2 && oz != -2 {
-                    continue;
-                }
-                if emit.ni(16) != 0 {
-                    continue;
-                }
-                let shelf = emit.level.path((pos.0 + ox, pos.1 + oy, pos.2 + oz)) == "bookshelf";
-                let between = (pos.0 + ox / 2, pos.1 + oy, pos.2 + oz / 2);
-                if shelf && (emit.level.is_air(between) || emit.level.boxes(between).is_empty()) {
-                    let motion = DVec3::new(
-                        f64::from(ox) + f64::from(emit.rf()) - 0.5,
-                        f64::from(oy) - f64::from(emit.rf()) - 1.0,
-                        f64::from(oz) + f64::from(emit.rf()) - 0.5,
-                    );
-                    emit.spawn(
-                        Type::Enchant,
-                        corner(pos) + DVec3::new(0.5, 2.0, 0.5),
-                        motion,
-                    );
-                }
-            }
+    use minecraftoss_player::menu::enchanting::{bookshelf_offsets, is_valid_bookshelf};
+    let at = |[x, y, z]: [i32; 3]| (pos.0 + x, pos.1 + y, pos.2 + z);
+    for offset in bookshelf_offsets() {
+        if emit.ni(16) != 0 {
+            continue;
         }
+        let level = &emit.level;
+        let provider = |o| level.in_tag(at(o), "minecraft:enchantment_power_provider");
+        let transmitter = |o| level.in_tag(at(o), "minecraft:enchantment_power_transmitter");
+        if !is_valid_bookshelf(offset, provider, transmitter) {
+            continue;
+        }
+        let [ox, oy, oz] = offset;
+        let motion = DVec3::new(
+            f64::from(ox) + f64::from(emit.rf()) - 0.5,
+            f64::from(oy) - f64::from(emit.rf()) - 1.0,
+            f64::from(oz) + f64::from(emit.rf()) - 0.5,
+        );
+        emit.spawn(
+            Type::Enchant,
+            corner(pos) + DVec3::new(0.5, 2.0, 0.5),
+            motion,
+        );
     }
 }
 

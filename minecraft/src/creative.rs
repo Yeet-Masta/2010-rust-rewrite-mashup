@@ -466,26 +466,47 @@ pub fn tooltip(language: &HashMap<String, String>, stack: &ItemStack) -> Vec<(St
             continue;
         };
         for (enchantment, level) in map {
-            let info = &tables["enchantments"][enchantment.as_str()];
-            let mut line = translate(
+            lines.push(enchantment_name(
                 language,
-                &format!("enchantment.{}", enchantment.replace(':', ".")),
-                &[],
-            );
-            let level = level.as_i64().unwrap_or(1);
-            // `Enchantment.getFullname`.
-            if level != 1 || info["max"].as_i64() != Some(1) {
-                line.push(' ');
-                line.push_str(&translate(
-                    language,
-                    &format!("enchantment.level.{level}"),
-                    &[],
-                ));
-            }
-            lines.push((line, if info["curse"] == true { RED } else { GRAY }));
+                enchantment,
+                level.as_i64().unwrap_or(1),
+            ));
         }
     }
     lines
+}
+
+/// `Enchantment.getFullname`: the enchantment's name, and its level's
+/// numeral unless it has only the one level, red for a curse and grey
+/// otherwise.
+pub fn enchantment_name(
+    language: &HashMap<String, String>,
+    enchantment: &str,
+    level: i64,
+) -> (String, u32) {
+    let info = &data().tables["enchantments"][enchantment];
+    let mut line = translate(
+        language,
+        &format!("enchantment.{}", enchantment.replace(':', ".")),
+        &[],
+    );
+    if level != 1 || info["max"].as_i64() != Some(1) {
+        line.push(' ');
+        line.push_str(&translate(
+            language,
+            &format!("enchantment.level.{level}"),
+            &[],
+        ));
+    }
+    (line, if info["curse"] == true { RED } else { GRAY })
+}
+
+/// The enchantment with a registry id: the registry holds them in their
+/// identifiers' order, as the table lists them.
+pub fn enchantment_by_id(id: i32) -> Option<&'static str> {
+    let index = usize::try_from(id).ok()?;
+    let enchantments = data().tables["enchantments"].as_object()?;
+    enchantments.keys().nth(index).map(String::as_str)
 }
 
 /// Whether the search tab's text finds a stack (`FullTextSearchTree`):

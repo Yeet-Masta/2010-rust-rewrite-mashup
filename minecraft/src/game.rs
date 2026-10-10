@@ -256,16 +256,15 @@ impl Game {
             .as_ref()
             .map_or_else(Vec::new, |saved| saved.ender.clone());
         // `Player.readAdditionalSaveData`: a saved seed of 0 becomes a
-        // random one.
+        // random one, as does a new world's.
         let enchantment_seed = match saved.as_ref().map(|saved| saved.enchantment_seed) {
-            Some(0) => {
+            Some(0) | None => {
                 let nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos() as u64);
                 minecraftoss_player::rng::LegacyRandom::new(nanos).next_i32()
             }
             Some(seed) => seed,
-            None => 0,
         };
         let mut game = Self {
             world,
@@ -1145,6 +1144,7 @@ impl Game {
             });
         }
         self.entities.tick_scene(&self.world.scene);
+        self.tick_menu();
         // `ClientLevel.animateTick`, then `ParticleEngine.tick`.
         let mut sounds = Vec::new();
         if self.landed {
@@ -2266,6 +2266,10 @@ impl Game {
                 gui.creative_screen(&mut ui, packs, &view);
             }
             Screen::Menu => {
+                let partial = (self.clock / TICK_SECONDS) as f32;
+                if let Some(book) = self.enchanting_book(gui, partial) {
+                    ui.model = Some(book);
+                }
                 if let Some(view) = self.menu_view(gui) {
                     gui.menu_screen(&mut ui, packs, &view);
                 }
