@@ -177,6 +177,45 @@ struct BrewingEntry {
     output: ItemStack,
 }
 
+/// What a smithing recipe makes of its base.
+#[derive(Debug)]
+enum SmithingKind {
+    /// `smithing_transform`: its result, with the base's components.
+    Transform(ItemStack),
+    /// `smithing_trim`: the base with a `trim` of this pattern.
+    Trim(String),
+}
+
+/// A `minecraft:smithing_transform` or `minecraft:smithing_trim` recipe
+/// (`SmithingRecipe`): an optional template and addition, and a base.
+#[derive(Debug)]
+struct SmithingEntry {
+    id: String,
+    template: Option<Ingredient>,
+    base: Ingredient,
+    addition: Option<Ingredient>,
+    kind: SmithingKind,
+}
+
+/// The trim material an item provides (`DataComponents.PROVIDES_TRIM_MATERIAL`,
+/// which `Items` gives the `#trim_materials`).
+pub fn trim_material(item: &str) -> Option<&'static str> {
+    Some(match item {
+        "minecraft:amethyst_shard" => "minecraft:amethyst",
+        "minecraft:copper_ingot" => "minecraft:copper",
+        "minecraft:diamond" => "minecraft:diamond",
+        "minecraft:emerald" => "minecraft:emerald",
+        "minecraft:gold_ingot" => "minecraft:gold",
+        "minecraft:iron_ingot" => "minecraft:iron",
+        "minecraft:lapis_lazuli" => "minecraft:lapis",
+        "minecraft:netherite_ingot" => "minecraft:netherite",
+        "minecraft:quartz" => "minecraft:quartz",
+        "minecraft:redstone" => "minecraft:redstone",
+        "minecraft:resin_brick" => "minecraft:resin",
+        _ => return None,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct CookingRecipeRef<'a> {
     pub id: &'a str,
@@ -191,6 +230,8 @@ pub struct RecipeBook {
     smelting: Vec<SmeltingEntry>,
     /// The brewing recipes, in file-name order.
     brewing: Vec<BrewingEntry>,
+    /// The smithing recipes, in file-name order.
+    smithing: Vec<SmithingEntry>,
     tags: HashMap<String, Vec<String>>,
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
@@ -252,9 +293,18 @@ impl RecipeBook {
         let mut recipes = Vec::new();
         let mut smelting = Vec::new();
         let mut brewing = Vec::new();
+        let mut smithing = Vec::new();
         for (name, value) in raw_recipes {
             if value.get("type").and_then(Value::as_str) == Some("minecraft:brewing") {
                 brewing.extend(parse_brewing(&value));
+                continue;
+            }
+            let id = || {
+                let path = name.trim_start_matches("data/minecraft/recipe/");
+                format!("minecraft:{}", path.trim_end_matches(".json"))
+            };
+            if let Some(entry) = parse_smithing(id(), &value) {
+                smithing.push(entry);
                 continue;
             }
             let cooking_kind = match value.get("type").and_then(Value::as_str) {
@@ -332,6 +382,7 @@ impl RecipeBook {
             recipes,
             smelting,
             brewing,
+            smithing,
             tags,
             auto_unlocks,
             display_indices: HashMap::new(),
@@ -662,6 +713,97 @@ impl RecipeBook {
             .iter()
             .any(|entry| self.matches_ingredient(&entry.input.item, &stack.id))
             || self.item_in_tag("minecraft:brewing_potion_inputs", &stack.id)
+    }
+
+    /// How many smithing recipes the book has.
+    pub fn smithing_count(&self) -> usize {
+        self.smithing.len()
+    }
+
+    /// `Ingredient.testOptionalIngredient`: an ingredient takes its item,
+    /// and none takes only nothing.
+    fn optional_matches(&self, ingredient: Option<&Ingredient>, stack: Option<&ItemStack>) -> bool {
+        match (ingredient, stack) {
+            (Some(ingredient), Some(stack)) => self.matches_ingredient(ingredient, &stack.id),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// `RecipeManager.getRecipeFor(SMITHING, SmithingRecipeInput)` and
+    /// `assemble`: the first smithing recipe the inputs match, and what it
+    /// makes, if anything (a trim the base has already makes nothing).
+    pub fn smithing_result(
+        &self,
+        template: Option<&ItemStack>,
+        base: Option<&ItemStack>,
+        addition: Option<&ItemStack>,
+    ) -> Option<(&str, ItemStack)> {
+        let base = base?;
+        let entry = self.smithing.iter().find(|entry| {
+            self.optional_matches(entry.template.as_ref(), template)
+                && self.matches_ingredient(&entry.base, &base.id)
+                && self.optional_matches(entry.addition.as_ref(), addition)
+        })?;
+        let result = match &entry.kind {
+            // `TransmuteRecipe.createWithOriginalComponents`.
+            SmithingKind::Transform(result) => ItemStack {
+                max: self.max_stack(&result.id),
+                components: base.components.clone(),
+                ..result.clone()
+            },
+            // `SmithingTrimRecipe.applyTrim`.
+            SmithingKind::Trim(pattern) => {
+                let material = trim_material(&addition?.id)?;
+                let trim = serde_json::json!({"material": material, "pattern": pattern});
+                let existing = base
+                    .components
+                    .as_ref()
+                    .and_then(|patch| patch.get("minecraft:trim"));
+                if existing == Some(&trim) {
+                    return None;
+                }
+                let mut trimmed = ItemStack {
+                    count: 1,
+                    ..base.clone()
+                };
+                let patch = trimmed
+                    .components
+                    .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if let Some(patch) = patch.as_object_mut() {
+                    patch.insert("minecraft:trim".to_owned(), trim);
+                }
+                trimmed
+            }
+        };
+        Some((entry.id.as_str(), result))
+    }
+
+    /// The `smithing_template` recipe property set.
+    pub fn is_smithing_template(&self, stack: &ItemStack) -> bool {
+        self.smithing.iter().any(|entry| {
+            entry
+                .template
+                .as_ref()
+                .is_some_and(|template| self.matches_ingredient(template, &stack.id))
+        })
+    }
+
+    /// The `smithing_base` recipe property set.
+    pub fn is_smithing_base(&self, stack: &ItemStack) -> bool {
+        self.smithing
+            .iter()
+            .any(|entry| self.matches_ingredient(&entry.base, &stack.id))
+    }
+
+    /// The `smithing_addition` recipe property set.
+    pub fn is_smithing_addition(&self, stack: &ItemStack) -> bool {
+        self.smithing.iter().any(|entry| {
+            entry
+                .addition
+                .as_ref()
+                .is_some_and(|addition| self.matches_ingredient(addition, &stack.id))
+        })
     }
 
     /// The item's `brewing_fuel` component: its uses and speed multiplier.
@@ -1139,6 +1281,23 @@ fn parse_brewing(value: &Value) -> Option<BrewingEntry> {
     })
 }
 
+/// A `smithing_transform` (`template`, `base`, `addition`, `result`) or
+/// `smithing_trim` (the three and `pattern`) recipe.
+fn parse_smithing(id: String, value: &Value) -> Option<SmithingEntry> {
+    let kind = match value.get("type")?.as_str()? {
+        "minecraft:smithing_transform" => SmithingKind::Transform(parse_result(value)?),
+        "minecraft:smithing_trim" => SmithingKind::Trim(value.get("pattern")?.as_str()?.to_owned()),
+        _ => return None,
+    };
+    Some(SmithingEntry {
+        id,
+        template: value.get("template").and_then(Ingredient::parse),
+        base: Ingredient::parse(value.get("base")?)?,
+        addition: value.get("addition").and_then(Ingredient::parse),
+        kind,
+    })
+}
+
 fn parse_result(value: &Value) -> Option<ItemStack> {
     let result = value.get("result")?;
     let id = result.get("id")?.as_str()?;
@@ -1326,6 +1485,56 @@ mod tests {
         assert_eq!(swift, Some(potion("minecraft:lingering_potion", "minecraft:swiftness")));
         let breath = ItemStack::new("minecraft:dragon_breath", 1);
         assert!(book.is_brewing_reagent(&breath) && book.is_potion_input(&ItemStack::new("minecraft:glass_bottle", 1)));
+    }
+
+    #[test]
+    fn the_games_smithing_recipes_load_when_available() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert_eq!(book.smithing_count(), 12 + 18);
+        // The upgrade keeps the sword's components on its netherite one.
+        let upgrade = ItemStack::new("minecraft:netherite_upgrade_smithing_template", 1);
+        let mut sword = ItemStack::new("minecraft:diamond_sword", 1);
+        sword.components = Some(serde_json::json!({"minecraft:damage": 5}));
+        let ingot = ItemStack::new("minecraft:netherite_ingot", 1);
+        let (id, result) = book
+            .smithing_result(Some(&upgrade), Some(&sword), Some(&ingot))
+            .unwrap();
+        assert_eq!(id, "minecraft:netherite_sword_smithing");
+        assert_eq!(
+            (result.id.as_str(), &result.components),
+            ("minecraft:netherite_sword", &sword.components)
+        );
+        assert_eq!(
+            book.smithing_result(None, Some(&sword), Some(&ingot)),
+            None,
+            "no template"
+        );
+        // A trim of the addition's material, once.
+        let coast = ItemStack::new("minecraft:coast_armor_trim_smithing_template", 1);
+        let helmet = ItemStack::new("minecraft:iron_helmet", 1);
+        let redstone = ItemStack::new("minecraft:redstone", 1);
+        let (_, trimmed) = book
+            .smithing_result(Some(&coast), Some(&helmet), Some(&redstone))
+            .unwrap();
+        let trim = serde_json::json!({"minecraft:trim": {"material": "minecraft:redstone", "pattern": "minecraft:coast"}});
+        assert_eq!(trimmed.components, Some(trim));
+        assert_eq!(
+            book.smithing_result(Some(&coast), Some(&trimmed), Some(&redstone)),
+            None
+        );
+        assert!(
+            book.is_smithing_template(&coast)
+                && book.is_smithing_base(&helmet)
+                && book.is_smithing_addition(&redstone)
+        );
+        assert!(!book.is_smithing_base(&ItemStack::new("minecraft:stone", 1)));
     }
 
     #[test]

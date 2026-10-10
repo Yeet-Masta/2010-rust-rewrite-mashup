@@ -28,10 +28,13 @@ mod enchanting;
 mod furnace;
 #[path = "screens/merchant.rs"]
 mod merchant;
+#[path = "screens/smithing.rs"]
+mod smithing;
 
 pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
 pub use merchant::TradeList;
+pub use smithing::SmithingIcons;
 
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
@@ -63,6 +66,8 @@ pub struct Layout {
     /// (u, v), w by h.
     blits: Vec<[f32; 6]>,
     title_x: TitleX,
+    /// `titleLabelY`.
+    title_y: f32,
     /// `inventoryLabelX` and `inventoryLabelY`.
     inventory_label: (f32, f32),
 }
@@ -77,6 +82,7 @@ impl Layout {
             background,
             blits: vec![[0.0, 0.0, 0.0, 0.0, 176.0, height]],
             title_x,
+            title_y: 6.0,
             inventory_label: (8.0, height - 94.0),
         }
     }
@@ -122,6 +128,11 @@ pub fn layout(kind: MenuKind) -> Layout {
         // `AnvilScreen`: the title at 60.
         MenuKind::Anvil => Layout::plain("anvil", 166.0, TitleX::At(60.0)),
         MenuKind::Grindstone => Layout::plain("grindstone", 166.0, TitleX::At(8.0)),
+        // `SmithingScreen`: the title at (44, 15).
+        MenuKind::Smithing => Layout {
+            title_y: 15.0,
+            ..Layout::plain("smithing", 166.0, TitleX::At(44.0))
+        },
     }
 }
 
@@ -178,6 +189,9 @@ pub struct MenuView<'a> {
     pub creative: bool,
     /// The anvil's name box: its text, and whether its cursor shows.
     pub name: Option<(&'a str, bool)>,
+    /// Empty slots' cycling icons (`CyclingSlotBackground`): the slot, the
+    /// sprite and its alpha.
+    pub slot_icons: Vec<(usize, &'static str, f32)>,
 }
 
 impl Gui {
@@ -227,7 +241,8 @@ impl Gui {
             TitleX::Centred => ((layout.width - self.font.width(&view.title)) / 2.0).trunc(),
             TitleX::CentredOn(x) => x - (self.font.width(&view.title) / 2.0).floor(),
         };
-        self.text(ui, &view.title, left + title_x, top + 6.0, label, false);
+        let title_y = top + layout.title_y;
+        self.text(ui, &view.title, left + title_x, title_y, label, false);
         let inventory = crate::creative::translate(&self.language, "container.inventory", &[]);
         let (x, y) = layout.inventory_label;
         self.text(ui, &inventory, left + x, top + y, label, false);
@@ -321,6 +336,7 @@ impl Gui {
                     self.sprite(ui, "grindstone_error", left + 92.0, top + 31.0, 28.0, 21.0);
                 }
             }
+            MenuKind::Smithing => self.smithing_extras(ui, view, left, top),
         }
     }
 
@@ -347,6 +363,7 @@ impl Gui {
             MenuKind::Merchant => self.merchant_tooltips(ui, view, left, top),
             MenuKind::Crafter => self.crafter_tooltip(ui, view),
             MenuKind::Enchantment => self.enchanting_tooltip(ui, view, left, top),
+            MenuKind::Smithing => self.smithing_tooltip(ui, view, left, top),
             _ => {}
         }
     }
@@ -436,6 +453,7 @@ mod tests {
             MenuKind::Enchantment,
             MenuKind::Anvil,
             MenuKind::Grindstone,
+            MenuKind::Smithing,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

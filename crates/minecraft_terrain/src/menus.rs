@@ -67,6 +67,7 @@ use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu,
 use minecraftoss_player::menu::enchanting::{self, EnchantingTable, TableAccess};
 use minecraftoss_player::menu::anvil::{self, AnvilMenu, EnchantmentRules};
 use minecraftoss_player::menu::GrindstoneMenu;
+use minecraftoss_player::menu::SmithingMenu;
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -115,6 +116,8 @@ pub enum MenuKind {
     Anvil,
     /// `grindstone` (`GrindstoneMenu`).
     Grindstone,
+    /// `smithing` (`SmithingMenu`).
+    Smithing,
 }
 
 impl MenuKind {
@@ -139,6 +142,7 @@ impl MenuKind {
             Self::Enchantment => "minecraft:enchantment",
             Self::Anvil => "minecraft:anvil",
             Self::Grindstone => "minecraft:grindstone",
+            Self::Smithing => "minecraft:smithing",
         }
     }
 
@@ -159,6 +163,7 @@ impl MenuKind {
             Self::Enchantment => Box::new(EnchantmentMenu::new(own)),
             Self::Anvil => Box::new(AnvilMenu::new(own)),
             Self::Grindstone => Box::new(GrindstoneMenu::new(own)),
+            Self::Smithing => Box::new(SmithingMenu::new(own)),
         }
     }
 }
@@ -263,6 +268,8 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
     } else if let Some(grindstone) = any.downcast_mut::<GrindstoneMenu>() {
         grindstone.set_rules(Some(rules));
         grindstone.set_at_block(at_block);
+    } else if let Some(smithing) = any.downcast_mut::<SmithingMenu>() {
+        smithing.set_at_block(at_block);
     }
 }
 
@@ -528,6 +535,7 @@ enum MenuBlock {
     EnchantingTable,
     Anvil,
     Grindstone,
+    SmithingTable,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -547,6 +555,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("EnchantingTableBlock", MenuBlock::EnchantingTable),
     ("AnvilBlock", MenuBlock::Anvil),
     ("GrindstoneBlock", MenuBlock::Grindstone),
+    ("SmithingTableBlock", MenuBlock::SmithingTable),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -973,6 +982,7 @@ impl ServerSim {
             }
             MenuBlock::Anvil => station(MenuKind::Anvil, "container.repair", "interact_with_anvil"),
             MenuBlock::Grindstone => station(MenuKind::Grindstone, "container.grindstone_title", "interact_with_grindstone"),
+            MenuBlock::SmithingTable => station(MenuKind::Smithing, "container.upgrade", "interact_with_smithing_table"),
         }
     }
 
@@ -2392,6 +2402,40 @@ mod tests {
         }
         assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
         assert_eq!(items(&server, pos)[0], None);
+    }
+
+    #[test]
+    fn a_smithing_table_upgrades_to_netherite_keeping_the_components() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        if cooking(&mut server, &mut inventory).is_none() {
+            return;
+        }
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:smithing_table"));
+        let mut sword = stack("minecraft:diamond_sword", 1, 1);
+        sword.components = Some(json!({"minecraft:damage": 7, "minecraft:custom_name": "Edge"}));
+        inventory.slots[0] = Some(stack("minecraft:netherite_upgrade_smithing_template", 2, 64));
+        inventory.slots[1] = Some(sword.clone());
+        inventory.slots[2] = Some(stack("minecraft:netherite_ingot", 1, 64));
+        inventory.slots[3] = Some(stack("minecraft:stone", 1, 64));
+        let (result, updates) = server.use_block_with(pos, "north", player(&inventory));
+        assert_eq!(result.stats, vec![("minecraft:custom".to_owned(), "minecraft:interact_with_smithing_table".to_owned(), 1)]);
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Smithing, title: json!({"translate": "container.upgrade"}) }));
+        // Each shift-click finds its input; stone fits none, and stays.
+        let inputs: Vec<MenuInput> = (31..35).map(|slot| click(slot, ContainerInput::QuickMove)).collect();
+        let update = server.menu_batch(opening.id, 1, &inputs, player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(inventory.slots[3], Some(stack("minecraft:stone", 1, 64)));
+        let upgraded = update.slots[3].clone().expect("a netherite sword");
+        assert_eq!((upgraded.id.as_str(), &upgraded.components, update.data[0]), ("minecraft:netherite_sword", &sword.components, 0));
+        server.take_level_events();
+        let update = server.menu_batch(opening.id, 2, &[click(3, ContainerInput::Pickup)], player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(inventory.cursor, Some(upgraded));
+        assert_eq!(update.slots, [Some(stack("minecraft:netherite_upgrade_smithing_template", 1, 64)), None, None, None]);
+        assert_eq!(server.take_level_events(), [(pos, 1044, 0)]);
     }
 
     #[test]

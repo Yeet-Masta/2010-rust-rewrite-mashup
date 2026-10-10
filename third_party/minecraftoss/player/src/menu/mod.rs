@@ -28,6 +28,7 @@ pub mod crafter;
 pub mod enchanting;
 pub mod furnace;
 pub mod grindstone;
+pub mod smithing;
 pub mod storage;
 #[cfg(test)]
 mod tests;
@@ -38,6 +39,7 @@ pub use crafter::CrafterMenu;
 pub use enchanting::EnchantmentMenu;
 pub use furnace::FurnaceMenu;
 pub use grindstone::GrindstoneMenu;
+pub use smithing::SmithingMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
 /// `AbstractContainerMenu.SLOT_CLICKED_OUTSIDE`: a click outside the window.

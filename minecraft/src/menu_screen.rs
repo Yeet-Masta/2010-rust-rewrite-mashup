@@ -25,8 +25,8 @@ use serde_json::Value;
 
 use super::{Game, Input, Key};
 use crate::gui::{
-    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, Screen, SlotDrag, TradeList,
-    enchanting_row_at,
+    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, Screen, SlotDrag, SmithingIcons,
+    TradeList, enchanting_row_at,
 };
 use crate::render::GuiModel;
 
@@ -133,6 +133,8 @@ pub(super) struct ClientMenu {
     book: EnchantingBook,
     /// The anvil screen's name box.
     name: NameBox,
+    /// The smithing screen's cycling icons.
+    smithing: SmithingIcons,
 }
 
 impl ClientMenu {
@@ -172,6 +174,7 @@ impl ClientMenu {
             xp_level: game.xp_level(),
             book: EnchantingBook::new(game.ticks),
             name: NameBox::default(),
+            smithing: SmithingIcons::default(),
         }
     }
 
@@ -519,7 +522,7 @@ impl ClientMenu {
 
     /// What the screen draws: each slot as `extractSlot` shows it, and the
     /// carried stack as `extractCarriedItem` does.
-    fn view<'a>(&'a self, title: String, hovered: Option<usize>) -> MenuView<'a> {
+    fn view<'a>(&'a self, title: String, hovered: Option<usize>, partial: f32) -> MenuView<'a> {
         let carried = self.shown.cursor.as_ref();
         let dragging = self.quick.button.is_some() && carried.is_some();
         let size = self.quick.slots.len();
@@ -598,6 +601,12 @@ impl ClientMenu {
             creative: self.creative,
             name: (self.kind == MenuKind::Anvil)
                 .then(|| (self.name.text.as_str(), self.name.cursor())),
+            slot_icons: if self.kind == MenuKind::Smithing {
+                self.smithing
+                    .shown(partial, |slot| self.item(slot).is_none())
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -680,6 +689,10 @@ impl Game {
             let offers = menu.menu.data().iter().take(3).any(|&cost| cost != 0);
             let item = menu.item(0).cloned();
             menu.book.tick(item.as_ref(), offers);
+        }
+        if menu.kind == MenuKind::Smithing {
+            let template = menu.item(0).cloned();
+            menu.smithing.tick(template.as_ref());
         }
     }
 
@@ -962,7 +975,8 @@ impl Game {
             None => menu.title.clone(),
         };
         let title = crate::creative::text(gui.language(), &title);
-        Some(menu.view(title, hovered))
+        let partial = (self.clock / super::TICK_SECONDS) as f32;
+        Some(menu.view(title, hovered, partial))
     }
 
     /// The inventory as the screen shows it (the HUD's under it).
@@ -1018,6 +1032,7 @@ mod tests {
             xp_level: 0,
             book: EnchantingBook::new(0),
             name: NameBox::default(),
+            smithing: SmithingIcons::default(),
         }
     }
 
@@ -1089,7 +1104,7 @@ mod tests {
         menu.press(Mouse::Left, Some(0), false, false);
         menu.drag_over((1.0, 0.0), Some(0));
         // One slot so far: drawn not at all.
-        let view = menu.view(String::new(), None);
+        let view = menu.view(String::new(), None, 0.0);
         assert_eq!(view.slots[0].drag, SlotDrag::Hidden);
         menu.drag_over((2.0, 0.0), Some(1));
         menu.drag_over((3.0, 0.0), Some(2));
@@ -1097,7 +1112,7 @@ mod tests {
         menu.drag_over((3.0, 0.0), Some(3));
         assert_eq!(menu.quick.slots, [0, 1, 2]);
         // 10 / 3 each; the full stack takes only 2 more, in yellow.
-        let view = menu.view(String::new(), None);
+        let view = menu.view(String::new(), None, 0.0);
         assert_eq!(view.slots[0].drag, SlotDrag::Preview(None));
         assert_eq!(view.slots[0].stack.as_ref().map(|s| s.count), Some(3));
         assert_eq!(view.slots[1].drag, SlotDrag::Preview(Some(64)));
@@ -1138,7 +1153,7 @@ mod tests {
             menu.predict(&inventory);
             menu.prune_drag();
             assert_eq!(menu.quick.slots, [1]);
-            let view = menu.view(String::new(), None);
+            let view = menu.view(String::new(), None, 0.0);
             assert_eq!(view.slots[1].drag, SlotDrag::Hidden);
             assert_eq!(view.carried.as_ref().map(|s| s.count), Some(10));
             menu.release(button, Some(1), false, false);

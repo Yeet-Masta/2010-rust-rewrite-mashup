@@ -16,8 +16,8 @@ use crate::render::{Renderer, TextureId, UiList};
 #[path = "menu_gui.rs"]
 mod menu_gui;
 pub use menu_gui::{
-    EnchantingBook, MenuSlotView, MenuView, NameBox, SlotDrag, TradeList, anvil_name_to_send,
-    anvil_renames, book_model, enchanting_row_at,
+    EnchantingBook, MenuSlotView, MenuView, NameBox, SlotDrag, SmithingIcons, TradeList,
+    anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
 };
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
@@ -403,6 +403,13 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/grindstone/error",
         0.0,
     ),
+    // The smithing table (`SmithingScreen`).
+    ("smithing", "gui/container/smithing", 0.0),
+    (
+        "smithing_error",
+        "gui/sprites/container/smithing/error",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
@@ -412,6 +419,26 @@ const SLOT_ICONS: &[&str] = &[
     "container/slot/potion",
     "container/slot/brewing_fuel",
     "container/slot/lapis_lazuli",
+    // The smithing table's cycling icons (`SmithingTemplateItem`).
+    "container/slot/smithing_template_armor_trim",
+    "container/slot/smithing_template_netherite_upgrade",
+    "container/slot/helmet",
+    "container/slot/chestplate",
+    "container/slot/leggings",
+    "container/slot/boots",
+    "container/slot/sword",
+    "container/slot/pickaxe",
+    "container/slot/axe",
+    "container/slot/hoe",
+    "container/slot/shovel",
+    "container/slot/spear",
+    "container/slot/nautilus_armor",
+    "container/slot/ingot",
+    "container/slot/redstone_dust",
+    "container/slot/quartz",
+    "container/slot/diamond",
+    "container/slot/emerald",
+    "container/slot/amethyst_shard",
 ];
 
 impl Gui {
