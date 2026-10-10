@@ -464,6 +464,17 @@ impl Level<'_> {
         std::mem::take(&mut self.sounds)
     }
 
+    /// `Level.levelEvent(id, pos, data)`, from no player: for the clients
+    /// near, whose `LevelEventHandler` plays its sound or particles.
+    pub fn level_event(&mut self, id: i32, pos: BlockPos, data: i32) {
+        self.level_events.push((pos, id, data));
+    }
+
+    /// The level events since the last call: position, event id, data.
+    pub fn take_level_events(&mut self) -> Vec<(BlockPos, i32, i32)> {
+        std::mem::take(&mut self.level_events)
+    }
+
     /// The block events the clients hear of, since the last call.
     pub fn take_sent_block_events(&mut self) -> Vec<SentBlockEvent> {
         std::mem::take(&mut self.sent_block_events)

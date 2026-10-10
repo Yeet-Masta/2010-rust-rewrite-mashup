@@ -649,6 +649,8 @@ impl Level<'_> {
                     self.shulker_tick(pos);
                 } else if self.is_a(state, "AbstractFurnaceBlock") {
                     self.furnace_tick(pos);
+                } else if self.is_a(state, "CrafterBlock") {
+                    self.crafter_tick(pos);
                 }
             }
             i += 1;

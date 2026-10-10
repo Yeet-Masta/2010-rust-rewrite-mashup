@@ -25,6 +25,11 @@
 //! entity pay the recipes' experience (`awardUsedRecipesAndPopExperience`).
 //! The level's furnaces cook from the recipe book ([`BookCooking`]).
 //!
+//! A crafter's menu shows its slots' states and `triggered` as its data
+//! values, and what its grid crafts as a tenth slot, read with the grid;
+//! a slot toggled in it is toggled in the block entity. The level's
+//! crafters craft from the recipe book too.
+//!
 //! A villager's trading screen ([`MenuKind::Merchant`]) opens from the
 //! use of the villager (`openTradingScreen`). Its own slots are the menu's
 //! (`MerchantContainer`), and it shows the villager's offers, which it reads
@@ -47,10 +52,11 @@ use minecraftoss_entities::merchant::{MerchantMenu, Offers};
 use minecraftoss_entities::tempt::PlayerCandidate;
 use minecraftoss_player::inventory::Inventory;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
-use minecraftoss_player::menu::{self, BlockRequest, ChestMenu, DispenserMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
+use minecraftoss_player::menu::{self, BlockRequest, ChestMenu, CrafterMenu, DispenserMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
+use minecraftoss_world::level::crafter::Crafting;
 use minecraftoss_world::level::furnace::{Cooking, CookingRecipe, CookingType};
 use minecraftoss_world::level::openers::ContainerUser;
 use minecraftoss_world::level::physics::Aabb;
@@ -84,6 +90,8 @@ pub enum MenuKind {
     Smoker,
     /// `merchant` (`MerchantMenu`): a villager's trades.
     Merchant,
+    /// `crafter_3x3` (`CrafterMenu`).
+    Crafter,
 }
 
 impl MenuKind {
@@ -103,6 +111,7 @@ impl MenuKind {
             Self::BlastFurnace => "minecraft:blast_furnace",
             Self::Smoker => "minecraft:smoker",
             Self::Merchant => "minecraft:merchant",
+            Self::Crafter => "minecraft:crafter_3x3",
         }
     }
 
@@ -118,6 +127,7 @@ impl MenuKind {
             Self::BlastFurnace => Box::new(FurnaceMenu::new(CookingKind::BlastFurnace, own)),
             Self::Smoker => Box::new(FurnaceMenu::new(CookingKind::Smoker, own)),
             Self::Merchant => Box::new(MerchantMenu::new(own)),
+            Self::Crafter => Box::new(CrafterMenu::new(own)),
         }
     }
 }
@@ -194,6 +204,11 @@ pub fn merchant(menu: &(dyn Menu + Send)) -> Option<&MerchantMenu> {
     menu.as_any()?.downcast_ref()
 }
 
+/// The crafter's menu behind a menu, if it is one.
+pub fn crafter(menu: &(dyn Menu + Send)) -> Option<&CrafterMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
 fn merchant_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut MerchantMenu> {
     menu.as_any_mut()?.downcast_mut()
 }
@@ -256,7 +271,7 @@ pub(crate) struct Menus {
     random: LegacyRandom,
     /// The level events the menus made at their blocks since the client
     /// last heard of them: position, event id.
-    level_events: Vec<(BlockPos, i32)>,
+    level_events: Vec<(BlockPos, i32, i32)>,
 }
 
 impl Default for Menus {
@@ -330,6 +345,7 @@ enum MenuBlock {
     Furnace,
     BlastFurnace,
     Smoker,
+    Crafter,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -344,6 +360,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("FurnaceBlock", MenuBlock::Furnace),
     ("BlastFurnaceBlock", MenuBlock::BlastFurnace),
     ("SmokerBlock", MenuBlock::Smoker),
+    ("CrafterBlock", MenuBlock::Crafter),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -358,6 +375,8 @@ struct Target {
     kind: MenuKind,
     source: Source,
     title: Value,
+    /// The statistic the use counts (`awardStat`); empty for a block that
+    /// counts none (the crafter).
     stat: &'static str,
     locked_by: Vec<LevelPos>,
     /// Where the locked sound plays.
@@ -500,6 +519,18 @@ impl Cooking for BookCooking {
     }
 }
 
+impl Crafting for BookCooking {
+    /// `RecipeBook::matching` over the grid, and each stack's crafting
+    /// remainder (`CraftingRecipe.defaultCraftingReminder`).
+    fn craft(&self, grid: &[LevelStack]) -> Option<(LevelStack, Vec<LevelStack>)> {
+        let max = |id: &str| i32::from(self.0.max_stack(id));
+        let grid: Vec<Option<PlayerStack>> = grid.iter().map(|stack| stacks::to_player(stack, max)).collect();
+        let result = self.0.matching(&grid, 3, 3)?;
+        let remainders = grid.iter().flatten().filter_map(|stack| self.0.crafting_remainder(&stack.id)).map(|stack| stacks::to_level(&stack)).collect();
+        Some((stacks::to_level(&result), remainders))
+    }
+}
+
 /// A menu context for the player.
 fn context<'a>(inventory: &'a mut Inventory, random: &'a mut LegacyRandom, player: &PlayerContext) -> MenuContext<'a> {
     let mut cx = MenuContext::new(inventory, random);
@@ -554,7 +585,9 @@ impl ServerSim {
         self.update_sitting_cats();
         let Some(target) = self.menu_target(block, at) else { return (result, Vec::new()) };
         // `openMenu` runs, and the block counts the use.
-        result.stats.push((minecraftoss_player::statistics::CUSTOM.to_owned(), format!("minecraft:{}", target.stat), 1));
+        if !target.stat.is_empty() {
+            result.stats.push((minecraftoss_player::statistics::CUSTOM.to_owned(), format!("minecraft:{}", target.stat), 1));
+        }
         let mut inventory = std::mem::take(&mut player.inventory);
         let mut updates: Vec<MenuUpdate> = self.close_for_open(&mut inventory, &player).into_iter().collect();
         // `BaseContainerBlockEntity.createMenu`: a lock the hand does not
@@ -710,6 +743,7 @@ impl ServerSim {
             MenuBlock::Furnace => single(MenuKind::Furnace, "container.furnace", "interact_with_furnace"),
             MenuBlock::BlastFurnace => single(MenuKind::BlastFurnace, "container.blast_furnace", "interact_with_blast_furnace"),
             MenuBlock::Smoker => single(MenuKind::Smoker, "container.smoker", "interact_with_smoker"),
+            MenuBlock::Crafter => single(MenuKind::Crafter, "container.crafter", ""),
         }
     }
 
@@ -795,16 +829,19 @@ impl ServerSim {
         let events = std::mem::take(&mut cx.level_events);
         let sounds = std::mem::take(&mut cx.sounds);
         let Some(pos) = block else { return };
-        self.menus.level_events.extend(events.into_iter().map(|id| ((pos.x, pos.y, pos.z), id)));
+        self.menus.level_events.extend(events.into_iter().map(|id| ((pos.x, pos.y, pos.z), id, 0)));
         for (event, volume, pitch) in sounds {
             self.level.play_sound(event, centre(pos), volume, pitch);
         }
     }
 
-    /// The level events the menus made since the last call (position,
-    /// event id), for the client's `LevelEventHandler`.
-    pub fn take_level_events(&mut self) -> Vec<(BlockPos, i32)> {
-        std::mem::take(&mut self.menus.level_events)
+    /// The level events the menus and then the level made since the last
+    /// call (position, event id, data), for the client's
+    /// `LevelEventHandler`.
+    pub fn take_level_events(&mut self) -> Vec<(BlockPos, i32, i32)> {
+        let mut events = std::mem::take(&mut self.menus.level_events);
+        events.extend(self.level.take_level_events().into_iter().map(|(pos, id, data)| ((pos.x, pos.y, pos.z), id, data)));
+        events
     }
 
     /// `doCloseContainer`: the menu's `removed` (the carried stack goes
@@ -833,12 +870,17 @@ impl ServerSim {
         }
     }
 
-    /// The own slots from the menu's storage.
+    /// The own slots from the menu's storage; a crafter's with what its
+    /// grid crafts (`CrafterMenu.refreshRecipeResult`).
     fn source_items(&self, source: Source) -> Vec<Option<PlayerStack>> {
         match source {
             Source::Container(c) => {
                 let items = &self.level.registries().items;
-                self.level.container_items(c).iter().map(|stack| stacks::to_player(stack, |id| items.max_stack(id))).collect()
+                let mut own: Vec<Option<PlayerStack>> = self.level.container_items(c).iter().map(|stack| stacks::to_player(stack, |id| items.max_stack(id))).collect();
+                if let ContainerRef::Single(pos, Store::Crafter) = c {
+                    own.push(self.level.crafter_result(pos).and_then(|stack| stacks::to_player(&stack, |id| items.max_stack(id))));
+                }
+                own
             }
             Source::EnderChest(_) => self.menus.ender.clone(),
             Source::Merchant(_) => Vec::new(),
@@ -856,24 +898,35 @@ impl ServerSim {
         self.load_data(open.menu.as_mut(), open.source);
     }
 
-    /// The data values from the menu's block entity (a furnace's progress).
+    /// The data values from the menu's block entity (a furnace's progress,
+    /// a crafter's slot states).
     fn load_data(&self, menu: &mut (dyn Menu + Send), source: Source) {
-        if let Source::Container(ContainerRef::Single(pos, Store::Furnace)) = source {
-            for (id, value) in self.level.furnace_data(pos).into_iter().flatten().enumerate() {
-                menu.set_data(id, value);
-            }
+        let data = match source {
+            Source::Container(ContainerRef::Single(pos, Store::Furnace)) => self.level.furnace_data(pos).map(|data| data.to_vec()),
+            Source::Container(ContainerRef::Single(pos, Store::Crafter)) => self.level.crafter_data(pos).map(|data| data.to_vec()),
+            _ => None,
+        };
+        for (id, value) in data.into_iter().flatten().enumerate() {
+            menu.set_data(id, value);
         }
     }
 
-    /// What the inputs asked of the menu's block entity: a furnace pays the
-    /// experience of the recipes it used at the player's feet, and the
-    /// player unlocks them (`awardRecipes`), once for every take.
+    /// What the inputs asked of the menu's block entity, after their slots
+    /// went back: a furnace pays the experience of the recipes it used at
+    /// the player's feet, and the player unlocks them (`awardRecipes`),
+    /// once for every take; a crafter's slots take their states, in order.
     fn answer_requests(&mut self, open: &OpenMenu, cx: &mut MenuContext, feet: [f64; 3]) {
         let requests = std::mem::take(&mut cx.block_requests);
-        let Source::Container(ContainerRef::Single(pos, Store::Furnace)) = open.source else { return };
-        for _ in requests.iter().filter(|r| **r == BlockRequest::AwardUsedRecipes) {
-            for id in self.level.award_used_recipes(pos, feet) {
-                cx.inventory.unlock_recipe(&id);
+        let Source::Container(ContainerRef::Single(pos, store)) = open.source else { return };
+        for request in requests {
+            match (store, request) {
+                (Store::Furnace, BlockRequest::AwardUsedRecipes) => {
+                    for id in self.level.award_used_recipes(pos, feet) {
+                        cx.inventory.unlock_recipe(&id);
+                    }
+                }
+                (Store::Crafter, BlockRequest::SlotState { slot, enabled }) => self.level.crafter_set_slot_state(pos, slot, enabled),
+                _ => {}
             }
         }
     }
@@ -1622,7 +1675,7 @@ mod tests {
         server.menu_effects(&mut cx, Some(block), feet);
         let orbs: Vec<([f64; 3], i32)> = server.orbs().iter().map(|orb| (orb.position, orb.value)).collect();
         assert_eq!(orbs, [(feet, 3), ([3.5, 70.5, 5.5], 7)]);
-        assert_eq!(server.take_level_events(), [((3, 70, 5), 1042)]);
+        assert_eq!(server.take_level_events(), [((3, 70, 5), 1042, 0)]);
         let sounds: Vec<(&str, [f64; 3])> = server.level.take_sounds().iter().map(|s| (s.event, s.position)).collect();
         assert_eq!(sounds, [("minecraft:ui.stonecutter.take_result", [3.5, 70.5, 5.5])]);
         assert!(cx.xp_orbs.is_empty() && cx.level_events.is_empty() && cx.sounds.is_empty());
@@ -1649,7 +1702,7 @@ mod tests {
 
     #[test]
     fn menu_kinds_name_vanilla_menu_types() {
-        for (kind, own) in [(MenuKind::Generic { rows: 3 }, 27), (MenuKind::Generic { rows: 6 }, 54), (MenuKind::Generic3x3, 9), (MenuKind::Hopper, 5), (MenuKind::ShulkerBox, 27), (MenuKind::Furnace, 3), (MenuKind::BlastFurnace, 3), (MenuKind::Smoker, 3)] {
+        for (kind, own) in [(MenuKind::Generic { rows: 3 }, 27), (MenuKind::Generic { rows: 6 }, 54), (MenuKind::Generic3x3, 9), (MenuKind::Hopper, 5), (MenuKind::ShulkerBox, 27), (MenuKind::Furnace, 3), (MenuKind::BlastFurnace, 3), (MenuKind::Smoker, 3), (MenuKind::Crafter, 10)] {
             let menu = kind.menu(Vec::new());
             assert_eq!(menu.menu_type(), kind.menu_type());
             assert_eq!(menu.own().len(), own);
@@ -1792,5 +1845,136 @@ mod tests {
         }
         assert_eq!(items(&server, pos)[1], None);
         assert_eq!(items(&server, (8, 199, 8))[0], Some(recipes.stack("minecraft:bucket", 1)));
+    }
+
+    fn property(server: &ServerSim, pos: BlockPos, name: &str) -> Option<String> {
+        server.level.registries().blocks.property(server.level.block(LevelPos::new(pos.0, pos.1, pos.2)), name).map(str::to_owned)
+    }
+
+    /// The items thrown into the level: each item's total.
+    fn thrown(server: &ServerSim) -> std::collections::BTreeMap<String, i32> {
+        let mut totals = std::collections::BTreeMap::new();
+        for data in server.level.entities.iter().filter_map(|e| e.item_data()) {
+            *totals.entry(data.stack.id.clone()).or_insert(0) += data.stack.count;
+        }
+        totals
+    }
+
+    /// A crafter opens, counting no statistic; a cake's ingredients go in
+    /// by shift-clicks and drags, and the menu shows the cake. Powered, it
+    /// crafts 4 ticks later: the cake and the three buckets are thrown from
+    /// its front, each with the craft's sound and smoke, the grid empties,
+    /// and `crafting` shows for 6 ticks. An empty grid fails.
+    #[test]
+    fn a_powered_crafter_throws_its_cake_and_buckets() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        let Some(recipes) = cooking(&mut server, &mut inventory) else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:crafter"));
+        for slot in 0..3 {
+            inventory.slots[slot] = Some(recipes.stack("minecraft:milk_bucket", 1));
+        }
+        inventory.slots[3] = Some(recipes.stack("minecraft:sugar", 2));
+        inventory.slots[4] = Some(recipes.stack("minecraft:egg", 1));
+        inventory.slots[5] = Some(recipes.stack("minecraft:wheat", 3));
+        let (result, updates) = server.use_block_with(pos, "north", player(&inventory));
+        assert!(result.opened && result.stats.is_empty(), "{result:?}");
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Crafter, title: json!({"translate": "container.crafter"}) }));
+        assert_eq!((opening.slots.len(), &opening.data[..]), (10, &[0; 10][..]));
+        let inputs = [
+            click(36, ContainerInput::QuickMove),
+            click(37, ContainerInput::QuickMove),
+            click(38, ContainerInput::QuickMove),
+            click(39, ContainerInput::Pickup),
+            MenuInput::Drag { button: 1, slots: vec![3, 5] },
+            click(40, ContainerInput::QuickMove),
+            click(41, ContainerInput::Pickup),
+            MenuInput::Drag { button: 0, slots: vec![6, 7, 8] },
+        ];
+        let update = server.menu_batch(opening.id, 1, &inputs, player(&inventory));
+        apply(&mut inventory, &update);
+        assert!(inventory.slots[..6].iter().all(Option::is_none) && inventory.cursor.is_none());
+        let shown: Vec<Option<(String, u8)>> = update.slots.iter().map(|s| s.as_ref().map(|s| (s.id.clone(), s.count))).collect();
+        let at = |id: &str| Some((format!("minecraft:{id}"), 1));
+        assert_eq!(shown, [at("milk_bucket"), at("milk_bucket"), at("milk_bucket"), at("sugar"), at("egg"), at("sugar"), at("wheat"), at("wheat"), at("wheat"), at("cake")]);
+        server.menu_batch(opening.id, 2, &[MenuInput::Close], player(&inventory));
+
+        let _ = server.take_level_events();
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:redstone_block"));
+        assert_eq!(property(&server, pos, "triggered").as_deref(), Some("true"));
+        for _ in 0..3 {
+            tick(&mut server, FEET);
+        }
+        assert!(thrown(&server).is_empty(), "the craft waits 4 ticks");
+        tick(&mut server, FEET);
+        let expected: std::collections::BTreeMap<String, i32> = [("minecraft:bucket".to_owned(), 3), ("minecraft:cake".to_owned(), 1)].into();
+        assert_eq!(thrown(&server), expected);
+        assert!(items(&server, pos).iter().all(Option::is_none), "one of each went");
+        // Out of the front (north, data 2): the cake, then each bucket.
+        assert_eq!(server.take_level_events(), [((8, 200, 8), 1049, 0), ((8, 200, 8), 2010, 2)].repeat(4));
+        let items_at: Vec<[f64; 3]> = server.level.entities.iter().filter(|e| e.item_data().is_some()).map(|e| e.pos).collect();
+        assert!(items_at.iter().all(|p| p[2] < 8.0), "{items_at:?}");
+        assert_eq!(property(&server, pos, "crafting").as_deref(), Some("true"));
+        for _ in 0..4 {
+            tick(&mut server, FEET);
+        }
+        assert_eq!(property(&server, pos, "crafting").as_deref(), Some("true"));
+        tick(&mut server, FEET);
+        assert_eq!(property(&server, pos, "crafting").as_deref(), Some("false"));
+
+        // Unpowered and powered again: nothing to craft.
+        scene.set((9, 200, 8), None);
+        server.player_edit_block((9, 200, 8), None, PlayerEdit::Break);
+        assert_eq!(property(&server, pos, "triggered").as_deref(), Some("false"));
+        place(&mut server, &mut scene, (9, 200, 8), Block::new("minecraft:redstone_block"));
+        for _ in 0..4 {
+            tick(&mut server, FEET);
+        }
+        assert_eq!(server.take_level_events(), [((8, 200, 8), 1050, 0)]);
+        assert_eq!(property(&server, pos, "crafting").as_deref(), Some("false"));
+    }
+
+    /// A crafter's menu toggles only empty slots, in its data and in the
+    /// block entity; a hopper above fills the enabled slots evenly; the
+    /// menu shows what they craft, and a comparator counts the slots
+    /// filled or disabled.
+    #[test]
+    fn crafter_slots_toggle_and_hoppers_fill_them_evenly() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        let Some(recipes) = cooking(&mut server, &mut inventory) else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:crafter"));
+        place(&mut server, &mut scene, (8, 201, 8), Block::new("minecraft:hopper").with("facing", "down"));
+        place(&mut server, &mut scene, (7, 199, 8), Block::new("minecraft:stone"));
+        place(&mut server, &mut scene, (7, 200, 8), Block::new("minecraft:comparator").with("facing", "east"));
+        inventory.slots[0] = Some(recipes.stack("minecraft:oak_planks", 1));
+        let (_, updates) = server.use_block_with(pos, "north", player(&inventory));
+        let id = updates[0].id;
+        let mut inputs = vec![click(36, ContainerInput::Pickup), click(1, ContainerInput::Pickup)];
+        inputs.extend([0, 1, 2, 3, 5, 6, 8].map(|slot| MenuInput::SlotState { slot, enabled: false }));
+        let update = server.menu_batch(id, 1, &inputs, player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(update.data, [1, 0, 1, 1, 0, 1, 1, 0, 1, 0], "slot 1 holds a plank");
+        assert_eq!(server.level.crafter_data(LevelPos::new(8, 200, 8)), Some([1, 0, 1, 1, 0, 1, 1, 0, 1, 0]));
+        assert_eq!(update.slots[9].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:oak_button", 1)), "one plank is a button");
+        // Enabled again, then disabled: the last state stays.
+        let update = server.menu_batch(id, 2, &[MenuInput::SlotState { slot: 0, enabled: true }, MenuInput::SlotState { slot: 0, enabled: false }], player(&inventory));
+        assert_eq!(update.data[0], 1);
+
+        // The hopper's plank skips slot 1, which a later slot is emptier
+        // than, for slot 4: two planks in a column make sticks.
+        server.level.replace_block_item(LevelPos::new(8, 201, 8), 0, LevelStack::new("minecraft:oak_planks", 1));
+        let mut shown = None;
+        for _ in 0..20 {
+            shown = tick(&mut server, FEET).or(shown);
+        }
+        let grid = items(&server, pos);
+        assert_eq!((&grid[1], &grid[4]), (&Some(recipes.stack("minecraft:oak_planks", 1)), &Some(recipes.stack("minecraft:oak_planks", 1))));
+        let shown = shown.expect("the tick sends the grid");
+        assert_eq!(shown.slots[9].as_ref().map(|s| (s.id.as_str(), s.count)), Some(("minecraft:stick", 4)));
+        assert_eq!(server.level.comparator_output_at(LevelPos::new(7, 200, 8)), 8, "six disabled, two filled");
     }
 }

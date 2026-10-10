@@ -223,6 +223,21 @@ pub fn place(world: &mut World, player: &Player, item: &str, hit: &Hit) -> Optio
             face => Block::new(&id.replace("_sign", "_wall_sign")).with("facing", face_name(face)),
         };
         placed.push((pos, full(block)?));
+    } else if path == "crafter" {
+        // `CrafterBlock.getStateForPlacement`: the front towards the
+        // player, the top away from them when the front is up or down. The
+        // server sets `triggered`.
+        let front = opposite(looking(player));
+        let top = match front {
+            "down" => opposite(facing_name),
+            "up" => facing_name,
+            _ => "up",
+        };
+        let orientation = format!("{front}_{top}");
+        placed.push((
+            pos,
+            full(Block::new(&id).with("orientation", &orientation))?,
+        ));
     } else if DELEGATED.iter().any(|suffix| path.ends_with(suffix)) || path == "chest" {
         return place_with_rules(world, player, &id, hit.pos, pos);
     } else {

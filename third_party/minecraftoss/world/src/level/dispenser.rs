@@ -125,7 +125,7 @@ impl Level<'_> {
     }
 
     /// `DefaultDispenseItemBehavior.spawnItem` with accuracy 6.
-    fn spawn_item(&mut self, pos: BlockPos, direction: Direction, stack: Stack) {
+    pub(super) fn spawn_item(&mut self, pos: BlockPos, direction: Direction, stack: Stack) {
         let (dx, dy, dz) = direction.offset();
         let (x, mut y, z) = (pos.x as f64 + 0.5 + 0.7 * dx as f64, pos.y as f64 + 0.5 + 0.7 * dy as f64, pos.z as f64 + 0.5 + 0.7 * dz as f64);
         y -= if direction.axis() == minecraftoss_core::pos::Axis::Y { 0.125 } else { 0.15625 };

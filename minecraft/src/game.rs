@@ -726,8 +726,8 @@ impl Game {
         for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
             self.play(&event, Some(at), volume, pitch);
         }
-        for (pos, id) in events.level_events {
-            self.level_event(pos, id);
+        for (pos, id, data) in events.level_events {
+            self.level_event(pos, id, data);
         }
         for update in events.menu {
             self.menu_update(update);
@@ -744,23 +744,58 @@ impl Game {
         self.flush_menu();
     }
 
-    /// `LevelEventHandler.levelEvent` for the events menus make at their
-    /// blocks: the block's sound at its centre, pitched from 0.9 to 1.0.
-    fn level_event(&mut self, pos: BlockPos, id: i32) {
-        let event = match id {
-            1029 => "minecraft:block.anvil.destroy",
-            1030 => "minecraft:block.anvil.use",
-            1042 => "minecraft:block.grindstone.use",
-            1044 => "minecraft:block.smithing_table.use",
-            _ => return,
-        };
-        let pitch = self.sounds.random() * 0.1 + 0.9;
+    /// `LevelEventHandler.levelEvent` for the events the server sends: the
+    /// menus' blocks' sounds at their centres, pitched from 0.9 to 1.0; the
+    /// crafter's sounds, at pitch 1, and its smoke out of its front.
+    fn level_event(&mut self, pos: BlockPos, id: i32, data: i32) {
         let at = DVec3::new(
             f64::from(pos.0) + 0.5,
             f64::from(pos.1) + 0.5,
             f64::from(pos.2) + 0.5,
         );
+        let (event, pitch) = match id {
+            1029 => ("minecraft:block.anvil.destroy", None),
+            1030 => ("minecraft:block.anvil.use", None),
+            1042 => ("minecraft:block.grindstone.use", None),
+            1044 => ("minecraft:block.smithing_table.use", None),
+            1049 => ("minecraft:block.crafter.craft", Some(1.0)),
+            1050 => ("minecraft:block.crafter.fail", Some(1.0)),
+            2010 => return self.shoot_particles(pos, data, crate::particles::Type::WhiteSmoke),
+            _ => return,
+        };
+        let pitch = pitch.unwrap_or_else(|| self.sounds.random() * 0.1 + 0.9);
         self.play(event, Some(at), 1.0, pitch);
+    }
+
+    /// `LevelEventHandler.shootParticles`: ten particles out of the face
+    /// `data` names (`Direction.from3DDataValue`), spread across it.
+    fn shoot_particles(&mut self, pos: BlockPos, data: i32, particle: crate::particles::Type) {
+        const STEPS: [(f64, f64, f64); 6] = [
+            (0.0, -1.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, 1.0),
+            (-1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+        ];
+        let (nx, ny, nz) = STEPS[(data % 6).unsigned_abs() as usize];
+        let (x, y, z) = (f64::from(pos.0), f64::from(pos.1), f64::from(pos.2));
+        for _ in 0..10 {
+            let random = &mut self.particles.random;
+            let pow = random.next_double() * 0.2 + 0.01;
+            let px = x + nx * 0.6 + 0.5 + nx * 0.01 + (random.next_double() - 0.5) * nz * 0.5;
+            let py = y + ny * 0.6 + 0.5 + ny * 0.01 + (random.next_double() - 0.5) * ny * 0.5;
+            let pz = z + nz * 0.6 + 0.5 + nz * 0.01 + (random.next_double() - 0.5) * nx * 0.5;
+            let vx = nx * pow + random.next_gaussian() * 0.01;
+            let vy = ny * pow + random.next_gaussian() * 0.01;
+            let vz = nz * pow + random.next_gaussian() * 0.01;
+            self.particles.spawn(
+                &self.world,
+                &particle.into(),
+                DVec3::new(px, py, pz),
+                DVec3::new(vx, vy, vz),
+            );
+        }
     }
 
     fn keys(&mut self, input: &mut Input, gui: &Gui) {

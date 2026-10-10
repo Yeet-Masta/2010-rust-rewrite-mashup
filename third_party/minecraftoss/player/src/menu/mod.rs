@@ -21,11 +21,13 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+pub mod crafter;
 pub mod furnace;
 pub mod storage;
 #[cfg(test)]
 mod tests;
 
+pub use crafter::CrafterMenu;
 pub use furnace::FurnaceMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
@@ -114,6 +116,9 @@ pub enum BlockRequest {
     /// leaves the container's own rules for a new stack alone (a furnace's
     /// cooking goes on cooling rather than restart).
     Emptied(usize),
+    /// `CrafterBlockEntity.setSlotState`: the player toggled an empty grid
+    /// slot.
+    SlotState { slot: usize, enabled: bool },
 }
 
 /// What a menu slot shows and changes.
@@ -463,6 +468,12 @@ pub trait Menu {
 
     /// `canDragTo`: whether a drag may cover `slot`.
     fn can_drag_to(&self, _slot: usize) -> bool {
+        true
+    }
+
+    /// `Slot.isHighlightable`: whether the screen highlights the slot under
+    /// the mouse. A crafter's result is not.
+    fn is_highlightable(&self, _slot: usize) -> bool {
         true
     }
 

@@ -297,6 +297,23 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/villager/discount_strikethrough",
         0.0,
     ),
+    // The crafter (`CrafterScreen`).
+    ("crafter", "gui/container/crafter", 0.0),
+    (
+        "crafter_disabled_slot",
+        "gui/sprites/container/crafter/disabled_slot",
+        0.0,
+    ),
+    (
+        "crafter_powered_redstone",
+        "gui/sprites/container/crafter/powered_redstone",
+        0.0,
+    ),
+    (
+        "crafter_unpowered_redstone",
+        "gui/sprites/container/crafter/unpowered_redstone",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as

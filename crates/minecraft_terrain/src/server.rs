@@ -456,7 +456,9 @@ impl ServerSim {
     /// The recipe book mobs consult (breeding colours), and furnaces cook
     /// from.
     pub fn set_recipe_book(&mut self, recipes: Arc<minecraftoss_player::crafting::RecipeBook>) {
-        self.level.cooking = Some(Arc::new(crate::menus::BookCooking(recipes.clone())));
+        let book = Arc::new(crate::menus::BookCooking(recipes.clone()));
+        self.level.cooking = Some(book.clone());
+        self.level.crafting = Some(book);
         self.mobs.set_recipe_book(recipes);
     }
 
@@ -685,6 +687,9 @@ impl ServerSim {
         if edit == PlayerEdit::Place && block.is_some_and(|b| b.id.path == "redstone_wire") {
             target = self.level.wire_placement_state(at, target);
         }
+        if edit == PlayerEdit::Place {
+            target = self.level.crafter_placement_state(at, target);
+        }
         if self.level.block(at) == target {
             return;
         }
@@ -693,6 +698,9 @@ impl ServerSim {
             PlayerEdit::Break => update::ALL,
         };
         self.level.set_block(at, target, flags, update::LIMIT);
+        if edit == PlayerEdit::Place {
+            self.level.crafter_placed(at);
+        }
     }
 
     /// `useWithoutItem` on a simulated block; false when not simulated.
@@ -980,8 +988,8 @@ pub struct Output {
     /// (`ClientboundBlockEventPacket`): the containers' lids.
     pub block_events: Vec<BlockEventView>,
     /// `Level.levelEvent`s (`ClientboundLevelEventPacket`): position, event
-    /// id. For now the menus' at their blocks.
-    pub level_events: Vec<(BlockPos, i32)>,
+    /// id, data. The menus' at their blocks, and the level's.
+    pub level_events: Vec<(BlockPos, i32, i32)>,
     /// Mobs' hits on the players, in order.
     pub player_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     /// Splash potions that broke near players, in order.

@@ -65,6 +65,8 @@ pub enum Kind {
     CopperBulb,
     /// `DaylightDetectorBlock`.
     DaylightDetector,
+    /// `CrafterBlock`.
+    Crafter,
     /// `BasePressurePlateBlock`.
     PressurePlate,
     /// `LightningRodBlock`.
@@ -114,6 +116,7 @@ impl Kinds {
             ("DaylightDetectorBlock", Kind::DaylightDetector),
             ("BasePressurePlateBlock", Kind::PressurePlate),
             ("LightningRodBlock", Kind::LightningRod),
+            ("CrafterBlock", Kind::Crafter),
         ];
         let mut by_block = HashMap::new();
         for (id, info) in registries.blocks.blocks() {
@@ -475,6 +478,9 @@ impl Level<'_> {
     /// the blocks whose output follows their state.
     fn analog_output(&self, state: BlockStateId, pos: BlockPos) -> Option<i32> {
         if let Some(store) = self.store_of(state) {
+            if store == super::container::Store::Crafter {
+                return Some(self.crafter_signal(pos));
+            }
             let container = if store == super::container::Store::Chest {
                 self.container_at(pos, false)
             } else {
@@ -623,7 +629,7 @@ impl Level<'_> {
                 self.update_neighbors_at(pos.below(), block);
             }
             // `Containers.updateNeighboursAfterDestroy`.
-            Kind::Hopper | Kind::Container | Kind::TrappedChest | Kind::Dispenser { .. } => self.update_neighbour_for_output_signal(pos, block),
+            Kind::Hopper | Kind::Container | Kind::TrappedChest | Kind::Dispenser { .. } | Kind::Crafter => self.update_neighbour_for_output_signal(pos, block),
             Kind::Observer => {
                 if self.flag(state, "powered") && self.has_block_tick_at(pos, block) {
                     let off = self.with_bool(state, "powered", false);
@@ -642,6 +648,7 @@ impl Level<'_> {
             Kind::Rail { .. } => self.rail_neighbor_changed(state, pos, source),
             Kind::Hopper => self.hopper_check_powered(pos, state),
             Kind::Dispenser { .. } => self.dispenser_neighbor_changed(state, pos),
+            Kind::Crafter => self.crafter_neighbor_changed(state, pos),
             Kind::CopperBulb => self.copper_bulb_check(state, pos),
             Kind::Wire => {
                 if self.can_survive_state(state, pos) {
@@ -771,6 +778,7 @@ impl Level<'_> {
                 }
             }
             Kind::Dispenser { dropper } => self.dispense_from(pos, dropper),
+            Kind::Crafter => self.crafter_dispense(state, pos),
             Kind::Torch | Kind::WallTorch => {
                 let signal = self.torch_input(kind, state, pos);
                 let now = self.game_time;

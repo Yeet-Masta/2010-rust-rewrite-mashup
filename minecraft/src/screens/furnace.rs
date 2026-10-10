@@ -38,7 +38,7 @@ impl Gui {
         top: f32,
     ) {
         let (lit, burn) = sprites(view.kind);
-        let (flame, arrow) = progress(view.data);
+        let (flame, arrow) = progress(&view.data);
         if let Some(h) = flame {
             self.sprite_part(
                 ui,

@@ -6,9 +6,9 @@
 //! Items live in the block entity's saved tag (`Items`), so every change is
 //! what the chunk saves. Simulated containers: chests (single and double,
 //! trapped and copper), barrels, shulker boxes, hoppers, dispensers and
-//! droppers, and furnaces (their tick and faces are in `furnace`). Not yet:
-//! brewing stands, crafters, bookshelves, pots, shelves, container entities,
-//! item entities.
+//! droppers, furnaces (their tick and faces are in `furnace`) and crafters
+//! (in `crafter`). Not yet: brewing stands, bookshelves, pots, shelves,
+//! container entities, item entities.
 //!
 //! A container generation left with a loot table is filled from it the
 //! first time something takes from it, puts into it or opens it
@@ -35,6 +35,7 @@ pub enum Store {
     Dispenser,
     /// Furnaces, smokers and blast furnaces.
     Furnace,
+    Crafter,
 }
 
 impl Store {
@@ -42,7 +43,7 @@ impl Store {
     pub fn size(self) -> usize {
         match self {
             Self::Hopper => 5,
-            Self::Dispenser => 9,
+            Self::Dispenser | Self::Crafter => 9,
             Self::Furnace => 3,
             _ => 27,
         }
@@ -108,6 +109,8 @@ impl Level<'_> {
             Some(Store::Dispenser)
         } else if info.is_a("AbstractFurnaceBlock") {
             Some(Store::Furnace)
+        } else if info.is_a("CrafterBlock") {
+            Some(Store::Crafter)
         } else {
             None
         }
@@ -306,7 +309,7 @@ impl Level<'_> {
     }
 
     /// `Container.getMaxStackSize(itemStack)`: 99 for every simulated container.
-    fn container_max_stack(&self, stack: &Stack) -> i32 {
+    pub(super) fn container_max_stack(&self, stack: &Stack) -> i32 {
         self.item_max_stack(stack).min(99)
     }
 
@@ -326,11 +329,15 @@ impl Level<'_> {
     }
 
     /// `Container.setItem`: hoppers do not report the change themselves. A
-    /// furnace's new ingredient restarts its cooking.
+    /// furnace's new ingredient restarts its cooking; a crafter's disabled
+    /// slot is enabled.
     pub fn container_set_item(&mut self, c: ContainerRef, slot: usize, mut stack: Stack) {
         let max = self.container_max_stack(&stack);
         if !stack.is_empty() && stack.count > max {
             stack.count = max;
+        }
+        if let ContainerRef::Single(pos, Store::Crafter) = c {
+            self.crafter_set_item(pos, slot);
         }
         let old = self.is_furnace(c).filter(|_| slot == 0).map(|_| self.container_item(c, slot));
         self.put_item(c, slot, stack);
@@ -387,6 +394,7 @@ impl Level<'_> {
         match c {
             ContainerRef::Single(_, Store::ShulkerBox) if direction.is_some() => !self.is_shulker_box_item(&stack.id),
             ContainerRef::Single(pos, Store::Furnace) => self.furnace_can_place(pos, slot, stack),
+            ContainerRef::Single(pos, Store::Crafter) => self.crafter_can_place(pos, slot),
             _ => true,
         }
     }
@@ -701,6 +709,7 @@ impl Level<'_> {
         self.is_hopper(state)
             || self.store_of(state) == Some(Store::ShulkerBox)
             || self.store_of(state) == Some(Store::Furnace)
+            || self.store_of(state) == Some(Store::Crafter)
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }

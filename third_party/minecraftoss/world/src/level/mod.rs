@@ -18,6 +18,7 @@ pub mod fire;
 pub mod grow;
 pub mod plants;
 pub mod bonemeal;
+pub mod crafter;
 pub mod fluid;
 pub mod furnace;
 pub mod openers;
@@ -129,6 +130,8 @@ pub struct Level<'a> {
     sent_block_events: Vec<openers::SentBlockEvent>,
     /// Sounds played since last taken.
     sounds: Vec<openers::LevelSound>,
+    /// `Level.levelEvent`s since last taken: position, event id, data.
+    level_events: Vec<(BlockPos, i32, i32)>,
     /// The players with a menu open on block containers, for the openers'
     /// rechecks.
     pub container_users: Vec<openers::ContainerUser>,
@@ -152,6 +155,8 @@ pub struct Level<'a> {
     dispensing_slot: Option<usize>,
     /// The recipes and fuels furnaces cook with; none cooks nothing.
     pub cooking: Option<std::sync::Arc<dyn furnace::Cooking>>,
+    /// The recipes crafters craft with; none crafts nothing.
+    pub crafting: Option<std::sync::Arc<dyn crafter::Crafting>>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -264,6 +269,7 @@ impl<'a> Level<'a> {
             block_events: VecDeque::new(),
             sent_block_events: Vec::new(),
             sounds: Vec::new(),
+            level_events: Vec::new(),
             container_users: Vec::new(),
             openers: HashMap::new(),
             shulker_lids: HashMap::new(),
@@ -274,6 +280,7 @@ impl<'a> Level<'a> {
             hopper_ticked: HashMap::new(),
             dispensing_slot: None,
             cooking: None,
+            crafting: None,
             unsupported: Vec::new(),
             sky: None,
             entities: Vec::new(),
@@ -599,6 +606,7 @@ impl<'a> Level<'a> {
             if self.has_ticker(state) {
                 self.moving.register(pos);
             }
+            self.crafter_created(pos, state);
         }
     }
 

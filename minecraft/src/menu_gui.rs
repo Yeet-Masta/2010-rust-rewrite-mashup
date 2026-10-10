@@ -16,6 +16,8 @@ use super::Gui;
 use crate::font::rgb;
 use crate::render::UiList;
 
+#[path = "screens/crafter.rs"]
+mod crafter;
 #[path = "screens/furnace.rs"]
 mod furnace;
 #[path = "screens/merchant.rs"]
@@ -104,6 +106,8 @@ pub fn layout(kind: MenuKind) -> Layout {
             inventory_label: (107.0, 72.0),
             ..Layout::plain("villager", 166.0, TitleX::CentredOn(49.0 + 138.0))
         },
+        // `CrafterScreen.init` centres the title.
+        MenuKind::Crafter => Layout::plain("crafter", 166.0, TitleX::Centred),
     }
 }
 
@@ -145,9 +149,10 @@ pub struct MenuView<'a> {
     pub tooltip: Option<ItemStack>,
     /// For the stacks' wear.
     pub inventory: &'a Inventory,
-    /// The menu's data values (progress, costs), which the storage kinds
-    /// have none of: the kinds that draw them read them in `menu_extras`.
-    pub data: &'a [i32],
+    /// The menu's data values (progress, costs, a crafter's slot states),
+    /// as the screen's inputs leave them, which the storage kinds have none
+    /// of: the kinds that draw them read them in `menu_extras`.
+    pub data: Vec<i32>,
     /// The menu as the screen shows it, for what a kind keeps beyond its
     /// slots (a merchant's offers).
     pub menu: &'a (dyn Menu + Send),
@@ -206,14 +211,20 @@ impl Gui {
         let inventory = crate::creative::translate(&self.language, "container.inventory", &[]);
         let (x, y) = layout.inventory_label;
         self.text(ui, &inventory, left + x, top + y, label, false);
-        // The hovered slot's highlight behind the items, and in front.
-        let hovered = view.hovered.and_then(|i| view.slots.get(i));
+        // The hovered slot's highlight behind the items, and in front, when
+        // it has one (`isHighlightable`).
+        let hovered = view
+            .hovered
+            .filter(|&i| view.menu.is_highlightable(i))
+            .and_then(|i| view.slots.get(i));
         if let Some(slot) = hovered {
             let (x, y) = (left + slot.x as f32, top + slot.y as f32);
             self.sprite(ui, "slot_highlight_back", x - 4.0, y - 4.0, 24.0, 24.0);
         }
-        for slot in &view.slots {
-            self.menu_slot(ui, packs, view.inventory, slot, left, top);
+        for (index, slot) in view.slots.iter().enumerate() {
+            if !self.menu_slot_extra(ui, view, index, left, top) {
+                self.menu_slot(ui, packs, view.inventory, slot, left, top);
+            }
         }
         if let Some(slot) = hovered {
             let (x, y) = (left + slot.x as f32, top + slot.y as f32);
@@ -278,14 +289,33 @@ impl Gui {
                 self.furnace_extras(ui, view, left, top)
             }
             MenuKind::Merchant => self.merchant_extras(ui, packs, view, left, top),
+            MenuKind::Crafter => self.crafter_extras(ui, view, left, top),
+        }
+    }
+
+    /// A slot a kind draws in its own way (`extractSlot` overridden): true
+    /// when it drew it. One arm per kind that has any.
+    fn menu_slot_extra(
+        &mut self,
+        ui: &mut UiList,
+        view: &MenuView<'_>,
+        index: usize,
+        left: f32,
+        top: f32,
+    ) -> bool {
+        match view.kind {
+            MenuKind::Crafter => self.crafter_slot(ui, view, index, left, top),
+            _ => false,
         }
     }
 
     /// What a kind draws over everything: its buttons' tooltips. One arm
     /// per kind that has any.
     fn menu_overlays(&mut self, ui: &mut UiList, view: &MenuView<'_>, left: f32, top: f32) {
-        if view.kind == MenuKind::Merchant {
-            self.merchant_tooltips(ui, view, left, top);
+        match view.kind {
+            MenuKind::Merchant => self.merchant_tooltips(ui, view, left, top),
+            MenuKind::Crafter => self.crafter_tooltip(ui, view),
+            _ => {}
         }
     }
 }
@@ -335,6 +365,7 @@ mod tests {
             ),
             (MenuKind::Furnace, "furnace", 166.0, 72.0, TitleX::Centred),
             (MenuKind::Smoker, "smoker", 166.0, 72.0, TitleX::Centred),
+            (MenuKind::Crafter, "crafter", 166.0, 72.0, TitleX::Centred),
         ];
         for (kind, background, height, label, title_x) in sizes {
             let layout = layout(kind);
@@ -361,6 +392,7 @@ mod tests {
             MenuKind::BlastFurnace,
             MenuKind::Smoker,
             MenuKind::Merchant,
+            MenuKind::Crafter,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

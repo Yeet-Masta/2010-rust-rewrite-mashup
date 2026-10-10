@@ -15,7 +15,8 @@
 use std::time::Instant;
 
 use minecraft_terrain::menus::{
-    ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, merchant,
+    ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, crafter,
+    merchant,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
@@ -119,11 +120,17 @@ pub(super) struct ClientMenu {
     /// The mouse when last seen, so a drag takes a slot as the mouse moves
     /// over it (`mouseDragged`).
     mouse: (f32, f32),
+    /// Sounds the screen played for the player (`Player.playSound`):
+    /// event, volume, pitch.
+    sounds: Vec<(&'static str, f32, f32)>,
 }
 
 impl ClientMenu {
     fn new(update: &MenuUpdate, open: MenuOpen, game: &Game) -> Self {
-        let menu = open.kind.menu(update.slots.clone());
+        let mut menu = open.kind.menu(update.slots.clone());
+        for (id, value) in update.data.iter().enumerate() {
+            menu.set_data(id, *value);
+        }
         Self {
             id: update.id,
             kind: open.kind,
@@ -147,6 +154,7 @@ impl ClientMenu {
             last_press: None,
             last_quick_moved: None,
             mouse: (f32::NAN, f32::NAN),
+            sounds: Vec::new(),
         }
     }
 
@@ -177,7 +185,20 @@ impl ClientMenu {
         self.queued.push(input);
     }
 
+    /// `slotClicked` for a click; a crafter's screen toggles an empty grid
+    /// slot first (`CrafterScreen.slotClicked`), with a click's sound.
     fn click(&mut self, slot: i32, button: i32, kind: ContainerInput) {
+        if let Ok(index) = usize::try_from(slot)
+            && let Some(enabled) =
+                self.read(|menu, cx| crafter(menu)?.toggle_for_click(cx, index, button, kind))
+        {
+            self.send(MenuInput::SlotState {
+                slot: index,
+                enabled,
+            });
+            let pitch = if enabled { 1.0 } else { 0.75 };
+            self.sounds.push(("minecraft:ui.button.click", 0.4, pitch));
+        }
         self.send(MenuInput::Click { slot, button, kind });
     }
 
@@ -232,6 +253,9 @@ impl ClientMenu {
     /// has not answered yet.
     fn predict(&mut self, inventory: &Inventory) {
         self.menu.own_mut().load(self.slots.clone());
+        for (id, value) in self.data.iter().enumerate() {
+            self.menu.set_data(id, *value);
+        }
         if let Some(extra) = &self.extra {
             extra.sync(self.menu.as_mut());
         }
@@ -549,7 +573,7 @@ impl ClientMenu {
             carried: carried_view,
             tooltip,
             inventory: &self.shown,
-            data: &self.data,
+            data: self.menu.data(),
             menu: self.menu.as_ref(),
             trades: &self.trades,
         }
@@ -769,6 +793,18 @@ impl Game {
             }
         }
         menu.prune_drag();
+        self.play_menu_sounds();
+    }
+
+    /// The sounds the screen played, at the player.
+    fn play_menu_sounds(&mut self) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        let at = self.player.pos;
+        for (event, volume, pitch) in std::mem::take(&mut menu.sounds) {
+            self.play(event, Some(at), volume, pitch);
+        }
     }
 
     /// The menu screen's keys; true when the screen took the key.
@@ -781,7 +817,9 @@ impl Game {
             return false;
         };
         let (hovered, _) = gui.menu_slot_at(menu.kind, menu.menu.slots());
-        menu.key(key, hovered, ctrl)
+        let taken = menu.key(key, hovered, ctrl);
+        self.play_menu_sounds();
+        taken
     }
 
     /// What `gui.menu_screen` draws.
@@ -846,6 +884,7 @@ mod tests {
             last_press: None,
             last_quick_moved: None,
             mouse: (0.0, 0.0),
+            sounds: Vec::new(),
         }
     }
 
@@ -1262,6 +1301,47 @@ mod tests {
         assert!(menu.item(0).is_none());
         assert_eq!(menu.item(1).map(|s| s.id.as_str()), Some("minecraft:dirt"));
         assert_eq!(menu.shown.cursor.as_ref().map(|s| s.count), Some(4));
+    }
+
+    #[test]
+    fn a_click_on_an_empty_crafter_slot_toggles_it_first() {
+        let mut inventory = Inventory::default();
+        inventory.slots[0] = Some(stack("minecraft:stick", 1));
+        let mut menu = screen(MenuKind::Crafter, vec![None; 10], inventory);
+        menu.data = vec![0; 10];
+        menu.press(Mouse::Left, Some(4), false, false);
+        let disable = MenuInput::SlotState {
+            slot: 4,
+            enabled: false,
+        };
+        assert_eq!(
+            menu.queued,
+            [
+                disable,
+                MenuInput::Click {
+                    slot: 4,
+                    button: 0,
+                    kind: ContainerInput::Pickup
+                }
+            ]
+        );
+        assert_eq!(menu.sounds, [("minecraft:ui.button.click", 0.4, 0.75)]);
+        assert_eq!(menu.menu.data()[4], 1, "the copy shows it at once");
+        // The hotbar key over it enables it again, and the stick goes in.
+        menu.key(Key::Hotbar(0), Some(4), false);
+        assert_eq!(
+            menu.queued[2],
+            MenuInput::SlotState {
+                slot: 4,
+                enabled: true
+            }
+        );
+        assert_eq!(menu.sounds[1].2, 1.0);
+        assert_eq!(menu.item(4), Some(&stack("minecraft:stick", 1)));
+        // An answer that has not seen the toggles keeps them on the copies.
+        let inventory = menu.shown.clone();
+        menu.predict(&inventory);
+        assert_eq!(menu.menu.data()[4], 0);
     }
 
     #[test]
