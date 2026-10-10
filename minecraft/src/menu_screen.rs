@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use minecraft_terrain::menus::{
     ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, anvil,
-    crafter, merchant,
+    crafter, merchant, stonecutter,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
@@ -25,8 +25,8 @@ use serde_json::Value;
 
 use super::{Game, Input, Key};
 use crate::gui::{
-    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, Screen, SlotDrag, SmithingIcons,
-    TradeList, enchanting_row_at,
+    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, RecipeList, Screen, SlotDrag,
+    SmithingIcons, TradeList, enchanting_row_at,
 };
 use crate::render::GuiModel;
 
@@ -135,6 +135,8 @@ pub(super) struct ClientMenu {
     name: NameBox,
     /// The smithing screen's cycling icons.
     smithing: SmithingIcons,
+    /// The stonecutter screen's recipe list.
+    recipe_list: RecipeList,
 }
 
 impl ClientMenu {
@@ -175,6 +177,7 @@ impl ClientMenu {
             book: EnchantingBook::new(game.ticks),
             name: NameBox::default(),
             smithing: SmithingIcons::default(),
+            recipe_list: RecipeList::default(),
         }
     }
 
@@ -607,7 +610,33 @@ impl ClientMenu {
             } else {
                 Vec::new()
             },
+            recipes: self.stonecutter_recipes(),
+            recipe_list: &self.recipe_list,
         }
+    }
+
+    /// The stonecutter's recipes for its input, as the copy has them.
+    fn stonecutter_recipes(&self) -> Vec<ItemStack> {
+        self.read(|menu, cx| stonecutter(menu).map_or_else(Vec::new, |menu| menu.recipes(cx)))
+    }
+
+    /// `StonecutterScreen.mouseClicked`: a press on a recipe button the copy
+    /// would take (`clickMenuButton`: any but the selected one) sends it,
+    /// with the select sound. Whether it did.
+    fn press_stonecutter_button(&mut self, x: f32, y: f32) -> bool {
+        if self.kind != MenuKind::Stonecutter {
+            return false;
+        }
+        let Some(index) = self.recipe_list.press(x, y) else {
+            return false;
+        };
+        if self.menu.data().first() == Some(&index) {
+            return false;
+        }
+        self.send(MenuInput::Button(index));
+        self.sounds
+            .push(("minecraft:ui.stonecutter.select_recipe", 1.0, 1.0));
+        true
     }
 
     /// `AnvilScreen.slotChanged`: another stack in the input resets the
@@ -907,6 +936,16 @@ impl Game {
                 .wheel(super::take_notches(&mut input.scroll), offers);
             menu.trades.drag(my, offers);
         }
+        // The stonecutter's list starts over as its input changes
+        // (`containerChanged`), and scrolls as the trader's does.
+        if menu.kind == MenuKind::Stonecutter {
+            let recipes = menu.stonecutter_recipes().len();
+            let stack = menu.item(0).cloned();
+            menu.recipe_list.watch(stack.as_ref(), recipes);
+            menu.recipe_list
+                .wheel(super::take_notches(&mut input.scroll), recipes);
+            menu.recipe_list.drag(my, recipes);
+        }
         if menu.quick.button.is_some() {
             menu.drag_over(gui.mouse, hovered);
         } else {
@@ -922,10 +961,12 @@ impl Game {
                     Some(Some(index)) => menu.send(MenuInput::SelectTrade(index)),
                     Some(None) => {}
                     None if menu.press_enchanting_row(mx, my) => {}
+                    None if menu.press_stonecutter_button(mx, my) => {}
                     None => menu.press(button, hovered, outside, input.shift),
                 }
             } else {
                 menu.trades.release();
+                menu.recipe_list.release();
                 menu.release(button, hovered, outside, input.shift);
             }
         }
@@ -1033,6 +1074,7 @@ mod tests {
             book: EnchantingBook::new(0),
             name: NameBox::default(),
             smithing: SmithingIcons::default(),
+            recipe_list: RecipeList::default(),
         }
     }
 

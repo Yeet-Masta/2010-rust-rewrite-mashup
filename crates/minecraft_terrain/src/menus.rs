@@ -68,6 +68,7 @@ use minecraftoss_player::menu::enchanting::{self, EnchantingTable, TableAccess};
 use minecraftoss_player::menu::anvil::{self, AnvilMenu, EnchantmentRules};
 use minecraftoss_player::menu::GrindstoneMenu;
 use minecraftoss_player::menu::SmithingMenu;
+use minecraftoss_player::menu::StonecutterMenu;
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -118,6 +119,8 @@ pub enum MenuKind {
     Grindstone,
     /// `smithing` (`SmithingMenu`).
     Smithing,
+    /// `stonecutter` (`StonecutterMenu`).
+    Stonecutter,
 }
 
 impl MenuKind {
@@ -143,6 +146,7 @@ impl MenuKind {
             Self::Anvil => "minecraft:anvil",
             Self::Grindstone => "minecraft:grindstone",
             Self::Smithing => "minecraft:smithing",
+            Self::Stonecutter => "minecraft:stonecutter",
         }
     }
 
@@ -164,6 +168,7 @@ impl MenuKind {
             Self::Anvil => Box::new(AnvilMenu::new(own)),
             Self::Grindstone => Box::new(GrindstoneMenu::new(own)),
             Self::Smithing => Box::new(SmithingMenu::new(own)),
+            Self::Stonecutter => Box::new(StonecutterMenu::new(own)),
         }
     }
 }
@@ -253,6 +258,11 @@ fn enchantment_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut EnchantmentMenu>
     menu.as_any_mut()?.downcast_mut()
 }
 
+/// The stonecutter's menu behind a menu, if it is one.
+pub fn stonecutter(menu: &(dyn Menu + Send)) -> Option<&StonecutterMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
 /// The anvil's menu behind a menu, if it is one.
 pub fn anvil(menu: &(dyn Menu + Send)) -> Option<&AnvilMenu> {
     menu.as_any()?.downcast_ref()
@@ -270,6 +280,8 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
         grindstone.set_at_block(at_block);
     } else if let Some(smithing) = any.downcast_mut::<SmithingMenu>() {
         smithing.set_at_block(at_block);
+    } else if let Some(stonecutter) = any.downcast_mut::<StonecutterMenu>() {
+        stonecutter.set_at_block(at_block);
     }
 }
 
@@ -536,6 +548,7 @@ enum MenuBlock {
     Anvil,
     Grindstone,
     SmithingTable,
+    Stonecutter,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -556,6 +569,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("AnvilBlock", MenuBlock::Anvil),
     ("GrindstoneBlock", MenuBlock::Grindstone),
     ("SmithingTableBlock", MenuBlock::SmithingTable),
+    ("StonecutterBlock", MenuBlock::Stonecutter),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -983,6 +997,7 @@ impl ServerSim {
             MenuBlock::Anvil => station(MenuKind::Anvil, "container.repair", "interact_with_anvil"),
             MenuBlock::Grindstone => station(MenuKind::Grindstone, "container.grindstone_title", "interact_with_grindstone"),
             MenuBlock::SmithingTable => station(MenuKind::Smithing, "container.upgrade", "interact_with_smithing_table"),
+            MenuBlock::Stonecutter => station(MenuKind::Stonecutter, "container.stonecutter", "interact_with_stonecutter"),
         }
     }
 
@@ -997,6 +1012,7 @@ impl ServerSim {
         let before = Snapshot::of(&mut inventory);
         let mut random = self.menus.random.clone();
         let mut cx = context(&mut inventory, &mut random, &player);
+        cx.game_time = self.level.game_time;
         let mut update = MenuUpdate { id, ack: seq, ..MenuUpdate::default() };
         let block = self.menus.open.as_ref().filter(|open| open.id == id).and_then(|open| open.source.block());
         match self.menus.open.take() {
@@ -2402,6 +2418,34 @@ mod tests {
         }
         assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
         assert_eq!(items(&server, pos)[0], None);
+    }
+
+    #[test]
+    fn a_stonecutter_cuts_the_selected_recipe_with_one_sound_a_tick() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let mut inventory = Inventory::default();
+        if cooking(&mut server, &mut inventory).is_none() {
+            return;
+        }
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:stonecutter"));
+        inventory.slots[0] = Some(stack("minecraft:andesite", 2, 64));
+        let (result, updates) = server.use_block_with(pos, "north", player(&inventory));
+        assert_eq!(result.stats, vec![("minecraft:custom".to_owned(), "minecraft:interact_with_stonecutter".to_owned(), 1)]);
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Stonecutter, title: json!({"translate": "container.stonecutter"}) }));
+        assert_eq!(opening.data, [-1]);
+        // Andesite's first recipe is its slab, two to a block.
+        let update = server.menu_batch(opening.id, 1, &[click(29, ContainerInput::QuickMove), MenuInput::Button(0)], player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!((update.slots[1].clone(), &update.data[..]), (Some(stack("minecraft:andesite_slab", 2, 64)), &[0][..]));
+        server.level.take_sounds();
+        let update = server.menu_batch(opening.id, 2, &[click(1, ContainerInput::QuickMove)], player(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(inventory.slots[8], Some(stack("minecraft:andesite_slab", 4, 64)));
+        assert_eq!((&update.slots[..], &update.data[..]), (&[None, None][..], &[-1][..]));
+        let sounds = server.level.take_sounds();
+        assert_eq!(sounds.iter().map(|s| s.event).collect::<Vec<_>>(), ["minecraft:ui.stonecutter.take_result"]);
     }
 
     #[test]

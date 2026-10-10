@@ -29,6 +29,7 @@ pub mod enchanting;
 pub mod furnace;
 pub mod grindstone;
 pub mod smithing;
+pub mod stonecutter;
 pub mod storage;
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,7 @@ pub use enchanting::EnchantmentMenu;
 pub use furnace::FurnaceMenu;
 pub use grindstone::GrindstoneMenu;
 pub use smithing::SmithingMenu;
+pub use stonecutter::StonecutterMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
 /// `AbstractContainerMenu.SLOT_CLICKED_OUTSIDE`: a click outside the window.
@@ -304,6 +306,8 @@ pub struct MenuContext<'a> {
     pub sounds: Vec<(&'static str, f32, f32)>,
     /// Requests to the menu's block entity, in order.
     pub block_requests: Vec<BlockRequest>,
+    /// `Level.getGameTime` at the menu: the stonecutter sounds once a tick.
+    pub game_time: i64,
     /// Player slots written during the current input, each with its stack
     /// before the first write.
     touched: Vec<(usize, Option<ItemStack>)>,
@@ -327,6 +331,7 @@ impl<'a> MenuContext<'a> {
             level_events: Vec::new(),
             sounds: Vec::new(),
             block_requests: Vec::new(),
+            game_time: 0,
             touched: Vec::new(),
             written: BTreeSet::new(),
         }

@@ -197,6 +197,14 @@ struct SmithingEntry {
     kind: SmithingKind,
 }
 
+/// A `minecraft:stonecutting` recipe (`StonecutterRecipe`).
+#[derive(Debug)]
+struct StonecuttingEntry {
+    id: String,
+    ingredient: Ingredient,
+    result: ItemStack,
+}
+
 /// The trim material an item provides (`DataComponents.PROVIDES_TRIM_MATERIAL`,
 /// which `Items` gives the `#trim_materials`).
 pub fn trim_material(item: &str) -> Option<&'static str> {
@@ -232,6 +240,8 @@ pub struct RecipeBook {
     brewing: Vec<BrewingEntry>,
     /// The smithing recipes, in file-name order.
     smithing: Vec<SmithingEntry>,
+    /// The stonecutting recipes, in file-name order.
+    stonecutting: Vec<StonecuttingEntry>,
     tags: HashMap<String, Vec<String>>,
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
@@ -294,6 +304,7 @@ impl RecipeBook {
         let mut smelting = Vec::new();
         let mut brewing = Vec::new();
         let mut smithing = Vec::new();
+        let mut stonecutting = Vec::new();
         for (name, value) in raw_recipes {
             if value.get("type").and_then(Value::as_str) == Some("minecraft:brewing") {
                 brewing.extend(parse_brewing(&value));
@@ -305,6 +316,17 @@ impl RecipeBook {
             };
             if let Some(entry) = parse_smithing(id(), &value) {
                 smithing.push(entry);
+                continue;
+            }
+            if value.get("type").and_then(Value::as_str) == Some("minecraft:stonecutting") {
+                let ingredient = value.get("ingredient").and_then(Ingredient::parse);
+                if let (Some(ingredient), Some(result)) = (ingredient, parse_result(&value)) {
+                    stonecutting.push(StonecuttingEntry {
+                        id: id(),
+                        ingredient,
+                        result,
+                    });
+                }
                 continue;
             }
             let cooking_kind = match value.get("type").and_then(Value::as_str) {
@@ -383,6 +405,7 @@ impl RecipeBook {
             smelting,
             brewing,
             smithing,
+            stonecutting,
             tags,
             auto_unlocks,
             display_indices: HashMap::new(),
@@ -777,6 +800,28 @@ impl RecipeBook {
             }
         };
         Some((entry.id.as_str(), result))
+    }
+
+    /// How many stonecutting recipes the book has.
+    pub fn stonecutting_count(&self) -> usize {
+        self.stonecutting.len()
+    }
+
+    /// `RecipeManager.stonecutterRecipes().selectByInput`: the stonecutting
+    /// recipes that take the input, in the recipes' order, with what each
+    /// makes (its `optionDisplay` and `assemble`).
+    pub fn stonecutting_recipes(&self, input: &ItemStack) -> Vec<(&str, ItemStack)> {
+        self.stonecutting
+            .iter()
+            .filter(|entry| self.matches_ingredient(&entry.ingredient, &input.id))
+            .map(|entry| {
+                let result = ItemStack {
+                    max: self.max_stack(&entry.result.id),
+                    ..entry.result.clone()
+                };
+                (entry.id.as_str(), result)
+            })
+            .collect()
     }
 
     /// The `smithing_template` recipe property set.
@@ -1535,6 +1580,40 @@ mod tests {
                 && book.is_smithing_addition(&redstone)
         );
         assert!(!book.is_smithing_base(&ItemStack::new("minecraft:stone", 1)));
+    }
+
+    #[test]
+    fn the_games_stonecutting_recipes_load_when_available() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else {
+            return;
+        };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let book = RecipeBook::from_jar(&jar).unwrap();
+        assert_eq!(book.stonecutting_count(), 351);
+        // Andesite's, in the recipes' order.
+        let andesite = book.stonecutting_recipes(&ItemStack::new("minecraft:andesite", 1));
+        let made: Vec<(&str, u8)> = andesite
+            .iter()
+            .map(|(_, stack)| (stack.id.as_str(), stack.count))
+            .collect();
+        assert_eq!(
+            made,
+            [
+                ("minecraft:andesite_slab", 2),
+                ("minecraft:andesite_stairs", 1),
+                ("minecraft:andesite_wall", 1),
+                ("minecraft:polished_andesite", 1),
+                ("minecraft:polished_andesite_slab", 2),
+                ("minecraft:polished_andesite_stairs", 1)
+            ]
+        );
+        assert!(
+            book.stonecutting_recipes(&ItemStack::new("minecraft:dirt", 1))
+                .is_empty()
+        );
     }
 
     #[test]

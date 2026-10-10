@@ -16,8 +16,8 @@ use crate::render::{Renderer, TextureId, UiList};
 #[path = "menu_gui.rs"]
 mod menu_gui;
 pub use menu_gui::{
-    EnchantingBook, MenuSlotView, MenuView, NameBox, SlotDrag, SmithingIcons, TradeList,
-    anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
+    EnchantingBook, MenuSlotView, MenuView, NameBox, RecipeList, SlotDrag, SmithingIcons,
+    TradeList, anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
 };
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
@@ -408,6 +408,33 @@ const SPRITES: &[(&str, &str, f32)] = &[
     (
         "smithing_error",
         "gui/sprites/container/smithing/error",
+        0.0,
+    ),
+    // The stonecutter (`StonecutterScreen`).
+    ("stonecutter", "gui/container/stonecutter", 0.0),
+    (
+        "stonecutter_scroller",
+        "gui/sprites/container/stonecutter/scroller",
+        0.0,
+    ),
+    (
+        "stonecutter_scroller_disabled",
+        "gui/sprites/container/stonecutter/scroller_disabled",
+        0.0,
+    ),
+    (
+        "stonecutter_recipe",
+        "gui/sprites/container/stonecutter/recipe",
+        0.0,
+    ),
+    (
+        "stonecutter_recipe_highlighted",
+        "gui/sprites/container/stonecutter/recipe_highlighted",
+        0.0,
+    ),
+    (
+        "stonecutter_recipe_selected",
+        "gui/sprites/container/stonecutter/recipe_selected",
         0.0,
     ),
 ];

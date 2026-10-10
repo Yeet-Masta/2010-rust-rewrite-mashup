@@ -30,11 +30,14 @@ mod furnace;
 mod merchant;
 #[path = "screens/smithing.rs"]
 mod smithing;
+#[path = "screens/stonecutter.rs"]
+mod stonecutter;
 
 pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
 pub use merchant::TradeList;
 pub use smithing::SmithingIcons;
+pub use stonecutter::RecipeList;
 
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
@@ -133,6 +136,11 @@ pub fn layout(kind: MenuKind) -> Layout {
             title_y: 15.0,
             ..Layout::plain("smithing", 166.0, TitleX::At(44.0))
         },
+        // `StonecutterScreen`: the title a pixel higher.
+        MenuKind::Stonecutter => Layout {
+            title_y: 5.0,
+            ..Layout::plain("stonecutter", 166.0, TitleX::At(8.0))
+        },
     }
 }
 
@@ -192,6 +200,10 @@ pub struct MenuView<'a> {
     /// Empty slots' cycling icons (`CyclingSlotBackground`): the slot, the
     /// sprite and its alpha.
     pub slot_icons: Vec<(usize, &'static str, f32)>,
+    /// The stonecutter's recipes for its input (their results), and its
+    /// list's scroll.
+    pub recipes: Vec<ItemStack>,
+    pub recipe_list: &'a RecipeList,
 }
 
 impl Gui {
@@ -337,6 +349,7 @@ impl Gui {
                 }
             }
             MenuKind::Smithing => self.smithing_extras(ui, view, left, top),
+            MenuKind::Stonecutter => self.stonecutter_extras(ui, packs, view, left, top),
         }
     }
 
@@ -364,6 +377,7 @@ impl Gui {
             MenuKind::Crafter => self.crafter_tooltip(ui, view),
             MenuKind::Enchantment => self.enchanting_tooltip(ui, view, left, top),
             MenuKind::Smithing => self.smithing_tooltip(ui, view, left, top),
+            MenuKind::Stonecutter => self.stonecutter_tooltip(ui, view, left, top),
             _ => {}
         }
     }
@@ -454,6 +468,7 @@ mod tests {
             MenuKind::Anvil,
             MenuKind::Grindstone,
             MenuKind::Smithing,
+            MenuKind::Stonecutter,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());
