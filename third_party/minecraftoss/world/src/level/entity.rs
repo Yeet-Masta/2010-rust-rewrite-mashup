@@ -40,6 +40,9 @@ pub struct FallingData {
     pub state: BlockStateId,
     pub time: i32,
     pub drop_item: bool,
+    /// `DATA_START_POS`: the cell it fell from (`fall`), which picks its
+    /// model's variant on the client.
+    pub start: BlockPos,
 }
 
 /// `PrimedTnt` state.

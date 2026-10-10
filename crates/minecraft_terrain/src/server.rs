@@ -116,7 +116,10 @@ pub struct ServerItem {
 pub struct ServerFallingBlock {
     pub position: [f64; 3],
     pub previous_position: [f64; 3],
-    pub block: String,
+    /// The falling block state.
+    pub block: Block,
+    /// The cell it fell from (`getStartPos`), which picks its model.
+    pub start: BlockPos,
 }
 
 /// An experience orb as the client shows it.
@@ -858,10 +861,12 @@ impl ServerSim {
             .entities
             .iter()
             .filter_map(|e| {
-                e.falling_data().map(|d| ServerFallingBlock {
+                let d = e.falling_data()?;
+                Some(ServerFallingBlock {
                     position: e.pos,
                     previous_position: e.old_position(),
-                    block: self.level.registries().blocks.block(self.level.registries().blocks.block_of(d.state)).name.to_string(),
+                    block: self.states.block(d.state)?.clone(),
+                    start: (d.start.x, d.start.y, d.start.z),
                 })
             })
             .collect()

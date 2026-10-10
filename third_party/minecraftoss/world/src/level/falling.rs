@@ -56,7 +56,7 @@ impl Level<'_> {
         if self.registries().blocks.property(state, "waterlogged").is_some() {
             falling = self.with(state, "waterlogged", "false");
         }
-        let entity = Entity::falling_block([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], FallingData { state: falling, time: 0, drop_item: !brushable });
+        let entity = Entity::falling_block([f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5], FallingData { state: falling, time: 0, drop_item: !brushable, start: pos });
         let fluid = self.fluid_legacy_block(self.fluid_state(state));
         self.set_block_and_update(pos, fluid);
         self.add_entity(entity);

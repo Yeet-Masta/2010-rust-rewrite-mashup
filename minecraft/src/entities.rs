@@ -19,7 +19,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
     EntitySnapshot, ExplosionView, MovingBlockView, PlayerEdit, ServerHandle, ServerItem,
-    ServerLightning, ServerSim, ServerTnt, TickInput, Weather,
+    ServerFallingBlock, ServerLightning, ServerSim, ServerTnt, TickInput, Weather,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -143,6 +143,8 @@ pub struct Entities {
     pub weather: Option<Weather>,
     /// Primed TNT, as of the last server tick.
     primed_tnt: Vec<ServerTnt>,
+    /// Falling blocks, as of the last server tick.
+    falling_blocks: Vec<ServerFallingBlock>,
     server_handled: u64,
     /// Chunks unloaded from the server, each with the commands sent as of
     /// its unload: the chunk map keeps them until the outputs through it
@@ -223,6 +225,7 @@ impl Entities {
             lightning: Vec::new(),
             weather: None,
             primed_tnt: Vec::new(),
+            falling_blocks: Vec::new(),
             server_handled: 0,
             unloads: Vec::new(),
             sounds: Vec::new(),
@@ -828,6 +831,7 @@ impl Entities {
             self.server_handled = output.handled;
             if let Some(mut snapshot) = output.entities {
                 self.primed_tnt = std::mem::take(&mut snapshot.tnt);
+                self.falling_blocks = std::mem::take(&mut snapshot.falling);
                 self.lightning = std::mem::take(&mut snapshot.lightning);
                 self.server_snapshot = Some(snapshot);
             }
@@ -1171,16 +1175,18 @@ impl Entities {
         let _ = self
             .items
             .append_posed_blocks(&mut out.items, &carried, packs, atlas, light);
-        // Blocks pistons are moving (`PistonHeadRenderer`).
-        if !self.moving_blocks.is_empty() {
+        // Blocks pistons are moving (`PistonHeadRenderer`), and falling
+        // blocks (`FallingBlockRenderer`).
+        let mut parts: Vec<_> = self
+            .moving_blocks
+            .iter()
+            .flat_map(|view| mesh::moving_block_parts(view, partial))
+            .collect();
+        parts.extend(falling_block_parts(&self.falling_blocks, scene, partial));
+        if !parts.is_empty() {
             let tint = self.tint.get_or_insert_with(|| {
                 mesh::BiomeTint::from_pack(packs).unwrap_or_else(|_| mesh::BiomeTint::empty())
             });
-            let parts: Vec<_> = self
-                .moving_blocks
-                .iter()
-                .flat_map(|view| mesh::moving_block_parts(view, partial))
-                .collect();
             let _ = mesh::append_moving_blocks(&mut out.items, scene, &parts, packs, atlas, tint, light);
         }
         // The containers' block entities (`ChestRenderer`,
@@ -1216,11 +1222,13 @@ impl Entities {
         );
         // Their shadows, at `getMaxLocalRawBrightness`.
         let mut casters = client_mobs::shadow_casters(w, poses, camera, partial);
-        // `TntRenderer`'s shadow is 0.5.
-        casters.extend(self.primed_tnt.iter().map(|t| {
-            let position = DVec3::from_array(t.position);
+        // `TntRenderer`'s and `FallingBlockRenderer`'s shadows are 0.5.
+        let tnt = self.primed_tnt.iter().map(|t| (t.previous_position, t.position));
+        let falling = self.falling_blocks.iter().map(|f| (f.previous_position, f.position));
+        casters.extend(tnt.chain(falling).map(|(previous, position)| {
+            let position = DVec3::from_array(position);
             mesh::ShadowCaster {
-                position: DVec3::from_array(t.previous_position).lerp(position, f64::from(partial)),
+                position: DVec3::from_array(previous).lerp(position, f64::from(partial)),
                 distance_squared: position.distance_squared(camera),
                 radius: 0.5,
                 strength: 1.0,
@@ -1237,6 +1245,41 @@ impl Entities {
         }
         out
     }
+}
+
+/// What `FallingBlockRenderer` draws of each falling block, as moving-block
+/// parts: its block state's model with its corner half a block across from
+/// the interpolated feet, its variant picked by the cell it fell from
+/// (`getStartPos`), lit and tinted at the cell holding the top of its box
+/// (`BlockPos.containing(x, maxY, z)`). One the level already shows in its
+/// cell is not drawn (`shouldRender`).
+fn falling_block_parts(
+    falling: &[ServerFallingBlock],
+    scene: &HandcraftedScene,
+    partial: f32,
+) -> Vec<((i32, i32, i32), Vec3, Block, (i32, i32, i32))> {
+    falling
+        .iter()
+        .filter(|f| {
+            let [x, y, z] = f.position.map(|v| v.floor() as i32);
+            scene.block((x, y, z)) != Some(&f.block)
+        })
+        .map(|f| {
+            let at = DVec3::from_array(f.previous_position)
+                .lerp(DVec3::from_array(f.position), f64::from(partial));
+            let (x, y, z) = f.start;
+            let corner = at - DVec3::new(0.5, 0.0, 0.5);
+            let offset = (corner - DVec3::new(f64::from(x), f64::from(y), f64::from(z))).as_vec3();
+            // The entity is 0.98 tall.
+            let [px, py, pz] = f.position;
+            let top = (
+                px.floor() as i32,
+                (py + 0.98).floor() as i32,
+                pz.floor() as i32,
+            );
+            (f.start, offset, f.block.clone(), top)
+        })
+        .collect()
 }
 
 /// The viewer's `server_bob_offset`: a server item's bob phase from its id.
