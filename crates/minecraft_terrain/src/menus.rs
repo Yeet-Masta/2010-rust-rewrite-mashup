@@ -70,6 +70,7 @@ use minecraftoss_player::menu::GrindstoneMenu;
 use minecraftoss_player::menu::SmithingMenu;
 use minecraftoss_player::menu::StonecutterMenu;
 use minecraftoss_player::menu::LoomMenu;
+use minecraftoss_player::menu::cartography::{CartographyTableMenu, MapInfo, MapRegistry};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -124,6 +125,8 @@ pub enum MenuKind {
     Stonecutter,
     /// `loom` (`LoomMenu`).
     Loom,
+    /// `cartography_table` (`CartographyTableMenu`).
+    CartographyTable,
 }
 
 impl MenuKind {
@@ -151,6 +154,7 @@ impl MenuKind {
             Self::Smithing => "minecraft:smithing",
             Self::Stonecutter => "minecraft:stonecutter",
             Self::Loom => "minecraft:loom",
+            Self::CartographyTable => "minecraft:cartography_table",
         }
     }
 
@@ -174,6 +178,7 @@ impl MenuKind {
             Self::Smithing => Box::new(SmithingMenu::new(own)),
             Self::Stonecutter => Box::new(StonecutterMenu::new(own)),
             Self::Loom => Box::new(LoomMenu::new(own)),
+            Self::CartographyTable => Box::new(CartographyTableMenu::new(own)),
         }
     }
 }
@@ -229,6 +234,9 @@ pub enum MenuExtra {
     /// The trader's offers, level and experience
     /// (`ClientboundMerchantOffersPacket`).
     Merchant(Offers),
+    /// The data of the map in a cartography table (the client's
+    /// `MapItem.getSavedData`).
+    Map(Option<MapInfo>),
 }
 
 impl MenuExtra {
@@ -239,6 +247,11 @@ impl MenuExtra {
             Self::Merchant(offers) => {
                 if let Some(menu) = merchant_mut(menu) {
                     menu.sync(offers.clone());
+                }
+            }
+            Self::Map(info) => {
+                if let Some(menu) = cartography_mut(menu) {
+                    menu.set_map_info(*info);
                 }
             }
         }
@@ -273,6 +286,15 @@ pub fn loom(menu: &(dyn Menu + Send)) -> Option<&LoomMenu> {
     menu.as_any()?.downcast_ref()
 }
 
+/// The cartography table's menu behind a menu, if it is one.
+pub fn cartography(menu: &(dyn Menu + Send)) -> Option<&CartographyTableMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
+fn cartography_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut CartographyTableMenu> {
+    menu.as_any_mut()?.downcast_mut()
+}
+
 /// The anvil's menu behind a menu, if it is one.
 pub fn anvil(menu: &(dyn Menu + Send)) -> Option<&AnvilMenu> {
     menu.as_any()?.downcast_ref()
@@ -294,6 +316,8 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
         stonecutter.set_at_block(at_block);
     } else if let Some(loom) = any.downcast_mut::<LoomMenu>() {
         loom.set_at_block(at_block);
+    } else if let Some(table) = any.downcast_mut::<CartographyTableMenu>() {
+        table.set_at_block(at_block);
     }
 }
 
@@ -478,12 +502,14 @@ pub(crate) struct Menus {
     level_events: Vec<(BlockPos, i32, i32)>,
     /// The enchanting table's registries, read at its first opening.
     table: Option<std::sync::Arc<TableRegistry>>,
+    /// The maps' data, as far as the cartography table needs it.
+    maps: std::sync::Arc<std::sync::Mutex<MapRegistry>>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed), level_events: Vec::new(), table: None }
+        Self { open: None, counter: 0, ender: vec![None; ENDER_SLOTS], ender_changed: false, random: LegacyRandom::new(seed), level_events: Vec::new(), table: None, maps: Default::default() }
     }
 }
 
@@ -562,6 +588,7 @@ enum MenuBlock {
     SmithingTable,
     Stonecutter,
     Loom,
+    CartographyTable,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -584,6 +611,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("SmithingTableBlock", MenuBlock::SmithingTable),
     ("StonecutterBlock", MenuBlock::Stonecutter),
     ("LoomBlock", MenuBlock::Loom),
+    ("CartographyTableBlock", MenuBlock::CartographyTable),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -862,13 +890,14 @@ impl ServerSim {
         self.load_data(menu.as_mut(), target.source);
         self.open_station(menu.as_mut(), target.source, &player);
         let sent = (menu.own().items().to_vec(), menu.data());
-        let open = OpenMenu { id: self.menus.counter, kind: target.kind, menu, source: target.source, seq: 0, sent: sent.clone(), sent_extra: None, closing: false, creative: player.creative };
+        let mut open = OpenMenu { id: self.menus.counter, kind: target.kind, menu, source: target.source, seq: 0, sent: sent.clone(), sent_extra: None, closing: false, creative: player.creative };
+        open.sent_extra = Self::extra(&open);
         // The menu's `startOpen`.
         for p in target.source.positions() {
             self.level.start_open(p, interaction_range(player.creative));
             self.level.watch_block_entity(p);
         }
-        updates.push(MenuUpdate { id: open.id, open: Some(MenuOpen { kind: target.kind, title: target.title }), slots: sent.0, data: sent.1, ..MenuUpdate::default() });
+        updates.push(MenuUpdate { id: open.id, open: Some(MenuOpen { kind: target.kind, title: target.title }), slots: sent.0, data: sent.1, extra: open.sent_extra.clone(), ..MenuUpdate::default() });
         self.menus.open = Some(open);
         result.opened = true;
         (result, updates)
@@ -940,7 +969,8 @@ impl ServerSim {
 
     /// The kind's extra for the screen, as the menu has it now.
     fn extra(open: &OpenMenu) -> Option<MenuExtra> {
-        merchant(open.menu.as_ref()).map(|menu| MenuExtra::Merchant(menu.offers().clone()))
+        let menu = open.menu.as_ref();
+        merchant(menu).map(|menu| MenuExtra::Merchant(menu.offers().clone())).or_else(|| cartography(menu).map(|menu| MenuExtra::Map(menu.map_info())))
     }
 
     /// The menu a block opens, by its `useWithoutItem` and
@@ -1013,6 +1043,7 @@ impl ServerSim {
             MenuBlock::SmithingTable => station(MenuKind::Smithing, "container.upgrade", "interact_with_smithing_table"),
             MenuBlock::Stonecutter => station(MenuKind::Stonecutter, "container.stonecutter", "interact_with_stonecutter"),
             MenuBlock::Loom => station(MenuKind::Loom, "container.loom", "interact_with_loom"),
+            MenuBlock::CartographyTable => station(MenuKind::CartographyTable, "container.cartography_table", "interact_with_cartography_table"),
         }
     }
 
@@ -1164,6 +1195,9 @@ impl ServerSim {
         let Source::Station(pos, _) = source else { return };
         let rules = station_rules(self.level.registries());
         attach_rules(menu, rules, true);
+        if let Some(table) = cartography_mut(menu) {
+            table.set_maps(Some(self.menus.maps.clone()));
+        }
         if let Some(enchanting) = enchantment_mut(menu) {
             let registries = self.level.registries();
             let table = self.menus.table.get_or_insert_with(|| std::sync::Arc::new(TableRegistry::new(registries))).clone();

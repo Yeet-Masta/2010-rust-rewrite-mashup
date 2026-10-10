@@ -474,6 +474,33 @@ const SPRITES: &[(&str, &str, f32)] = &[
         0.0,
     ),
     ("loom_error", "gui/sprites/container/loom/error", 0.0),
+    // The cartography table (`CartographyTableScreen`).
+    ("cartography_table", "gui/container/cartography_table", 0.0),
+    (
+        "cartography_table_error",
+        "gui/sprites/container/cartography_table/error",
+        0.0,
+    ),
+    (
+        "cartography_table_scaled_map",
+        "gui/sprites/container/cartography_table/scaled_map",
+        0.0,
+    ),
+    (
+        "cartography_table_duplicated_map",
+        "gui/sprites/container/cartography_table/duplicated_map",
+        0.0,
+    ),
+    (
+        "cartography_table_map",
+        "gui/sprites/container/cartography_table/map",
+        0.0,
+    ),
+    (
+        "cartography_table_locked",
+        "gui/sprites/container/cartography_table/locked",
+        0.0,
+    ),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as

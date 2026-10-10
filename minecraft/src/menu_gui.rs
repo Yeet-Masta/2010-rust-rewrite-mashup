@@ -34,6 +34,8 @@ mod smithing;
 mod stonecutter;
 #[path = "screens/loom.rs"]
 mod loom;
+#[path = "screens/cartography.rs"]
+mod cartography;
 
 pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
@@ -148,6 +150,11 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::Loom => Layout {
             title_y: 4.0,
             ..Layout::plain("loom", 166.0, TitleX::At(8.0))
+        },
+        // `CartographyTableScreen`: the title two pixels higher.
+        MenuKind::CartographyTable => Layout {
+            title_y: 4.0,
+            ..Layout::plain("cartography_table", 166.0, TitleX::At(8.0))
         },
     }
 }
@@ -363,6 +370,7 @@ impl Gui {
             MenuKind::Smithing => self.smithing_extras(ui, view, left, top),
             MenuKind::Stonecutter => self.stonecutter_extras(ui, packs, view, left, top),
             MenuKind::Loom => self.loom_extras(ui, packs, view, left, top),
+            MenuKind::CartographyTable => self.cartography_extras(ui, view, left, top),
         }
     }
 
