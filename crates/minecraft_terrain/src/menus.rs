@@ -71,6 +71,7 @@ use minecraftoss_player::menu::SmithingMenu;
 use minecraftoss_player::menu::StonecutterMenu;
 use minecraftoss_player::menu::LoomMenu;
 use minecraftoss_player::menu::cartography::{CartographyTableMenu, MapInfo, MapRegistry};
+use minecraftoss_player::menu::beacon::{self as beacon_menu, BeaconMenu};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -127,6 +128,8 @@ pub enum MenuKind {
     Loom,
     /// `cartography_table` (`CartographyTableMenu`).
     CartographyTable,
+    /// `beacon` (`BeaconMenu`).
+    Beacon,
 }
 
 impl MenuKind {
@@ -155,6 +158,7 @@ impl MenuKind {
             Self::Stonecutter => "minecraft:stonecutter",
             Self::Loom => "minecraft:loom",
             Self::CartographyTable => "minecraft:cartography_table",
+            Self::Beacon => "minecraft:beacon",
         }
     }
 
@@ -179,6 +183,7 @@ impl MenuKind {
             Self::Stonecutter => Box::new(StonecutterMenu::new(own)),
             Self::Loom => Box::new(LoomMenu::new(own)),
             Self::CartographyTable => Box::new(CartographyTableMenu::new(own)),
+            Self::Beacon => Box::new(BeaconMenu::new(own)),
         }
     }
 }
@@ -318,6 +323,8 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
         loom.set_at_block(at_block);
     } else if let Some(table) = any.downcast_mut::<CartographyTableMenu>() {
         table.set_at_block(at_block);
+    } else if let Some(beacon) = any.downcast_mut::<BeaconMenu>() {
+        beacon.set_at_block(at_block);
     }
 }
 
@@ -589,6 +596,7 @@ enum MenuBlock {
     Stonecutter,
     Loom,
     CartographyTable,
+    Beacon,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -612,6 +620,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("StonecutterBlock", MenuBlock::Stonecutter),
     ("LoomBlock", MenuBlock::Loom),
     ("CartographyTableBlock", MenuBlock::CartographyTable),
+    ("BeaconBlock", MenuBlock::Beacon),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -1044,6 +1053,14 @@ impl ServerSim {
             MenuBlock::Stonecutter => station(MenuKind::Stonecutter, "container.stonecutter", "interact_with_stonecutter"),
             MenuBlock::Loom => station(MenuKind::Loom, "container.loom", "interact_with_loom"),
             MenuBlock::CartographyTable => station(MenuKind::CartographyTable, "container.cartography_table", "interact_with_cartography_table"),
+            // `BeaconBlock.useWithoutItem`: its block entity's menu, behind
+            // its lock, with its name; the payment is the menu's own.
+            MenuBlock::Beacon => {
+                level.block_entity(at)?;
+                let block = level.registries().blocks.block_of(level.block(at));
+                let title = custom_name(at).unwrap_or_else(|| translated("container.beacon"));
+                Some(Target { kind: MenuKind::Beacon, source: Source::Station(at, block), title, stat: "interact_with_beacon", locked_by: vec![at], centre: centre(at) })
+            }
         }
     }
 
@@ -1248,6 +1265,7 @@ impl ServerSim {
             if let Some(enchanting) = enchantment_mut(open.menu.as_mut()) {
                 enchanting.set_bookshelves(self.bookshelves(pos));
             }
+            self.load_data(open.menu.as_mut(), open.source);
             return;
         }
         if let Source::Merchant(_) = open.source {
@@ -1265,6 +1283,10 @@ impl ServerSim {
             Source::Container(ContainerRef::Single(pos, Store::Furnace)) => self.level.furnace_data(pos).map(|data| data.to_vec()),
             Source::Container(ContainerRef::Single(pos, Store::Crafter)) => self.level.crafter_data(pos).map(|data| data.to_vec()),
             Source::Container(ContainerRef::Single(pos, Store::BrewingStand)) => self.level.brewing_stand_data(pos).map(|data| data.to_vec()),
+            // The beacon's `dataAccess`: its levels and powers.
+            Source::Station(pos, _) => self.level.beacon_data(pos).map(|(levels, beacon)| {
+                vec![levels, beacon_menu::encode_effect(beacon.primary.as_deref()), beacon_menu::encode_effect(beacon.secondary.as_deref())]
+            }),
             _ => None,
         };
         for (id, value) in data.into_iter().flatten().enumerate() {
@@ -1280,9 +1302,15 @@ impl ServerSim {
         let requests = std::mem::take(&mut cx.block_requests);
         if let Source::Station(pos, _) = open.source {
             for request in requests {
-                if request == BlockRequest::DamageAnvil {
-                    let event = self.damage_anvil(pos);
-                    cx.level_events.push(event);
+                match request {
+                    BlockRequest::DamageAnvil => {
+                        let event = self.damage_anvil(pos);
+                        cx.level_events.push(event);
+                    }
+                    BlockRequest::SetBeacon { primary, secondary } => {
+                        self.level.beacon_set_effects(pos, beacon_menu::decode_effect(primary), beacon_menu::decode_effect(secondary));
+                    }
+                    _ => {}
                 }
             }
             return;

@@ -19,7 +19,7 @@ use minecraft_terrain::menus::{
     crafter, loom, merchant, stonecutter,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
-use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
+use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef, beacon};
 use minecraftoss_player::rng::LegacyRandom;
 use serde_json::Value;
 
@@ -29,6 +29,7 @@ use crate::gui::{
     SlotDrag, SmithingIcons, TradeList, enchanting_row_at,
 };
 use crate::render::GuiModel;
+use crate::gui::{BeaconButton, BeaconChoice};
 
 /// `MouseHandler.DOUBLE_CLICK_THRESHOLD_MS`.
 const DOUBLE_CLICK_MS: u128 = 250;
@@ -139,6 +140,8 @@ pub(super) struct ClientMenu {
     recipe_list: RecipeList,
     /// The loom screen's pattern list.
     pattern_list: PatternList,
+    /// The beacon screen's chosen powers.
+    beacon: BeaconChoice,
 }
 
 impl ClientMenu {
@@ -181,6 +184,11 @@ impl ClientMenu {
             smithing: SmithingIcons::default(),
             recipe_list: RecipeList::default(),
             pattern_list: PatternList::default(),
+            beacon: {
+                let mut choice = BeaconChoice::default();
+                choice.watch(&update.data);
+                choice
+            },
         }
     }
 
@@ -259,6 +267,9 @@ impl ClientMenu {
         }
         self.slots = update.slots;
         self.data = update.data;
+        if self.kind == MenuKind::Beacon {
+            self.beacon.watch(&self.data);
+        }
         if update.extra.is_some() {
             self.extra = update.extra;
         }
@@ -624,6 +635,7 @@ impl ClientMenu {
                 })
                 .collect(),
             pattern_list: &self.pattern_list,
+            beacon: &self.beacon,
         }
     }
 
@@ -646,6 +658,30 @@ impl ClientMenu {
         self.send(MenuInput::Button(index));
         self.sounds
             .push(("minecraft:ui.loom.select_pattern", 0.25, 1.0));
+        true
+    }
+
+    /// `BeaconScreen`'s buttons: a left press on an active one, with its
+    /// click; confirm sends the chosen powers (`ServerboundSetBeaconPacket`)
+    /// and, as cancel does, closes the screen (`close`). Whether one took it.
+    fn press_beacon_button(&mut self, x: f32, y: f32, close: &mut bool) -> bool {
+        if self.kind != MenuKind::Beacon {
+            return false;
+        }
+        let levels = self.menu.data().get(beacon::LEVELS).copied().unwrap_or(0);
+        let paid = self.item(beacon::PAYMENT).is_some();
+        let Some(button) = self.beacon.press(x, y, levels, paid) else {
+            return false;
+        };
+        self.sounds.push(("minecraft:ui.button.click", 0.25, 1.0));
+        if button == BeaconButton::Confirm {
+            let (primary, secondary) = (self.beacon.primary, self.beacon.secondary);
+            self.send(MenuInput::SetBeacon {
+                primary: primary.map(str::to_owned),
+                secondary: secondary.map(str::to_owned),
+            });
+        }
+        *close = matches!(button, BeaconButton::Confirm | BeaconButton::Cancel);
         true
     }
 
@@ -996,6 +1032,7 @@ impl Game {
         } else {
             menu.mouse = gui.mouse;
         }
+        let mut close = false;
         for (button, pressed) in clicks {
             if pressed {
                 // Its buttons take a press before the slots: one picks its
@@ -1008,6 +1045,8 @@ impl Game {
                     None if menu.press_enchanting_row(mx, my) => {}
                     None if menu.press_stonecutter_button(mx, my) => {}
                     None if menu.press_loom_button(mx, my) => {}
+                    None if button == Mouse::Left
+                        && menu.press_beacon_button(mx, my, &mut close) => {}
                     None => menu.press(button, hovered, outside, input.shift),
                 }
             } else {
@@ -1019,6 +1058,9 @@ impl Game {
         }
         menu.prune_drag();
         self.play_menu_sounds();
+        if close {
+            self.close_menu();
+        }
     }
 
     /// The sounds the screen played, at the player.
@@ -1123,6 +1165,7 @@ mod tests {
             smithing: SmithingIcons::default(),
             recipe_list: RecipeList::default(),
             pattern_list: PatternList::default(),
+            beacon: BeaconChoice::default(),
         }
     }
 

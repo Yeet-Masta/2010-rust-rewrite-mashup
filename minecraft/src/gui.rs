@@ -19,6 +19,7 @@ pub use menu_gui::{
     EnchantingBook, MenuSlotView, MenuView, NameBox, PatternList, RecipeList, SlotDrag,
     SmithingIcons, TradeList, anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
 };
+pub use menu_gui::{BeaconButton, BeaconChoice};
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
 /// item and its variants.
@@ -501,6 +502,33 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/cartography_table/locked",
         0.0,
     ),
+    // The beacon (`BeaconScreen`), and its powers' icons (the GUI atlas's
+    // `mob_effect/` source).
+    ("beacon", "gui/container/beacon", 0.0),
+    ("beacon_button", "gui/sprites/container/beacon/button", 0.0),
+    (
+        "beacon_button_disabled",
+        "gui/sprites/container/beacon/button_disabled",
+        0.0,
+    ),
+    (
+        "beacon_button_highlighted",
+        "gui/sprites/container/beacon/button_highlighted",
+        0.0,
+    ),
+    (
+        "beacon_button_selected",
+        "gui/sprites/container/beacon/button_selected",
+        0.0,
+    ),
+    ("beacon_confirm", "gui/sprites/container/beacon/confirm", 0.0),
+    ("beacon_cancel", "gui/sprites/container/beacon/cancel", 0.0),
+    ("mob_effect_speed", "mob_effect/speed", 0.0),
+    ("mob_effect_haste", "mob_effect/haste", 0.0),
+    ("mob_effect_resistance", "mob_effect/resistance", 0.0),
+    ("mob_effect_jump_boost", "mob_effect/jump_boost", 0.0),
+    ("mob_effect_strength", "mob_effect/strength", 0.0),
+    ("mob_effect_regeneration", "mob_effect/regeneration", 0.0),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as

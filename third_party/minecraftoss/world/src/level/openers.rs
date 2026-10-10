@@ -433,6 +433,7 @@ impl Level<'_> {
         self.openers.remove(&pos);
         self.shulker_lids.remove(&pos);
         self.brewing_unsaved.remove(&pos);
+        self.beacon_removed(pos);
         if let Some(removed) = self.watched_block_entities.get_mut(&pos) {
             *removed = true;
         }

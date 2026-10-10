@@ -6,7 +6,9 @@
 //! Their blocks' own models have no elements, so this is all there is of
 //! them in the world. Also `EnchantTableRenderer`: the book floating over
 //! an enchanting table, turning to the nearest player and opening for them
-//! as `EnchantingTableBlockEntity.bookAnimationTick` moves it.
+//! as `EnchantingTableBlockEntity.bookAnimationTick` moves it. And
+//! `BeaconRenderer`: a beacon's beam, coloured by the stained glass it
+//! passes, as the client's `BeaconBlockEntity.tick` finds it.
 use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 
@@ -18,7 +20,11 @@ use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
 use crate::scene::{Block, BlockPos, Scene};
 use crate::special_icon::{book_model, chest_model, emit_part, shulker_box_model};
+use crate::mesh::Vertex;
+use crate::scene::HandcraftedScene;
+use minecraftoss_core::BlockStateId;
 use minecraftoss_player::rng::LegacyRandom;
+use minecraftoss_world::level::beacon::{BeaconBeam, BeamBlock};
 
 /// `ChestLidController`: whether the lid should be open, and its openness
 /// this tick and the last.
@@ -436,6 +442,7 @@ pub fn sheets() -> Vec<String> {
     sheets.push("minecraft:entity/shulker/shulker".to_owned());
     sheets.extend(DYES.iter().map(|dye| format!("minecraft:entity/shulker/shulker_{dye}")));
     sheets.push(BOOK_SHEET.to_owned());
+    sheets.push(BEAM_SHEET.to_owned());
     sheets
 }
 
@@ -619,6 +626,195 @@ pub fn append_container<S: Scene>(
     }
 }
 
+/// `BeaconRenderer.BEAM_LOCATION`.
+pub const BEAM_SHEET: &str = "minecraft:entity/beacon/beacon_beam";
+/// How far above the camera a beam is drawn: vanilla's last section runs
+/// 2048 blocks up (`MAX_RENDER_Y`), far past what the camera can see.
+const BEAM_ABOVE_CAMERA: f32 = 512.0;
+
+/// The client level's beacons (`BeaconBlockEntity.tick` there): each checks
+/// its beam and its pyramid against the scene as the server's does.
+#[derive(Default)]
+pub struct BeaconBeams {
+    beams: HashMap<BlockPos, BeaconBeam>,
+    /// The client tick they last ticked for, and last were looked for.
+    ticked: u64,
+    found: Option<u64>,
+}
+
+impl BeaconBeams {
+    /// The client ticks since the last call up to `ticks`, the last at
+    /// `game_time`: the beacons in the loaded chunks are looked for once a
+    /// second, those gone are dropped, and each ticks.
+    pub fn tick(&mut self, scene: &HandcraftedScene, ticks: u64, game_time: i64) {
+        let pending = ticks.saturating_sub(self.ticked).min(20) as i64;
+        self.ticked = ticks;
+        let Some(states) = scene.states().filter(|_| pending > 0) else {
+            return;
+        };
+        let registries = states.registries();
+        let blocks = &registries.blocks;
+        let range = states.vertical_range();
+        let is_beacon = |pos: BlockPos| scene.block(pos).is_some_and(|block| block.id.path == "beacon");
+        if self.found.is_none_or(|found| found + 20 <= ticks) {
+            self.found = Some(ticks);
+            for chunk in scene.generated_chunks() {
+                for pos in scene.block_entity_cells(chunk).filter(|&pos| is_beacon(pos)) {
+                    self.beams.entry(pos).or_insert_with(|| BeaconBeam::new(range.start));
+                }
+            }
+        }
+        self.beams.retain(|&pos, _| is_beacon(pos));
+        let state = |pos: BlockPos| scene.state_at(pos).unwrap_or(BlockStateId::AIR);
+        let base = registries.block_tags.require("minecraft:beacon_base_blocks").ok();
+        let in_base = |p: minecraftoss_core::BlockPos| base.is_some_and(|tag| registries.block_in_tag(state((p.x, p.y, p.z)), tag));
+        for (&(x, y, z), beam) in &mut self.beams {
+            // `getHeight(WORLD_SURFACE)`: above the column's highest block
+            // that is not air.
+            let surface = range.clone().rev().find(|&y| !blocks.is_air(state((x, y, z)))).map_or(range.start, |y| y + 1);
+            let column = |y: i32| {
+                let at = state((x, y, z));
+                BeamBlock::of(blocks.block(blocks.block_of(at)).name.as_str(), blocks.state(at).light_dampening)
+            };
+            for behind in (0..pending).rev() {
+                let pos = minecraftoss_core::BlockPos::new(x, y, z);
+                beam.tick(pos, game_time - behind, surface, range.start, column, in_base);
+            }
+        }
+    }
+}
+
+/// `BeaconRenderer.submit` for every beacon with a beam: its sections from
+/// the beacon up, the last running on (`MAX_RENDER_Y`, here
+/// [`BEAM_ABOVE_CAMERA`] over the camera), each a turning solid beam into
+/// `solid` and a translucent glow around it into `glow`, scrolling with the
+/// game time, and wider the farther the camera is across.
+pub fn append_beacon_beams(
+    solid: &mut ChunkMesh,
+    glow: &mut ChunkMesh,
+    beams: &BeaconBeams,
+    camera: DVec3,
+    game_time: i64,
+    partial: f32,
+    atlas: &Atlas,
+) {
+    let Ok(sheet) = ResourceId::parse(BEAM_SHEET) else {
+        return;
+    };
+    if !atlas.contains(&sheet) {
+        return;
+    }
+    let region = atlas.entity_region(&sheet);
+    // `extract`: `floorMod(gameTime, 40) + partialTicks`.
+    let animation = game_time.rem_euclid(40) as f32 + partial;
+    for (&(x, y, z), beam) in &beams.beams {
+        let sections = beam.sections();
+        let centre = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+        // `horizontalDistance` to the camera.
+        let across = (camera.x - centre.x).hypot(camera.z - centre.z);
+        let radius_scale = (across as f32 / 96.0).max(1.0);
+        let origin = Vec3::new(x as f32 + 0.5, y as f32, z as f32 + 0.5);
+        let limit = (camera.y as f32 - y as f32 + BEAM_ABOVE_CAMERA).max(0.0);
+        let mut start = 0;
+        for (i, section) in sections.iter().enumerate() {
+            let height = if i + 1 == sections.len() { 2048 } else { section.height };
+            let segment = BeamSegment { origin, start: start as f32, end: (start + height) as f32, limit, animation };
+            segment.emit(solid, glow, region, section.color, 0.2 * radius_scale, 0.25 * radius_scale, camera);
+            start += section.height;
+        }
+    }
+}
+
+/// One section of a beam (`submitBeaconBeam`), from the beacon's foot and
+/// middle: its blocks up from the beacon, drawn no higher than `limit`.
+struct BeamSegment {
+    origin: Vec3,
+    start: f32,
+    end: f32,
+    limit: f32,
+    animation: f32,
+}
+
+impl BeamSegment {
+    #[allow(clippy::too_many_arguments)]
+    fn emit(&self, solid: &mut ChunkMesh, glow: &mut ChunkMesh, region: [f32; 4], color: u32, radius: f32, glow_radius: f32, camera: DVec3) {
+        // The texture scrolls down as the game time runs on.
+        let scroll = -self.animation;
+        let v_offset = {
+            let v = scroll * 0.2 - (scroll * 0.1).floor();
+            v - v.floor()
+        };
+        let rgb = [(color >> 16) & 255, (color >> 8) & 255, color & 255].map(|c| c as f32 / 255.0);
+        // The solid beam turns 2.25 degrees a tick, its texture 0.5 / radius
+        // times a block.
+        let turn = Quat::from_rotation_y((self.animation * 2.25 - 45.0).to_radians());
+        let corner = |x: f32, z: f32| {
+            let turned = turn * Vec3::new(x, 0.0, z);
+            (turned.x, turned.z)
+        };
+        let solid_corners = [corner(0.0, radius), corner(radius, 0.0), corner(-radius, 0.0), corner(0.0, -radius)];
+        let v_bottom = -1.0 + v_offset;
+        self.part(solid, region, solid_corners, [rgb[0], rgb[1], rgb[2], 1.0], v_bottom, 0.5 / radius, None);
+        // `ARGB.color(32, color)`, square about the middle.
+        let g = glow_radius;
+        let glow_corners = [(-g, -g), (g, -g), (-g, g), (g, g)];
+        self.part(glow, region, glow_corners, [rgb[0], rgb[1], rgb[2], 32.0 / 255.0], v_bottom, 1.0, Some(camera));
+    }
+
+    /// `renderPart`: the four sides between the corners (north-west,
+    /// north-east, south-west, south-east), the texture `rate` times a
+    /// block up from `v_bottom`. With a camera, only the sides facing it
+    /// (the glow's pipeline draws both faces; vanilla's culls the back).
+    #[allow(clippy::too_many_arguments)]
+    fn part(&self, mesh: &mut ChunkMesh, region: [f32; 4], [wn, en, ws, es]: [(f32, f32); 4], color: [f32; 4], v_bottom: f32, rate: f32, camera: Option<DVec3>) {
+        for (a, b) in [(wn, en), (es, ws), (en, es), (ws, wn)] {
+            if let Some(camera) = camera {
+                // The quad's front faces (-dz, dx) from its first corner.
+                let (nx, nz) = (-(b.1 - a.1), b.0 - a.0);
+                let to_camera = (camera.x as f32 - (self.origin.x + a.0), camera.z as f32 - (self.origin.z + a.1));
+                if nx * to_camera.0 + nz * to_camera.1 <= 0.0 {
+                    continue;
+                }
+            }
+            self.quad(mesh, region, a, b, color, v_bottom, rate);
+        }
+    }
+
+    /// `renderQuad` from corner `a` to `b`, cut where the texture repeats,
+    /// as the atlas holds one copy of it.
+    #[allow(clippy::too_many_arguments)]
+    fn quad(&self, mesh: &mut ChunkMesh, region: [f32; 4], a: (f32, f32), b: (f32, f32), color: [f32; 4], v_bottom: f32, rate: f32) {
+        let top = self.end.min(self.limit);
+        if top <= self.start {
+            return;
+        }
+        let (v_start, v_end) = (v_bottom, v_bottom + (top - self.start) * rate);
+        let mut v = v_start;
+        while v < v_end {
+            let tile = v.floor();
+            let next = (tile + 1.0).min(v_end);
+            let y = |v: f32| self.origin.y + self.start + (v - v_start) / rate;
+            let (low, high) = (y(v), y(next));
+            let texture_v = |v: f32| region[1] + (region[3] - region[1]) * (v - tile);
+            let (v_low, v_high) = (texture_v(v), texture_v(next));
+            let (u0, u1) = (region[0], region[2]);
+            let start = mesh.vertices.len() as u32;
+            for (x, z, y, u, v) in [(a.0, a.1, high, u1, v_high), (a.0, a.1, low, u1, v_low), (b.0, b.1, low, u0, v_low), (b.0, b.1, high, u0, v_high)] {
+                mesh.vertices.push(Vertex {
+                    position: [self.origin.x + x, y, self.origin.z + z],
+                    uv: [u, v],
+                    color,
+                    sky_light: 15.0,
+                    block_light: 15.0,
+                });
+            }
+            mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            mesh.faces += 1;
+            v = next;
+        }
+    }
+}
+
 /// The containers in the loaded chunks near the camera that
 /// `BlockEntityRenderer.shouldRender` lets through: their middles within
 /// 64 blocks (`getViewDistance`).
@@ -759,7 +955,7 @@ mod tests {
         assert_eq!(renderer_of("waxed_weathered_copper_chest"), Some(Renderer::Chest(ChestMaterial::CopperWeathered)));
         assert_eq!(renderer_of("light_blue_shulker_box"), Some(Renderer::ShulkerBox(Some("light_blue"))));
         assert_eq!(renderer_of("barrel"), None);
-        assert_eq!(sheets().len(), 1 + 7 * 3 + 17 + 1);
+        assert_eq!(sheets().len(), 1 + 7 * 3 + 17 + 1 + 1);
     }
 
     /// An atlas holding every sheet over the whole texture, a light map of

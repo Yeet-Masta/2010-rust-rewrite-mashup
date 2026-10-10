@@ -653,6 +653,8 @@ impl Level<'_> {
                     self.crafter_tick(pos);
                 } else if self.is_a(state, "BrewingStandBlock") {
                     self.brewing_stand_tick(pos);
+                } else if self.is_a(state, "BeaconBlock") {
+                    self.beacon_tick(pos);
                 }
             }
             i += 1;

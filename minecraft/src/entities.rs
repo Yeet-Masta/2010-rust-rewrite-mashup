@@ -87,6 +87,8 @@ pub struct Events {
     pub picked_up: bool,
     /// `Level.levelEvent`s: position, event id, data.
     pub level_events: Vec<((i32, i32, i32), i32, i32)>,
+    /// The powers beacons gave the player: effect, duration, amplifier.
+    pub beacon_effects: Vec<(&'static str, i32, i32)>,
 }
 
 pub struct Entities {
@@ -105,6 +107,8 @@ pub struct Entities {
     /// The lids of the containers' block entities, as the server's block
     /// events move them.
     lids: ContainerLids,
+    /// The beacons' beams, as the client level checks them.
+    beacons: container_render::BeaconBeams,
     /// `ChestRenderer.xmasTextures`, as of the start.
     christmas: bool,
     clock: f64,
@@ -178,6 +182,7 @@ impl Entities {
             moving_blocks: Vec::new(),
             tint: None,
             lids: ContainerLids::default(),
+            beacons: container_render::BeaconBeams::default(),
             christmas: {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -785,6 +790,13 @@ impl Entities {
             events.menu.extend(output.menu);
             events.use_results.extend(output.use_results);
             events.level_events.extend(output.level_events);
+            events.beacon_effects.extend(
+                output
+                    .beacon_effects
+                    .iter()
+                    .filter(|given| given.player == 0)
+                    .map(|given| (given.effect, given.duration, given.amplifier)),
+            );
             // The level's own sounds: containers opening and closing.
             for sound in &output.sounds {
                 self.sounds.push((
@@ -1123,6 +1135,18 @@ impl Entities {
                 light,
             );
         }
+        // The beacons' beams: the client level's `BeaconBlockEntity.tick`
+        // for the ticks since the last frame, and `BeaconRenderer`.
+        self.beacons.tick(scene, self.ticks, w.game_time());
+        container_render::append_beacon_beams(
+            &mut out.culled,
+            &mut out.translucent,
+            &self.beacons,
+            camera,
+            w.game_time(),
+            partial,
+            atlas,
+        );
         // Their shadows, at `getMaxLocalRawBrightness`.
         let casters = client_mobs::shadow_casters(w, poses, camera, partial);
         let raw = |pos: (i32, i32, i32)| {

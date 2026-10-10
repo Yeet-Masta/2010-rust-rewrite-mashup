@@ -692,6 +692,18 @@ impl Game {
         for hit in events.hits {
             self.hurt_by_mob(hit);
         }
+        // `LivingEntity.addEffect` for a beacon's powers: those the player's
+        // effects have (no speed, haste, jump boost or strength yet).
+        for (effect, duration, amplifier) in events.beacon_effects {
+            use minecraftoss_player::survival::EffectKind;
+            let kind = match effect {
+                "minecraft:regeneration" => EffectKind::Regeneration,
+                "minecraft:resistance" => EffectKind::Resistance,
+                _ => continue,
+            };
+            let (duration, amplifier) = (duration.max(0) as u32, amplifier.clamp(0, 255) as u8);
+            self.player.survival.add_effect(kind, duration, amplifier);
+        }
         for (id, event) in events.mob_events {
             if let Some(bounds) = self.entities.mob_bounds(id) {
                 crate::emitters::entity_event(&mut self.particles, &self.world, bounds, event);

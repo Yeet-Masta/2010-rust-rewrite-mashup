@@ -36,6 +36,8 @@ mod stonecutter;
 mod loom;
 #[path = "screens/cartography.rs"]
 mod cartography;
+#[path = "screens/beacon.rs"]
+mod beacon;
 
 pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
@@ -43,6 +45,7 @@ pub use merchant::TradeList;
 pub use smithing::SmithingIcons;
 pub use stonecutter::RecipeList;
 pub use loom::PatternList;
+pub use beacon::{BeaconButton, BeaconChoice};
 
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
@@ -78,6 +81,8 @@ pub struct Layout {
     title_y: f32,
     /// `inventoryLabelX` and `inventoryLabelY`.
     inventory_label: (f32, f32),
+    /// The title and the inventory's label are drawn (`extractLabels`).
+    labels: bool,
 }
 
 impl Layout {
@@ -92,6 +97,7 @@ impl Layout {
             title_x,
             title_y: 6.0,
             inventory_label: (8.0, height - 94.0),
+            labels: true,
         }
     }
 }
@@ -155,6 +161,13 @@ pub fn layout(kind: MenuKind) -> Layout {
         MenuKind::CartographyTable => Layout {
             title_y: 4.0,
             ..Layout::plain("cartography_table", 166.0, TitleX::At(8.0))
+        },
+        // `BeaconScreen`: 230 by 219, its own labels for the title's.
+        MenuKind::Beacon => Layout {
+            width: 230.0,
+            blits: vec![[0.0, 0.0, 0.0, 0.0, 230.0, 219.0]],
+            labels: false,
+            ..Layout::plain("beacon", 219.0, TitleX::At(8.0))
         },
     }
 }
@@ -223,6 +236,8 @@ pub struct MenuView<'a> {
     /// its list's scroll.
     pub patterns: Vec<(String, String)>,
     pub pattern_list: &'a PatternList,
+    /// The beacon screen's chosen powers.
+    pub beacon: &'a BeaconChoice,
 }
 
 impl Gui {
@@ -266,17 +281,19 @@ impl Gui {
         }
         self.menu_extras(ui, packs, view, left, top);
         // `extractLabels`.
-        let label = rgb(LABEL);
-        let title_x = match layout.title_x {
-            TitleX::At(x) => x,
-            TitleX::Centred => ((layout.width - self.font.width(&view.title)) / 2.0).trunc(),
-            TitleX::CentredOn(x) => x - (self.font.width(&view.title) / 2.0).floor(),
-        };
-        let title_y = top + layout.title_y;
-        self.text(ui, &view.title, left + title_x, title_y, label, false);
-        let inventory = crate::creative::translate(&self.language, "container.inventory", &[]);
-        let (x, y) = layout.inventory_label;
-        self.text(ui, &inventory, left + x, top + y, label, false);
+        if layout.labels {
+            let label = rgb(LABEL);
+            let title_x = match layout.title_x {
+                TitleX::At(x) => x,
+                TitleX::Centred => ((layout.width - self.font.width(&view.title)) / 2.0).trunc(),
+                TitleX::CentredOn(x) => x - (self.font.width(&view.title) / 2.0).floor(),
+            };
+            let title_y = top + layout.title_y;
+            self.text(ui, &view.title, left + title_x, title_y, label, false);
+            let inventory = crate::creative::translate(&self.language, "container.inventory", &[]);
+            let (x, y) = layout.inventory_label;
+            self.text(ui, &inventory, left + x, top + y, label, false);
+        }
         // The hovered slot's highlight behind the items, and in front, when
         // it has one (`isHighlightable`).
         let hovered = view
@@ -371,6 +388,7 @@ impl Gui {
             MenuKind::Stonecutter => self.stonecutter_extras(ui, packs, view, left, top),
             MenuKind::Loom => self.loom_extras(ui, packs, view, left, top),
             MenuKind::CartographyTable => self.cartography_extras(ui, view, left, top),
+            MenuKind::Beacon => self.beacon_extras(ui, packs, view, left, top),
         }
     }
 
@@ -400,6 +418,7 @@ impl Gui {
             MenuKind::Smithing => self.smithing_tooltip(ui, view, left, top),
             MenuKind::Stonecutter => self.stonecutter_tooltip(ui, view, left, top),
             MenuKind::Loom => self.loom_tooltip(ui, view, left, top),
+            MenuKind::Beacon => self.beacon_tooltip(ui, view, left, top),
             _ => {}
         }
     }

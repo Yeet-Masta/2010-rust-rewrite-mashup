@@ -718,6 +718,7 @@ impl Level<'_> {
             || self.store_of(state) == Some(Store::Furnace)
             || self.store_of(state) == Some(Store::Crafter)
             || self.store_of(state) == Some(Store::BrewingStand)
+            || self.is_a(state, "BeaconBlock")
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }

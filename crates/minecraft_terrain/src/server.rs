@@ -1011,6 +1011,8 @@ pub struct Output {
     pub summoned: Vec<Result<String, String>>,
     /// Positions where bone meal was used.
     pub bone_meal_used: Vec<BlockPos>,
+    /// The powers beacons gave the players (`BeaconBlockEntity.applyEffects`).
+    pub beacon_effects: Vec<minecraftoss_world::level::beacon::BeaconEffect>,
     /// How many commands the server has handled so far.
     pub handled: u64,
     /// The last tick's phases, light solves and total milliseconds.
@@ -1400,6 +1402,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         out.changes = sim.take_changes();
         out.block_entities = sim.take_block_entity_changes();
         out.sounds = sim.level.take_sounds();
+        out.beacon_effects = sim.level.take_beacon_effects();
         out.block_events = sim.take_block_events();
         out.level_events = sim.take_level_events();
         sim.block_entities_sent(handled);

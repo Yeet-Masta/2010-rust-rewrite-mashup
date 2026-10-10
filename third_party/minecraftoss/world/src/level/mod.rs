@@ -19,6 +19,7 @@ pub mod grow;
 pub mod plants;
 pub mod bonemeal;
 pub mod brewing;
+pub mod beacon;
 pub mod crafter;
 pub mod fluid;
 pub mod furnace;
@@ -162,6 +163,10 @@ pub struct Level<'a> {
     pub brewing: Option<std::sync::Arc<dyn brewing::Brewing>>,
     /// What the brewing stands keep without saving it.
     brewing_unsaved: HashMap<BlockPos, brewing::Unsaved>,
+    /// The beacons' beams and levels, which they keep without saving.
+    beacons: HashMap<BlockPos, beacon::BeaconBeam>,
+    /// The powers the beacons gave, for the server to send.
+    beacon_effects: Vec<beacon::BeaconEffect>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -288,6 +293,8 @@ impl<'a> Level<'a> {
             crafting: None,
             brewing: None,
             brewing_unsaved: HashMap::new(),
+            beacons: HashMap::new(),
+            beacon_effects: Vec::new(),
             unsupported: Vec::new(),
             sky: None,
             entities: Vec::new(),

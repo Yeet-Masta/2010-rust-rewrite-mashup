@@ -32,6 +32,7 @@ pub mod smithing;
 pub mod stonecutter;
 pub mod loom;
 pub mod cartography;
+pub mod beacon;
 pub mod storage;
 #[cfg(test)]
 mod tests;
@@ -46,6 +47,7 @@ pub use smithing::SmithingMenu;
 pub use stonecutter::StonecutterMenu;
 pub use loom::LoomMenu;
 pub use cartography::CartographyTableMenu;
+pub use beacon::BeaconMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
 /// `AbstractContainerMenu.SLOT_CLICKED_OUTSIDE`: a click outside the window.
@@ -139,6 +141,9 @@ pub enum BlockRequest {
     /// `AnvilBlock.damage`: a use wore the anvil down a stage (chipped,
     /// damaged, then gone, with `ANVIL_BROKEN`; `ANVIL_USED` otherwise).
     DamageAnvil,
+    /// `BeaconMenu.updateEffects`: the beacon's powers (its data values 1
+    /// and 2, each `MOB_EFFECT` id + 1, or 0).
+    SetBeacon { primary: i32, secondary: i32 },
 }
 
 /// What a menu slot shows and changes.
