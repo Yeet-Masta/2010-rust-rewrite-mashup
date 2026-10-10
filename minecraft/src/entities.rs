@@ -634,6 +634,11 @@ impl Entities {
         &self.lightning
     }
 
+    /// Lingering potions' clouds, as of the last server tick.
+    pub fn clouds(&self) -> &[minecraftoss_entities::world::EffectCloud] {
+        self.world.clouds()
+    }
+
     /// The saved weather, as the world loads.
     pub fn load_weather(&mut self, weather: Weather) {
         self.weather = Some(weather.clone());

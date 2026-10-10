@@ -877,6 +877,37 @@ impl Game {
         self.play("minecraft:entity.splash_potion.break", Some(at), 1.0, pitch);
     }
 
+    /// `AreaEffectCloud.clientTick`: a waiting cloud's two motes at its
+    /// heart, every other tick, or a working cloud's mote for each square
+    /// block it covers, in the potion's colour (waiting, half of them
+    /// white).
+    fn cloud_particles(&mut self) {
+        use crate::particles::{Options, Type};
+        use minecraftoss_player::mth::{cos, sin};
+        let clouds: Vec<_> = self.entities.clouds().iter().map(|c| (c.position, c.radius, c.waiting, c.color())).collect();
+        for (at, radius, waiting, color) in clouds {
+            let random = &mut self.particles.random;
+            if waiting && random.next_bool() {
+                continue;
+            }
+            let (count, spread) = if waiting {
+                (2, 0.2_f32)
+            } else {
+                ((std::f32::consts::PI * radius * radius).ceil() as i32, radius)
+            };
+            let rgb = [(color >> 16) & 255, (color >> 8) & 255, color & 255].map(|c| c as f32 / 255.0);
+            for _ in 0..count {
+                let random = &mut self.particles.random;
+                let angle = random.next_float() * std::f32::consts::TAU;
+                let distance = random.next_float().sqrt() * spread;
+                let pos = DVec3::new(at.x + f64::from(cos(f64::from(angle)) * distance), at.y, at.z + f64::from(sin(f64::from(angle)) * distance));
+                let white = waiting && random.next_bool();
+                let argb = if white { [1.0; 4] } else { [1.0, rgb[0], rgb[1], rgb[2]] };
+                self.particles.spawn(&self.world, &Options::Color(Type::EntityEffect, argb), pos, DVec3::ZERO);
+            }
+        }
+    }
+
     /// `LevelEventHandler.shootParticles`: ten particles out of the face
     /// `data` names (`Direction.from3DDataValue`), spread across it.
     fn shoot_particles(&mut self, pos: BlockPos, data: i32, particle: crate::particles::Type) {
@@ -1280,6 +1311,7 @@ impl Game {
             self.ambient
                 .tick(&self.world, &mut self.particles, around, &mut sounds);
         }
+        self.cloud_particles();
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
         let entities = &self.entities;
         self.emitters

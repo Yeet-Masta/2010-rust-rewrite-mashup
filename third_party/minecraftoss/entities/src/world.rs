@@ -36,7 +36,7 @@ use living::{breathe, dying_travel, fall_damage};
 pub use endermen::EndermanEntity;
 pub use golems::IronGolemEntity;
 pub use wolves::WolfEntity;
-pub use witches::{PlayerSplash, PotionBreak, PotionEntity, WitchEntity};
+pub use witches::{EffectCloud, PlayerSplash, PotionBreak, PotionEntity, WitchEntity};
 use emissions::{base_tick_fluid, play_movement, MovementSounds};
 pub use slimes::SlimeEntity;
 pub use combat::{AttackResult, PlayerAttack};
@@ -2220,6 +2220,8 @@ pub struct EntityWorld {
     player_vitals: Vec<(u64, crate::monster_ai::PlayerVitals)>,
     arrows: Vec<ArrowEntity>,
     potions: Vec<PotionEntity>,
+    /// Lingering potions' clouds (ticked after every entity).
+    clouds: Vec<witches::EffectCloud>,
     /// Potions that broke near players since the last
     /// `take_player_splashes`.
     player_splashes: Vec<(u64, PlayerSplash)>,
@@ -2318,6 +2320,7 @@ impl Default for EntityWorld {
             player_vitals: Vec::new(),
             arrows: Vec::new(),
             potions: Vec::new(),
+            clouds: Vec::new(),
             player_splashes: Vec::new(),
             potion_breaks: Vec::new(),
             villagers: Vec::new(),
@@ -4245,6 +4248,7 @@ impl EntityWorld {
         let wolves: Vec<WolfEntity> = self.wolves.iter().filter(|e| keep(e.wolf.body.position)).cloned().collect();
         let arrows: Vec<ArrowEntity> = self.arrows.iter().filter(|e| keep(e.arrow.position)).cloned().collect();
         let potions: Vec<PotionEntity> = self.potions.iter().filter(|e| keep(e.potion.position)).cloned().collect();
+        let clouds: Vec<witches::EffectCloud> = self.clouds.iter().filter(|c| keep(c.position)).cloned().collect();
         let villagers: Vec<VillagerEntity> = self.villagers.iter().filter(|e| keep(e.villager.body.position)).cloned().collect();
         let cows: Vec<CowEntity> = self.cows.iter().filter(|e| keep(e.cow.body.position)).cloned().collect();
         let sheep: Vec<SheepEntity> = self.sheep.iter().filter(|e| keep(e.body.position)).cloned().collect();
@@ -4265,6 +4269,7 @@ impl EntityWorld {
             player_vitals: self.player_vitals.clone(),
             arrows,
             potions,
+            clouds,
             player_splashes: Vec::new(),
             potion_breaks: Vec::new(),
             villagers,
@@ -4437,6 +4442,7 @@ impl EntityWorld {
         self.wolves.retain(|e| !remove(e.wolf.body.position));
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
+        self.clouds.retain(|c| !remove(c.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
         self.cows.retain(|e| !remove(e.cow.body.position));
         self.sheep.retain(|e| !remove(e.body.position));
@@ -6348,6 +6354,7 @@ impl EntityWorld {
         self.iron_golems.retain(|entity| entity.golem.damage.death_ticks < 20);
         self.wolves.retain(|entity| entity.wolf.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
+        self.tick_clouds(players);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
         self.cows

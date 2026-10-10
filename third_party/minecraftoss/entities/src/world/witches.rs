@@ -43,6 +43,44 @@ pub struct PotionEntity {
     pub previous_position: DVec3,
 }
 
+/// An area effect cloud a lingering potion leaves (`AreaEffectCloud`,
+/// as `ThrownLingeringPotion.onHitAsPotion` sets it up): three blocks
+/// across at first, waiting half a second, then shrinking to nothing
+/// over thirty seconds and by half a block each time it touches someone.
+/// Every five ticks it gives everyone within it, standing in its half
+/// block of height, its potion's effects at a quarter of their time (the
+/// instant ones at half strength), a second apart for each.
+#[derive(Clone, Debug)]
+pub struct EffectCloud {
+    pub position: DVec3,
+    pub radius: f32,
+    radius_per_tick: f32,
+    radius_on_use: f32,
+    duration: i32,
+    wait_time: i32,
+    tick_count: i32,
+    /// `isWaiting`, for its particles.
+    pub waiting: bool,
+    pub contents: minecraftoss_player::effects::PotionContents,
+    duration_scale: f32,
+    /// Who is not given its effects again before a tick (`victims`).
+    victims: Vec<(u64, i32)>,
+    pub alive: bool,
+}
+
+impl EffectCloud {
+    /// `ThrownLingeringPotion.onHitAsPotion`'s cloud of a potion.
+    pub fn of_potion(position: DVec3, contents: minecraftoss_player::effects::PotionContents) -> Self {
+        let (radius, duration) = (3.0_f32, 600);
+        Self { position, radius, radius_per_tick: -radius / duration as f32, radius_on_use: -0.5, duration, wait_time: 10, tick_count: 0, waiting: true, contents, duration_scale: 0.25, victims: Vec::new(), alive: true }
+    }
+
+    /// The colour of its particles (`updateParticle`).
+    pub fn color(&self) -> u32 {
+        self.contents.color()
+    }
+}
+
 /// Where a splash potion broke (`AbstractThrownPotion.onHit`'s level
 /// events: the break sound and the client's particles in its colour, the
 /// instant kind's for an instant potion).
@@ -418,7 +456,11 @@ impl EntityWorld {
         if let Some(hit) = entity.potion.tick(&*world, &targets, owner_box) {
             let potion = entity.potion.clone();
             self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.color(), instant: potion.instant() });
-            self.splash(&potion, hit, players);
+            if potion.lingering {
+                self.linger(&potion, hit, players);
+            } else {
+                self.splash(&potion, hit, players);
+            }
         }
     }
 
@@ -479,6 +521,132 @@ impl EntityWorld {
                 if extinguish || !splash.effects.is_empty() || !splash.instant.is_empty() {
                     self.player_splashes.push((player.id, splash));
                 }
+            }
+        }
+    }
+
+    /// `ThrownLingeringPotion.onHitAsPotion`: water douses the players near
+    /// (`affectEntitiesAround`); a potion with effects leaves its cloud at
+    /// the entity it struck, or where it broke.
+    fn linger(&mut self, potion: &ThrownPotion, hit: PotionHit, players: &[PlayerCandidate]) {
+        let at = potion.position;
+        if potion.contents.potion.is_some_and(|p| p.id == "water") && self.players_pickable {
+            for player in players.iter().filter(|p| p.alive && !p.spectator && p.position.distance_squared(at) < 16.0) {
+                self.player_splashes.push((player.id, PlayerSplash { effects: Vec::new(), instant: Vec::new(), extinguish: true, at }));
+            }
+        }
+        if potion.contents.all_effects().is_empty() {
+            return;
+        }
+        let struck = hit.entity.and_then(|id| match id.checked_sub(PLAYER_TARGET) {
+            Some(player) => players.iter().find(|p| p.id == player).map(|p| p.position),
+            None => self.mob_body(id).map(|(body, _)| body.position),
+        });
+        self.clouds.push(EffectCloud::of_potion(struck.unwrap_or(at), potion.contents.clone()));
+    }
+
+    /// The area effect clouds.
+    pub fn clouds(&self) -> &[EffectCloud] {
+        &self.clouds
+    }
+
+    /// `AreaEffectCloud.serverTick` for every cloud.
+    pub(super) fn tick_clouds(&mut self, players: &[PlayerCandidate]) {
+        let mut clouds = std::mem::take(&mut self.clouds);
+        for cloud in &mut clouds {
+            self.tick_cloud(cloud, players);
+        }
+        clouds.retain(|c| c.alive);
+        clouds.append(&mut self.clouds);
+        self.clouds = clouds;
+    }
+
+    fn tick_cloud(&mut self, cloud: &mut EffectCloud, players: &[PlayerCandidate]) {
+        cloud.tick_count += 1;
+        if cloud.duration != -1 && cloud.tick_count - cloud.wait_time >= cloud.duration {
+            cloud.alive = false;
+            return;
+        }
+        cloud.waiting = cloud.tick_count < cloud.wait_time;
+        if cloud.waiting {
+            return;
+        }
+        let mut radius = cloud.radius;
+        if cloud.radius_per_tick != 0.0 {
+            radius += cloud.radius_per_tick;
+            if radius < 0.5 {
+                cloud.alive = false;
+                return;
+            }
+            cloud.radius = radius;
+        }
+        if cloud.tick_count % 5 != 0 {
+            return;
+        }
+        let tick = cloud.tick_count;
+        cloud.victims.retain(|&(_, until)| tick < until);
+        let effects = cloud.contents.scaled_effects(cloud.duration_scale);
+        if effects.is_empty() {
+            cloud.victims.clear();
+            return;
+        }
+        // Who stands in its box (`radius * 2` wide, half a block high).
+        let at = cloud.position;
+        let (min, max) = (DVec3::new(at.x - f64::from(radius), at.y, at.z - f64::from(radius)), DVec3::new(at.x + f64::from(radius), at.y + 0.5, at.z + f64::from(radius)));
+        let meets = |lo: DVec3, hi: DVec3| lo.x < max.x && hi.x > min.x && lo.y < max.y && hi.y > min.y && lo.z < max.z && hi.z > min.z;
+        let mut inside: Vec<(u64, DVec3)> = Vec::new();
+        for key in &self.order {
+            let id = key.id();
+            let Some((body, health)) = self.mob_body(id) else { continue };
+            let half = f64::from(body.width / 2.0);
+            let p = body.position;
+            if health > 0.0 && meets(DVec3::new(p.x - half, p.y, p.z - half), DVec3::new(p.x + half, p.y + f64::from(body.height), p.z + half)) {
+                inside.push((id, p));
+            }
+        }
+        if self.players_pickable {
+            for p in players.iter().filter(|p| p.alive && !p.spectator) {
+                if meets(p.position - DVec3::new(0.3, 0.0, 0.3), p.position + DVec3::new(0.3, 1.8, 0.3)) {
+                    inside.push((PLAYER_TARGET + p.id, p.position));
+                }
+            }
+        }
+        for (id, p) in inside {
+            if cloud.victims.iter().any(|&(victim, _)| victim == id) {
+                continue;
+            }
+            let (xd, zd) = (p.x - at.x, p.z - at.z);
+            if xd * xd + zd * zd > f64::from(radius * radius) {
+                continue;
+            }
+            cloud.victims.push((id, tick + 20));
+            if let Some(player) = id.checked_sub(PLAYER_TARGET) {
+                let mut splash = PlayerSplash { effects: Vec::new(), instant: Vec::new(), extinguish: false, at };
+                for effect in &effects {
+                    if effect.effect.instantaneous() {
+                        splash.instant.push((effect.effect, effect.amplifier, 0.5));
+                    } else {
+                        splash.effects.push(effect.copy());
+                    }
+                }
+                self.player_splashes.push((player, splash));
+            } else {
+                for effect in &effects {
+                    let Some(kind) = MobEffect::from_id(&effect.effect.id()) else { continue };
+                    if kind.instantaneous() {
+                        self.splash_instant(id, kind, effect.amplifier, 0.5, at, None);
+                    } else {
+                        self.add_mob_effect(id, EffectInstance::new(kind, effect.duration, effect.amplifier));
+                    }
+                }
+            }
+            if cloud.radius_on_use != 0.0 {
+                radius += cloud.radius_on_use;
+                if radius < 0.5 {
+                    cloud.alive = false;
+                    return;
+                }
+                cloud.radius = radius;
             }
         }
     }
