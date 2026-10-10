@@ -19,7 +19,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
     EntitySnapshot, ExplosionView, MovingBlockView, PlayerEdit, ServerHandle, ServerItem,
-    ServerFallingBlock, ServerLightning, ServerSim, ServerTnt, TickInput, Weather,
+    ServerFallingBlock, ServerLightning, ServerOrb, ServerSim, ServerTnt, TickInput, Weather,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -145,6 +145,8 @@ pub struct Entities {
     primed_tnt: Vec<ServerTnt>,
     /// Falling blocks, as of the last server tick.
     falling_blocks: Vec<ServerFallingBlock>,
+    /// Experience orbs, as of the last server tick.
+    orbs: Vec<ServerOrb>,
     server_handled: u64,
     /// Chunks unloaded from the server, each with the commands sent as of
     /// its unload: the chunk map keeps them until the outputs through it
@@ -226,6 +228,7 @@ impl Entities {
             weather: None,
             primed_tnt: Vec::new(),
             falling_blocks: Vec::new(),
+            orbs: Vec::new(),
             server_handled: 0,
             unloads: Vec::new(),
             sounds: Vec::new(),
@@ -832,6 +835,7 @@ impl Entities {
             if let Some(mut snapshot) = output.entities {
                 self.primed_tnt = std::mem::take(&mut snapshot.tnt);
                 self.falling_blocks = std::mem::take(&mut snapshot.falling);
+                self.orbs = std::mem::take(&mut snapshot.orbs);
                 self.lightning = std::mem::take(&mut snapshot.lightning);
                 self.server_snapshot = Some(snapshot);
             }
@@ -1158,6 +1162,18 @@ impl Entities {
         let _ = self
             .items
             .append_primed_tnt(&mut out.items, &tnt, packs, atlas, light);
+        // `ExperienceOrbRenderer`, its age `tickCount` plus the partial tick.
+        orb_render::append_orbs(
+            &mut out.translucent,
+            self.orbs.iter().map(|orb| {
+                let at = DVec3::from_array(orb.previous_position)
+                    .lerp(DVec3::from_array(orb.position), f64::from(partial));
+                (at, orb.value, orb.tick_count as f32 + partial)
+            }),
+            atlas,
+            forward,
+            light,
+        );
         self.poof
             .append_mesh(&mut out.items, atlas, forward, partial, light);
         self.portal
@@ -1232,6 +1248,16 @@ impl Entities {
                 distance_squared: position.distance_squared(camera),
                 radius: 0.5,
                 strength: 1.0,
+            }
+        }));
+        // `ExperienceOrbRenderer`'s shadow: 0.15, at 0.75.
+        casters.extend(self.orbs.iter().map(|orb| {
+            let position = DVec3::from_array(orb.position);
+            mesh::ShadowCaster {
+                position: DVec3::from_array(orb.previous_position).lerp(position, f64::from(partial)),
+                distance_squared: position.distance_squared(camera),
+                radius: 0.15,
+                strength: 0.75,
             }
         }));
         let raw = |pos: (i32, i32, i32)| {
