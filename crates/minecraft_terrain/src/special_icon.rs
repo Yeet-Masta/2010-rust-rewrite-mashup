@@ -134,6 +134,41 @@ fn sheet(dir: &str, id: &str) -> String {
     format!("{namespace}:entity/{dir}/{path}")
 }
 
+/// The standing banner's flag (`BannerFlagModel`, `setupAnim(0)`) and its
+/// layers over it: the base colour, then up to 16 of the stack's
+/// `banner_patterns` (`BannerRenderer.submitPatterns`).
+fn banner_flag(base: &str, components: Option<&Value>) -> Vec<Layer> {
+    let flag = || {
+        vec![part(
+            [0.0, -44.0, 0.0],
+            vec![cube(0.0, 0.0, [-10.0, 0.0, -2.0], [20.0, 40.0, 1.0])],
+        )
+        .rotated([(-0.0125 + 0.01) * std::f32::consts::PI, 0.0, 0.0])]
+    };
+    let mut layers = vec![layer("minecraft:entity/banner/banner_base", [64.0, 64.0], flag())];
+    let mut patterns = vec![("minecraft:base".to_owned(), base.to_owned())];
+    for entry in components
+        .and_then(|c| c["minecraft:banner_patterns"].as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .take(16)
+    {
+        let (Some(pattern), Some(color)) = (entry["pattern"].as_str(), entry["color"].as_str()) else {
+            continue;
+        };
+        // Vanilla's patterns' `asset_id`s are their own ids.
+        patterns.push((pattern.to_owned(), color.to_owned()));
+    }
+    for (asset, color) in patterns {
+        let mut pattern = layer(sheet("banner", &asset), [64.0, 64.0], flag());
+        pattern.tint = dye(&color);
+        pattern.overlay = true;
+        layers.push(pattern);
+    }
+    layers
+}
+
 /// The special renderer's layers (`SpecialModelRenderers`), for an item's
 /// components.
 fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>>> {
@@ -152,45 +187,15 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
         // pattern layers (`BannerRenderer.submitPatterns`).
         "minecraft:banner" => {
             let base = model["color"].as_str().unwrap_or("white");
-            let flag = || {
-                // `setupAnim(0)`.
-                vec![part(
-                    [0.0, -44.0, 0.0],
-                    vec![cube(0.0, 0.0, [-10.0, 0.0, -2.0], [20.0, 40.0, 1.0])],
-                )
-                .rotated([(-0.0125 + 0.01) * std::f32::consts::PI, 0.0, 0.0])]
-            };
-            let mut layers = vec![
-                layer(
-                    "minecraft:entity/banner/banner_base",
-                    [64.0, 64.0],
-                    vec![
-                        part([0.0; 3], vec![cube(44.0, 0.0, [-1.0, -42.0, -1.0], [2.0, 42.0, 2.0])]),
-                        part([0.0; 3], vec![cube(0.0, 42.0, [-10.0, -44.0, -1.0], [20.0, 2.0, 2.0])]),
-                    ],
-                ),
-                layer("minecraft:entity/banner/banner_base", [64.0, 64.0], flag()),
-            ];
-            let mut patterns = vec![("minecraft:base".to_owned(), base.to_owned())];
-            for entry in components
-                .and_then(|c| c["minecraft:banner_patterns"].as_array())
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-                .iter()
-                .take(16)
-            {
-                let (Some(pattern), Some(color)) = (entry["pattern"].as_str(), entry["color"].as_str()) else {
-                    continue;
-                };
-                // Vanilla's patterns' `asset_id`s are their own ids.
-                patterns.push((pattern.to_owned(), color.to_owned()));
-            }
-            for (asset, color) in patterns {
-                let mut pattern = layer(sheet("banner", &asset), [64.0, 64.0], flag());
-                pattern.tint = dye(&color);
-                pattern.overlay = true;
-                layers.push(pattern);
-            }
+            let mut layers = vec![layer(
+                "minecraft:entity/banner/banner_base",
+                [64.0, 64.0],
+                vec![
+                    part([0.0; 3], vec![cube(44.0, 0.0, [-1.0, -42.0, -1.0], [2.0, 42.0, 2.0])]),
+                    part([0.0; 3], vec![cube(0.0, 42.0, [-10.0, -44.0, -1.0], [20.0, 2.0, 2.0])]),
+                ],
+            )];
+            layers.extend(banner_flag(base, components));
             layers
         }
         // `ShieldModel`, unpatterned.
@@ -818,6 +823,60 @@ pub fn special_icon(
         * local;
     let mut output = RgbaImage::new(icon_size as u32, icon_size as u32);
     let mut depth = vec![f32::NEG_INFINITY; icon_size * icon_size];
+    raster_layers(packs, layers, gui, lights, &mut output, &mut depth)?;
+    Ok(output.pixels().any(|p| p[3] > 0).then_some(output))
+}
+
+/// `GuiBannerResultRenderer`: the loom's preview of its result, the flag
+/// ([`banner_flag`]) in a base colour with a stack's layers, drawn flat-lit
+/// (`ITEMS_FLAT`) to fill 20 by 40 model pixels, `pixels` image pixels each.
+pub fn banner_result(packs: &PackStack, base: &str, components: Option<&Value>, pixels: usize) -> Result<RgbaImage> {
+    let px = pixels as f32;
+    // The picture's square, its middle half wide cut out after: 16 pixels
+    // a block, the model's z toward the viewer, a quarter block down.
+    let gui = Mat4::from_translation(Vec3::new(20.0 * px, 40.0 * px, 0.0))
+        * Mat4::from_scale(Vec3::new(16.0 * px, 16.0 * px, -16.0 * px))
+        * Mat4::from_translation(Vec3::new(0.0, 0.25, 0.0));
+    let size = 40 * pixels;
+    let mut output = RgbaImage::new(size as u32, size as u32);
+    let mut depth = vec![f32::NEG_INFINITY; size * size];
+    raster_layers(packs, banner_flag(base, components), gui, item_lights(true), &mut output, &mut depth)?;
+    Ok(image::imageops::crop_imm(&output, (10 * pixels) as u32, 0, (20 * pixels) as u32, size as u32).to_image())
+}
+
+/// `LoomScreen.extractBannerOnButton`'s banner: `DyeColor.GRAY`'s colour
+/// under the pattern's sprite, its columns 0-20 and rows 1-40, which the
+/// screen squeezes into 5 by 10 (21 by 40 for a 64 pixel sheet).
+pub fn loom_pattern(packs: &PackStack, asset: &str) -> Result<Option<RgbaImage>> {
+    let Some(bytes) = packs.texture(&ResourceId::parse(&sheet("banner", asset))?)? else {
+        return Ok(None);
+    };
+    let texture = image::load_from_memory(&bytes)?.to_rgba8();
+    let unit = (texture.width() / 64).max(1);
+    let (width, height) = (21 * unit, 40 * unit);
+    if texture.height() < 41 * unit {
+        return Ok(None);
+    }
+    let gray = dye("gray");
+    let under = [(gray >> 16) & 255, (gray >> 8) & 255, gray & 255].map(|c| c as f32);
+    Ok(Some(RgbaImage::from_fn(width, height, |x, y| {
+        let texel = texture.get_pixel(x, y + unit);
+        let alpha = f32::from(texel[3]) / 255.0;
+        let mix = |i: usize| (f32::from(texel[i]) * alpha + under[i] * (1.0 - alpha)).round() as u8;
+        image::Rgba([mix(0), mix(1), mix(2), 255])
+    })))
+}
+
+/// Each layer's model drawn into a square picture through `gui`, from its
+/// sheet in the packs (a layer without one is left out).
+fn raster_layers(
+    packs: &PackStack,
+    layers: Vec<Layer>,
+    gui: Mat4,
+    lights: [Vec3; 2],
+    output: &mut RgbaImage,
+    depth: &mut [f32],
+) -> Result<()> {
     for layer in layers {
         let Some(bytes) = packs.texture(&ResourceId::parse(&layer.texture)?)? else {
             continue;
@@ -830,8 +889,8 @@ pub fn special_icon(
         for face in faces {
             for [a, b, c] in [[0, 1, 2], [0, 2, 3]] {
                 raster(
-                    &mut output,
-                    &mut depth,
+                    output,
+                    depth,
                     &texture,
                     &layer,
                     face.shade,
@@ -841,7 +900,7 @@ pub fn special_icon(
             }
         }
     }
-    Ok(output.pixels().any(|p| p[3] > 0).then_some(output))
+    Ok(())
 }
 
 /// The sheets special model renderers draw items held in a hand with, for

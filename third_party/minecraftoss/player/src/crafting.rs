@@ -205,6 +205,14 @@ struct StonecuttingEntry {
     result: ItemStack,
 }
 
+/// A banner pattern (`BannerPattern`): its texture's id and its name's
+/// translation key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BannerPattern {
+    pub asset_id: String,
+    pub translation_key: String,
+}
+
 /// The trim material an item provides (`DataComponents.PROVIDES_TRIM_MATERIAL`,
 /// which `Items` gives the `#trim_materials`).
 pub fn trim_material(item: &str) -> Option<&'static str> {
@@ -243,6 +251,10 @@ pub struct RecipeBook {
     /// The stonecutting recipes, in file-name order.
     stonecutting: Vec<StonecuttingEntry>,
     tags: HashMap<String, Vec<String>>,
+    /// The banner pattern registry (`banner_pattern/*.json`), by id.
+    banner_patterns: HashMap<String, BannerPattern>,
+    /// The banner pattern tags (`tags/banner_pattern/**`), by id.
+    banner_pattern_tags: HashMap<String, Vec<String>>,
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
     item_catalog: Option<Arc<ItemCatalog>>,
@@ -257,7 +269,9 @@ impl RecipeBook {
             let name = entry.name().to_owned();
             let is_data = name.starts_with("data/minecraft/recipe/")
                 || name.starts_with("data/minecraft/tags/item/")
-                || name.starts_with("data/minecraft/advancement/recipes/");
+                || name.starts_with("data/minecraft/advancement/recipes/")
+                || name.starts_with("data/minecraft/banner_pattern/")
+                || name.starts_with("data/minecraft/tags/banner_pattern/");
             if !name.ends_with(".json") || !is_data {
                 continue;
             }
@@ -276,7 +290,39 @@ impl RecipeBook {
         let mut tags = HashMap::new();
         let mut raw_recipes = Vec::new();
         let mut raw_advancements = Vec::new();
+        let mut banner_patterns = HashMap::new();
+        let mut banner_pattern_tags = HashMap::new();
         for (name, value) in files {
+            let id = |prefix: &str| {
+                let path = name.trim_start_matches(prefix).trim_end_matches(".json");
+                format!("minecraft:{path}")
+            };
+            if name.starts_with("data/minecraft/banner_pattern/") {
+                let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+                if let (Some(asset_id), Some(translation_key)) =
+                    (text("asset_id"), text("translation_key"))
+                {
+                    banner_patterns.insert(
+                        id("data/minecraft/banner_pattern/"),
+                        BannerPattern {
+                            asset_id,
+                            translation_key,
+                        },
+                    );
+                }
+                continue;
+            }
+            if name.starts_with("data/minecraft/tags/banner_pattern/") {
+                let values = value.get("values").and_then(Value::as_array);
+                let entries = values
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().or_else(|| v.get("id").and_then(Value::as_str)))
+                    .map(str::to_owned)
+                    .collect();
+                banner_pattern_tags.insert(id("data/minecraft/tags/banner_pattern/"), entries);
+                continue;
+            }
             let is_recipe = name.starts_with("data/minecraft/recipe/");
             let is_recipe_advancement = name.starts_with("data/minecraft/advancement/recipes/");
             let is_tag = name.starts_with("data/minecraft/tags/item/");
@@ -407,6 +453,8 @@ impl RecipeBook {
             smithing,
             stonecutting,
             tags,
+            banner_patterns,
+            banner_pattern_tags,
             auto_unlocks,
             display_indices: HashMap::new(),
             item_catalog: None,
@@ -822,6 +870,34 @@ impl RecipeBook {
                 (entry.id.as_str(), result)
             })
             .collect()
+    }
+
+    /// A banner pattern of the registry (`BannerPattern`).
+    pub fn banner_pattern(&self, id: &str) -> Option<&BannerPattern> {
+        self.banner_patterns.get(id)
+    }
+
+    /// A banner pattern tag's patterns in its order, nested tags in place
+    /// (`HolderGetter.get(tag)`); none for a tag the data pack lacks.
+    pub fn banner_pattern_tag(&self, tag: &str) -> Option<Vec<String>> {
+        fn expand(book: &RecipeBook, tag: &str, out: &mut Vec<String>, depth: u8) -> bool {
+            let Some(entries) = book.banner_pattern_tags.get(tag) else {
+                return false;
+            };
+            for entry in entries {
+                match entry.strip_prefix('#') {
+                    Some(inner) if depth < 8 => {
+                        expand(book, inner, out, depth + 1);
+                    }
+                    Some(_) => {}
+                    None if !out.contains(entry) => out.push(entry.clone()),
+                    None => {}
+                }
+            }
+            true
+        }
+        let mut patterns = Vec::new();
+        expand(self, tag, &mut patterns, 0).then_some(patterns)
     }
 
     /// The `smithing_template` recipe property set.

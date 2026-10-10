@@ -16,8 +16,8 @@ use crate::render::{Renderer, TextureId, UiList};
 #[path = "menu_gui.rs"]
 mod menu_gui;
 pub use menu_gui::{
-    EnchantingBook, MenuSlotView, MenuView, NameBox, RecipeList, SlotDrag, SmithingIcons,
-    TradeList, anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
+    EnchantingBook, MenuSlotView, MenuView, NameBox, PatternList, RecipeList, SlotDrag,
+    SmithingIcons, TradeList, anvil_name_to_send, anvil_renames, book_model, enchanting_row_at,
 };
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
@@ -125,6 +125,16 @@ struct Icons {
     started: Option<std::time::Instant>,
 }
 
+/// A picture a screen made from the pack: what it was made of, its image
+/// until the next flush uploads it, and its texture, which shows the
+/// picture once `ready`.
+struct Picture {
+    key: String,
+    image: Option<RgbaImage>,
+    texture: Option<TextureId>,
+    ready: bool,
+}
+
 pub struct Gui {
     pub font: Font,
     /// The `alt` font, for the enchanting table's glyphs.
@@ -135,6 +145,9 @@ pub struct Gui {
     started: std::time::Instant,
     sprites: HashMap<String, Sprite>,
     icons: Icons,
+    /// Pictures screens make from the pack as they need them (the loom's
+    /// banners), by name.
+    pictures: HashMap<String, Picture>,
     language: HashMap<String, String>,
     /// Window pixels per GUI pixel.
     pub scale: f32,
@@ -437,6 +450,30 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/stonecutter/recipe_selected",
         0.0,
     ),
+    // The loom (`LoomScreen`).
+    ("loom", "gui/container/loom", 0.0),
+    (
+        "loom_scroller",
+        "gui/sprites/container/loom/scroller",
+        0.0,
+    ),
+    (
+        "loom_scroller_disabled",
+        "gui/sprites/container/loom/scroller_disabled",
+        0.0,
+    ),
+    ("loom_pattern", "gui/sprites/container/loom/pattern", 0.0),
+    (
+        "loom_pattern_highlighted",
+        "gui/sprites/container/loom/pattern_highlighted",
+        0.0,
+    ),
+    (
+        "loom_pattern_selected",
+        "gui/sprites/container/loom/pattern_selected",
+        0.0,
+    ),
+    ("loom_error", "gui/sprites/container/loom/error", 0.0),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as
@@ -466,6 +503,10 @@ const SLOT_ICONS: &[&str] = &[
     "container/slot/diamond",
     "container/slot/emerald",
     "container/slot/amethyst_shard",
+    // The loom's inputs.
+    "container/slot/banner",
+    "container/slot/dye",
+    "container/slot/banner_pattern",
 ];
 
 impl Gui {
@@ -534,6 +575,7 @@ impl Gui {
             model_texture: renderer.model_texture(),
             started: std::time::Instant::now(),
             sprites,
+            pictures: HashMap::new(),
             icons: Icons {
                 size: 32,
                 resized: false,
@@ -586,8 +628,18 @@ impl Gui {
         &self.language
     }
 
-    /// Uploads item icons made this frame.
+    /// Uploads item icons and pictures made this frame.
     pub fn flush(&mut self, renderer: &mut Renderer) {
+        for picture in self.pictures.values_mut() {
+            let Some(image) = picture.image.take() else {
+                continue;
+            };
+            match picture.texture {
+                Some(texture) => renderer.replace_texture(texture, &image),
+                None => picture.texture = Some(renderer.add_texture(&image)),
+            }
+            picture.ready = true;
+        }
         self.icons.started = None;
         let Some(texture) = self.icons.texture else {
             self.icons.texture = Some(renderer.add_texture(&self.icons.image));
@@ -677,6 +729,32 @@ impl Gui {
         };
         self.icons.cells.insert(key, rect);
         rect
+    }
+
+    /// The picture `name` as made of `key`: made by `make` when it was made
+    /// of something else (none until the next flush uploads it).
+    fn picture(
+        &mut self,
+        name: &str,
+        key: &str,
+        make: impl FnOnce() -> Option<RgbaImage>,
+    ) -> Option<TextureId> {
+        if let Some(picture) = self.pictures.get(name)
+            && picture.key == key
+        {
+            return picture.texture.filter(|_| picture.ready);
+        }
+        let image = make();
+        let picture = self.pictures.entry(name.to_owned()).or_insert(Picture {
+            key: String::new(),
+            image: None,
+            texture: None,
+            ready: false,
+        });
+        picture.key = key.to_owned();
+        picture.image = image;
+        picture.ready = false;
+        None
     }
 
     /// `TextureTransform.setupGlintTexturing(8)` at the default glint

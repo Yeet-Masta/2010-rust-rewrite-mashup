@@ -69,6 +69,7 @@ use minecraftoss_player::menu::anvil::{self, AnvilMenu, EnchantmentRules};
 use minecraftoss_player::menu::GrindstoneMenu;
 use minecraftoss_player::menu::SmithingMenu;
 use minecraftoss_player::menu::StonecutterMenu;
+use minecraftoss_player::menu::LoomMenu;
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -121,6 +122,8 @@ pub enum MenuKind {
     Smithing,
     /// `stonecutter` (`StonecutterMenu`).
     Stonecutter,
+    /// `loom` (`LoomMenu`).
+    Loom,
 }
 
 impl MenuKind {
@@ -147,6 +150,7 @@ impl MenuKind {
             Self::Grindstone => "minecraft:grindstone",
             Self::Smithing => "minecraft:smithing",
             Self::Stonecutter => "minecraft:stonecutter",
+            Self::Loom => "minecraft:loom",
         }
     }
 
@@ -169,6 +173,7 @@ impl MenuKind {
             Self::Grindstone => Box::new(GrindstoneMenu::new(own)),
             Self::Smithing => Box::new(SmithingMenu::new(own)),
             Self::Stonecutter => Box::new(StonecutterMenu::new(own)),
+            Self::Loom => Box::new(LoomMenu::new(own)),
         }
     }
 }
@@ -263,6 +268,11 @@ pub fn stonecutter(menu: &(dyn Menu + Send)) -> Option<&StonecutterMenu> {
     menu.as_any()?.downcast_ref()
 }
 
+/// The loom's menu behind a menu, if it is one.
+pub fn loom(menu: &(dyn Menu + Send)) -> Option<&LoomMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
 /// The anvil's menu behind a menu, if it is one.
 pub fn anvil(menu: &(dyn Menu + Send)) -> Option<&AnvilMenu> {
     menu.as_any()?.downcast_ref()
@@ -282,6 +292,8 @@ pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableReg
         smithing.set_at_block(at_block);
     } else if let Some(stonecutter) = any.downcast_mut::<StonecutterMenu>() {
         stonecutter.set_at_block(at_block);
+    } else if let Some(loom) = any.downcast_mut::<LoomMenu>() {
+        loom.set_at_block(at_block);
     }
 }
 
@@ -549,6 +561,7 @@ enum MenuBlock {
     Grindstone,
     SmithingTable,
     Stonecutter,
+    Loom,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -570,6 +583,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("GrindstoneBlock", MenuBlock::Grindstone),
     ("SmithingTableBlock", MenuBlock::SmithingTable),
     ("StonecutterBlock", MenuBlock::Stonecutter),
+    ("LoomBlock", MenuBlock::Loom),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -998,6 +1012,7 @@ impl ServerSim {
             MenuBlock::Grindstone => station(MenuKind::Grindstone, "container.grindstone_title", "interact_with_grindstone"),
             MenuBlock::SmithingTable => station(MenuKind::Smithing, "container.upgrade", "interact_with_smithing_table"),
             MenuBlock::Stonecutter => station(MenuKind::Stonecutter, "container.stonecutter", "interact_with_stonecutter"),
+            MenuBlock::Loom => station(MenuKind::Loom, "container.loom", "interact_with_loom"),
         }
     }
 

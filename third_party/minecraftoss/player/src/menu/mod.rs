@@ -30,6 +30,7 @@ pub mod furnace;
 pub mod grindstone;
 pub mod smithing;
 pub mod stonecutter;
+pub mod loom;
 pub mod storage;
 #[cfg(test)]
 mod tests;
@@ -42,6 +43,7 @@ pub use furnace::FurnaceMenu;
 pub use grindstone::GrindstoneMenu;
 pub use smithing::SmithingMenu;
 pub use stonecutter::StonecutterMenu;
+pub use loom::LoomMenu;
 pub use storage::{ChestMenu, DispenserMenu, HopperMenu, ShulkerBoxMenu};
 
 /// `AbstractContainerMenu.SLOT_CLICKED_OUTSIDE`: a click outside the window.

@@ -32,12 +32,15 @@ mod merchant;
 mod smithing;
 #[path = "screens/stonecutter.rs"]
 mod stonecutter;
+#[path = "screens/loom.rs"]
+mod loom;
 
 pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
 pub use merchant::TradeList;
 pub use smithing::SmithingIcons;
 pub use stonecutter::RecipeList;
+pub use loom::PatternList;
 
 /// The labels' colour (`-12566464`, without a shadow).
 const LABEL: u32 = 0x404040;
@@ -141,6 +144,11 @@ pub fn layout(kind: MenuKind) -> Layout {
             title_y: 5.0,
             ..Layout::plain("stonecutter", 166.0, TitleX::At(8.0))
         },
+        // `LoomScreen`: the title two pixels higher.
+        MenuKind::Loom => Layout {
+            title_y: 4.0,
+            ..Layout::plain("loom", 166.0, TitleX::At(8.0))
+        },
     }
 }
 
@@ -204,6 +212,10 @@ pub struct MenuView<'a> {
     /// list's scroll.
     pub recipes: Vec<ItemStack>,
     pub recipe_list: &'a RecipeList,
+    /// The loom's patterns (their texture's id and translation key), and
+    /// its list's scroll.
+    pub patterns: Vec<(String, String)>,
+    pub pattern_list: &'a PatternList,
 }
 
 impl Gui {
@@ -350,6 +362,7 @@ impl Gui {
             }
             MenuKind::Smithing => self.smithing_extras(ui, view, left, top),
             MenuKind::Stonecutter => self.stonecutter_extras(ui, packs, view, left, top),
+            MenuKind::Loom => self.loom_extras(ui, packs, view, left, top),
         }
     }
 
@@ -378,6 +391,7 @@ impl Gui {
             MenuKind::Enchantment => self.enchanting_tooltip(ui, view, left, top),
             MenuKind::Smithing => self.smithing_tooltip(ui, view, left, top),
             MenuKind::Stonecutter => self.stonecutter_tooltip(ui, view, left, top),
+            MenuKind::Loom => self.loom_tooltip(ui, view, left, top),
             _ => {}
         }
     }
@@ -469,6 +483,7 @@ mod tests {
             MenuKind::Grindstone,
             MenuKind::Smithing,
             MenuKind::Stonecutter,
+            MenuKind::Loom,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

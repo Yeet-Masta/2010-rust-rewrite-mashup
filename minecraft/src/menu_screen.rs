@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use minecraft_terrain::menus::{
     ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, anvil,
-    crafter, merchant, stonecutter,
+    crafter, loom, merchant, stonecutter,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
@@ -25,8 +25,8 @@ use serde_json::Value;
 
 use super::{Game, Input, Key};
 use crate::gui::{
-    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, RecipeList, Screen, SlotDrag,
-    SmithingIcons, TradeList, enchanting_row_at,
+    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, PatternList, RecipeList, Screen,
+    SlotDrag, SmithingIcons, TradeList, enchanting_row_at,
 };
 use crate::render::GuiModel;
 
@@ -137,6 +137,8 @@ pub(super) struct ClientMenu {
     smithing: SmithingIcons,
     /// The stonecutter screen's recipe list.
     recipe_list: RecipeList,
+    /// The loom screen's pattern list.
+    pattern_list: PatternList,
 }
 
 impl ClientMenu {
@@ -178,6 +180,7 @@ impl ClientMenu {
             name: NameBox::default(),
             smithing: SmithingIcons::default(),
             recipe_list: RecipeList::default(),
+            pattern_list: PatternList::default(),
         }
     }
 
@@ -612,7 +615,38 @@ impl ClientMenu {
             },
             recipes: self.stonecutter_recipes(),
             recipe_list: &self.recipe_list,
+            patterns: self
+                .loom_patterns()
+                .iter()
+                .filter_map(|id| {
+                    let pattern = self.shown.recipes.banner_pattern(id)?;
+                    Some((pattern.asset_id.clone(), pattern.translation_key.clone()))
+                })
+                .collect(),
+            pattern_list: &self.pattern_list,
         }
+    }
+
+    /// The loom's patterns for its inputs, as the copy has them.
+    fn loom_patterns(&self) -> Vec<String> {
+        self.read(|menu, cx| loom(menu).map_or_else(Vec::new, |menu| menu.patterns(cx)))
+    }
+
+    /// `LoomScreen.mouseClicked`: a press on a pattern button the copy would
+    /// take (`clickMenuButton`) sends it, with the select sound. Whether it
+    /// did.
+    fn press_loom_button(&mut self, x: f32, y: f32) -> bool {
+        if self.kind != MenuKind::Loom {
+            return false;
+        }
+        let patterns = self.loom_patterns().len();
+        let Some(index) = self.pattern_list.press(x, y, patterns) else {
+            return false;
+        };
+        self.send(MenuInput::Button(index));
+        self.sounds
+            .push(("minecraft:ui.loom.select_pattern", 0.25, 1.0));
+        true
     }
 
     /// The stonecutter's recipes for its input, as the copy has them.
@@ -946,6 +980,17 @@ impl Game {
                 .wheel(super::take_notches(&mut input.scroll), recipes);
             menu.recipe_list.drag(my, recipes);
         }
+        // The loom's list follows its inputs (`containerChanged`), and
+        // scrolls as the stonecutter's does.
+        if menu.kind == MenuKind::Loom {
+            let patterns = menu.loom_patterns().len();
+            let inputs = [0, 1, 2].map(|slot| menu.item(slot).cloned());
+            menu.pattern_list
+                .watch([0, 1, 2].map(|slot| inputs[slot].as_ref()), patterns);
+            menu.pattern_list
+                .wheel(super::take_notches(&mut input.scroll), patterns);
+            menu.pattern_list.drag(my, patterns);
+        }
         if menu.quick.button.is_some() {
             menu.drag_over(gui.mouse, hovered);
         } else {
@@ -962,11 +1007,13 @@ impl Game {
                     Some(None) => {}
                     None if menu.press_enchanting_row(mx, my) => {}
                     None if menu.press_stonecutter_button(mx, my) => {}
+                    None if menu.press_loom_button(mx, my) => {}
                     None => menu.press(button, hovered, outside, input.shift),
                 }
             } else {
                 menu.trades.release();
                 menu.recipe_list.release();
+                menu.pattern_list.release();
                 menu.release(button, hovered, outside, input.shift);
             }
         }
@@ -1075,6 +1122,7 @@ mod tests {
             name: NameBox::default(),
             smithing: SmithingIcons::default(),
             recipe_list: RecipeList::default(),
+            pattern_list: PatternList::default(),
         }
     }
 
