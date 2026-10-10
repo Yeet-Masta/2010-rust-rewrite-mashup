@@ -322,6 +322,26 @@ fn weather_fragment(in: EntityOut) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(colour.rgb, view.environment.fog.rgb, fog_value(in.world_pos)), colour.a);
 }
 
+// LightningBoltRenderer's quads (`RenderPipelines.LIGHTNING`): flat
+// colour, added onto what is behind.
+struct LightningOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) colour: vec4<f32>,
+}
+
+@vertex
+fn lightning_vertex(@location(0) position: vec3<f32>, @location(1) colour: vec4<f32>) -> LightningOut {
+    var out: LightningOut;
+    out.clip = view.clip_from_rel * vec4<f32>(rel_from_block(position), 1.0);
+    out.colour = colour;
+    return out;
+}
+
+@fragment
+fn lightning_fragment(in: LightningOut) -> @location(0) vec4<f32> {
+    return in.colour;
+}
+
 // An entity model in the UI (`ENTITY_IN_UI` lighting, baked into the
 // colour): no lightmap, no fog.
 @vertex

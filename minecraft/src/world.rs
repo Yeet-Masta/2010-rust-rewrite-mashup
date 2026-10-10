@@ -42,9 +42,10 @@ pub struct World {
     cloud_mask: Option<CloudMask>,
     cloud_center: Option<(i32, i32)>,
     /// `Level.getRainLevel` and `getThunderLevel` (already scaled by the
-    /// rain), for the environment.
+    /// rain), and whether lightning lights the sky, for the environment.
     pub rain_level: f32,
     pub thunder_level: f32,
+    pub sky_flash: bool,
 }
 
 impl World {
@@ -100,6 +101,7 @@ impl World {
             cloud_center: None,
             rain_level: 0.0,
             thunder_level: 0.0,
+            sky_flash: false,
         })
     }
 
@@ -177,6 +179,7 @@ impl World {
             rains_in_biome,
             (dt * 20.0) as f32,
         );
+        self.environment.set_sky_flash(self.sky_flash);
         self.environment_clock += dt;
         if !self.environment_primed || self.environment_clock >= TICK_SECONDS {
             self.environment_clock = (self.environment_clock % TICK_SECONDS).min(TICK_SECONDS);

@@ -658,6 +658,7 @@ impl Game {
             ],
             cracks: self.mining.crack_mesh(),
             weather: self.weather.mesh(&self.world, eye, self.ticks as i64, partial),
+            lightning: crate::weather::Weather::bolt_mesh(self.entities.lightning()),
             outline,
             hand,
             hand_clip: {
@@ -1184,7 +1185,7 @@ impl Game {
         // `ClientLevel.animateTick`, then `ParticleEngine.tick`.
         self.particles.tick_explosions(&self.world);
         let mut sounds = Vec::new();
-        // `ClientLevel.tick`'s weather.
+        // `ClientLevel.tick`'s weather, then the bolts' own ticks.
         if let Some(weather) = &self.entities.weather {
             self.weather
                 .set_levels(weather.rain_level, weather.thunder_level);
@@ -1194,10 +1195,12 @@ impl Game {
             &mut self.particles,
             self.player.eye(),
             self.ticks as i64,
+            self.entities.lightning(),
             &mut sounds,
         );
         self.world.rain_level = self.weather.rain_level;
         self.world.thunder_level = self.weather.thunder();
+        self.world.sky_flash = self.weather.flashing();
         if self.landed {
             let eye = self.player.eye().floor();
             let around = (eye.x as i32, eye.y as i32, eye.z as i32);

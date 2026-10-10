@@ -213,6 +213,8 @@ pub struct WorldDraw {
     pub outline: Vec<[f32; 3]>,
     /// Rain and snow columns (`WeatherEffectRenderer`).
     pub weather: ChunkMesh,
+    /// Lightning bolts: position then colour.
+    pub lightning: (Vec<[f32; 7]>, Vec<u32>),
     /// The hand or held item in view space, and its projection.
     pub hand: (Vec<SectionVertex>, Vec<u32>),
     pub hand_clip: Mat4,
@@ -254,6 +256,7 @@ struct Pipelines {
     entity_culled: wgpu::RenderPipeline,
     entity_translucent: wgpu::RenderPipeline,
     weather: wgpu::RenderPipeline,
+    lightning: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     hand: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
@@ -1073,6 +1076,11 @@ impl Renderer {
                     &world.sprites.translucent.1,
                 ),
                 entity(&world.weather),
+                upload(
+                    &self.device,
+                    bytemuck::cast_slice(&world.lightning.0),
+                    &world.lightning.1,
+                ),
             ];
         }
         let outline = world.filter(|w| !w.outline.is_empty()).map(|w| {
@@ -1161,6 +1169,10 @@ impl Renderer {
                 }
                 if let Some(mesh) = &frame_meshes[3] {
                     pass.set_pipeline(&p.entity_translucent);
+                    draw(&mut pass, mesh, 0..mesh.count);
+                }
+                if let Some(mesh) = &frame_meshes[10] {
+                    pass.set_pipeline(&p.lightning);
                     draw(&mut pass, mesh, 0..mesh.count);
                 }
                 if let Some(mesh) = &frame_meshes[8] {
@@ -1652,6 +1664,27 @@ impl Pipelines {
                 &entity,
                 Some((false, GreaterEqual)),
                 alpha,
+                None,
+            ),
+            // `RenderPipelines.LIGHTNING`: `BlendFunction.LIGHTNING` adds
+            // the colour by its alpha.
+            lightning: world(
+                "lightning_vertex",
+                "lightning_fragment",
+                &cloud,
+                Some((true, GreaterEqual)),
+                Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
                 None,
             ),
             shadow: world(

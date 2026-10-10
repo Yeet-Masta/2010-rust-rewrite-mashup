@@ -19,7 +19,7 @@ use minecraft_terrain::portal_particles::PortalParticles;
 use minecraft_terrain::scene::{Block, HandcraftedScene, Scene};
 use minecraft_terrain::server::{
     EntitySnapshot, ExplosionView, MovingBlockView, PlayerEdit, ServerHandle, ServerItem,
-    ServerSim, ServerTnt, TickInput, Weather,
+    ServerLightning, ServerSim, ServerTnt, TickInput, Weather,
 };
 use minecraft_terrain::terrain::TerrainStream;
 use minecraftoss_entities::tempt::PlayerCandidate;
@@ -133,7 +133,8 @@ pub struct Entities {
     /// with the server, whose answer is written over the inventory.
     pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
-
+    /// Lightning bolts, as of the last server tick.
+    lightning: Vec<ServerLightning>,
     /// The level's weather as of the last server tick: its rain and
     /// thunder levels (`ClientboundGameEventPacket`), and what is saved.
     pub weather: Option<Weather>,
@@ -216,6 +217,7 @@ impl Entities {
             server_picked: Vec::new(),
             hold_pickups: false,
             server_snapshot: None,
+            lightning: Vec::new(),
             weather: None,
             primed_tnt: Vec::new(),
             server_handled: 0,
@@ -614,6 +616,11 @@ impl Entities {
     }
 
     /// A mob of `kind` (`cow`, `zombie`) at a point, as a spawn egg makes one.
+    /// The lightning bolts, as of the last server tick.
+    pub fn lightning(&self) -> &[ServerLightning] {
+        &self.lightning
+    }
+
     /// The saved weather, as the world loads.
     pub fn load_weather(&mut self, weather: Weather) {
         self.weather = Some(weather.clone());
@@ -812,6 +819,7 @@ impl Entities {
             self.server_handled = output.handled;
             if let Some(mut snapshot) = output.entities {
                 self.primed_tnt = std::mem::take(&mut snapshot.tnt);
+                self.lightning = std::mem::take(&mut snapshot.lightning);
                 self.server_snapshot = Some(snapshot);
             }
             if let Some(weather) = output.weather {

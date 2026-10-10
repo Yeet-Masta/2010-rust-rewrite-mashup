@@ -80,6 +80,8 @@ pub struct DimensionEnvironment {
     current: Vec<Value>,
     /// `AtmosphericFogEnvironment.rainFogMultiplier`.
     rain_fog: f32,
+    /// `ClientLevel.skyFlashTime` is above 0: lightning lights the sky.
+    sky_flash: bool,
 }
 
 /// What the camera sees this frame.
@@ -101,17 +103,35 @@ impl DimensionEnvironment {
             *slot = system.registry.index(name).ok_or_else(|| format!("unknown attribute {name}"))?;
         }
         let defaults: Vec<Value> = indices.iter().map(|&i| system.registry.attributes[i].default.clone()).collect();
-        Ok(Self { system, presentation, indices, last: defaults.clone(), current: defaults, rain_fog: 0.0 })
+        Ok(Self { system, presentation, indices, last: defaults.clone(), current: defaults, rain_fog: 0.0, sky_flash: false })
+    }
+
+    /// Lightning's flash (`ClientLevel.skyFlashTime > 0`), for the ticks
+    /// that follow.
+    pub fn set_sky_flash(&mut self, flash: bool) {
+        self.sky_flash = flash;
     }
 
     /// `EnvironmentAttributeProbe.tick`: samples every used attribute at the
-    /// camera. The first tick after loading fills both ends.
+    /// camera. The first tick after loading fills both ends. `thunder_level`
+    /// is `Level.getThunderLevel`, already scaled by the rain.
     pub fn tick(&mut self, clock_ticks: i64, rain_level: f32, thunder_level: f32, camera: [f64; 3], noise_biome: impl Fn(i32, i32, i32) -> u16, first: bool) {
         let weights = biome_weights([camera[0] * 0.25, camera[1] * 0.25, camera[2] * 0.25], &noise_biome);
         let own = noise_biome((camera[0].floor() as i32) >> 2, (camera[1].floor() as i32) >> 2, (camera[2].floor() as i32) >> 2);
         let clock = move |_: &str| clock_ticks;
         let sample = Sample { clock_ticks: &clock, rain_level, thunder_level, biome_weights: Some(&weights), biome: own };
-        let values: Vec<Value> = self.indices.iter().map(|&i| self.system.value(i, &sample)).collect();
+        let mut values: Vec<Value> = self.indices.iter().map(|&i| self.system.value(i, &sample)).collect();
+        // `ClientLevel.addEnvironmentAttributeLayers`: while lightning
+        // flashes, the sky goes 22% of the way to pale blue and sky light
+        // is at full strength.
+        if self.sky_flash {
+            if let Value::Rgb(sky) = &mut values[Used::SkyColor as usize] {
+                for (channel, flash) in sky.iter_mut().zip([0.8, 0.8, 1.0]) {
+                    *channel += (flash - *channel) * 0.22;
+                }
+            }
+            values[Used::SkyLightFactor as usize] = Value::Float(1.0);
+        }
         self.last = if first { values.clone() } else { std::mem::replace(&mut self.current, values.clone()) };
         self.current = values;
     }

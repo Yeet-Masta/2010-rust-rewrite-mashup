@@ -1,8 +1,9 @@
-//! Rain and snow as the client draws them (26.3 `WeatherEffectRenderer`,
-//! `ClientLevel.getPrecipitationAt` with `Biome.getPrecipitationAt`).
+//! Rain, snow and lightning as the client draws them (26.3
+//! `WeatherEffectRenderer`, `ClientLevel.getPrecipitationAt` with
+//! `Biome.getPrecipitationAt`, `LightningBoltRenderer`).
 //!
-//! Weather columns are in block space; the renderer draws them relative to
-//! the eye like the mobs.
+//! Weather columns and bolts are in block space; the renderer draws them
+//! relative to the eye like the mobs.
 
 use crate::mesh::Vertex;
 use crate::scene::{BlockPos, HandcraftedScene};
@@ -184,5 +185,80 @@ impl Climate {
             }
         }
         (vertices, indices)
+    }
+}
+
+/// `LightningBoltRenderer.submit`: four ever wider layers of a trunk and
+/// two branches zigzagging up 128 blocks from `position`, shaped by the
+/// bolt's seed; position then colour per vertex, as quads of two triangles.
+pub fn lightning_mesh(seed: i64, position: [f64; 3], vertices: &mut Vec<[f32; 7]>, indices: &mut Vec<u32>) {
+    let mut x_offsets = [0.0f32; 8];
+    let mut z_offsets = [0.0f32; 8];
+    let (mut x_offset, mut z_offset) = (0.0f32, 0.0f32);
+    let mut random = LegacyRandom::new(seed);
+    for segment in (0..8).rev() {
+        x_offsets[segment] = x_offset;
+        z_offsets[segment] = z_offset;
+        x_offset += (random.next_i32_bound(11) - 5) as f32;
+        z_offset += (random.next_i32_bound(11) - 5) as f32;
+    }
+    let origin = position.map(|c| c as f32);
+    for layer in 0..4 {
+        let mut random = LegacyRandom::new(seed);
+        for branch in 0..3 {
+            let trunk = branch == 0;
+            let start = 7 - branch;
+            let end = if trunk { 0 } else { start - 2 };
+            let mut start_x = x_offsets[start as usize] - x_offset;
+            let mut start_z = z_offsets[start as usize] - z_offset;
+            for segment in (end..=start).rev() {
+                let (end_x, end_z) = (start_x, start_z);
+                let spread = if trunk { 5 } else { 15 };
+                start_x += (random.next_i32_bound(spread * 2 + 1) - spread) as f32;
+                start_z += (random.next_i32_bound(spread * 2 + 1) - spread) as f32;
+                let mut top = 0.1 + layer as f32 * 0.2;
+                let mut bottom = top;
+                if trunk {
+                    top *= segment as f32 * 0.1 + 1.0;
+                    bottom *= (segment - 1) as f32 * 0.1 + 1.0;
+                }
+                // `quad`'s four sides: which way each edge leans in X and Z.
+                for (right_x, right_z, left_x, left_z) in
+                    [(false, false, true, false), (true, false, true, true), (true, true, false, true), (false, true, false, false)]
+                {
+                    let lean = |positive: bool, radius: f32| if positive { radius } else { -radius };
+                    let (y0, y1) = (segment as f32 * 16.0, (segment + 1) as f32 * 16.0);
+                    let corners = [
+                        [start_x + lean(right_x, bottom), y0, start_z + lean(right_z, bottom)],
+                        [end_x + lean(right_x, top), y1, end_z + lean(right_z, top)],
+                        [end_x + lean(left_x, top), y1, end_z + lean(left_z, top)],
+                        [start_x + lean(left_x, bottom), y0, start_z + lean(left_z, bottom)],
+                    ];
+                    let base = vertices.len() as u32;
+                    for [x, y, z] in corners {
+                        vertices.push([origin[0] + x, origin[1] + y, origin[2] + z, 0.45, 0.45, 0.5, 0.3]);
+                    }
+                    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bolt_has_four_layers_of_a_trunk_and_two_branches() {
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        lightning_mesh(42, [0.5, 64.0, 0.5], &mut vertices, &mut indices);
+        // Per layer: 8 trunk segments and 3 for each branch, 4 quads each.
+        assert_eq!(vertices.len(), 4 * (8 + 3 + 3) * 4 * 4);
+        assert_eq!(indices.len(), vertices.len() / 4 * 6);
+        // The trunk reaches 128 blocks up from where the bolt stands.
+        let top = vertices.iter().map(|v| v[1]).fold(f32::MIN, f32::max);
+        let bottom = vertices.iter().map(|v| v[1]).fold(f32::MAX, f32::min);
+        assert_eq!((bottom, top), (64.0, 64.0 + 128.0));
     }
 }

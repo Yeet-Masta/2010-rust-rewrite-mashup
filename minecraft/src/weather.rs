@@ -1,12 +1,16 @@
 //! The weather on the client (26.3 `ClientLevel`): the rain and thunder
 //! levels the server sends, rain splashing on the ground with its sound
-//! (`tickWeatherEffects`), and the rain and snow mesh
-//! (`WeatherEffectRenderer`).
+//! (`tickWeatherEffects`), lightning's flash (`skyFlashTime`) and thunder
+//! (`LightningBolt.tick` on the client), and the rain, snow and bolt meshes
+//! (`WeatherEffectRenderer`, `LightningBoltRenderer`).
+use std::collections::HashSet;
+
 use glam::DVec3;
 use minecraft_terrain::fluid::{FluidCell, FluidKind};
 use minecraft_terrain::mesh::ChunkMesh;
 use minecraft_terrain::scene::Scene;
-use minecraft_terrain::weather::{Climate, Precipitation, WEATHER_RADIUS};
+use minecraft_terrain::server::ServerLightning;
+use minecraft_terrain::weather::{Climate, Precipitation, WEATHER_RADIUS, lightning_mesh};
 use minecraftoss_core::random::LegacyRandom;
 use minecraftoss_player::World as _;
 
@@ -22,8 +26,14 @@ pub struct Weather {
     /// (the client sets them without easing).
     pub rain_level: f32,
     thunder_level: f32,
+    /// `ClientLevel.skyFlashTime`.
+    sky_flash_time: i32,
     /// `ClientLevel.rainSoundTime`.
     rain_sound_time: i32,
+    /// The bolts already heard, by entity ID.
+    heard: HashSet<i32>,
+    /// Stands in for the bolts' own randoms (their thunder's pitch).
+    random: LegacyRandom,
 }
 
 impl Weather {
@@ -32,7 +42,10 @@ impl Weather {
             climate: Climate::new(),
             rain_level: 0.0,
             thunder_level: 0.0,
+            sky_flash_time: 0,
             rain_sound_time: 0,
+            heard: HashSet::new(),
+            random: LegacyRandom::new(0x5DEE_CE66),
         }
     }
 
@@ -48,16 +61,40 @@ impl Weather {
         self.thunder_level * self.rain_level
     }
 
-    /// One client tick: `ClientLevel.tick`'s `tickWeatherEffects`.
+    /// Lightning lights the sky (`skyFlashTime > 0`).
+    pub fn flashing(&self) -> bool {
+        self.sky_flash_time > 0
+    }
+
+    /// One client tick: `ClientLevel.tick`'s `tickWeatherEffects` and the
+    /// flash running down, then the bolts' own ticks: thunder and impact
+    /// when one appears (heard from afar), the flash while one shines.
     pub fn tick(
         &mut self,
         world: &World,
         particles: &mut Particles,
         camera: DVec3,
         game_time: i64,
+        bolts: &[ServerLightning],
         sounds: &mut Vec<Sound>,
     ) {
         self.tick_rain(world, particles, camera, game_time, sounds);
+        if self.sky_flash_time > 0 {
+            self.sky_flash_time -= 1;
+        }
+        self.heard.retain(|id| bolts.iter().any(|b| b.id == *id));
+        for bolt in bolts {
+            let at = DVec3::from_array(bolt.position);
+            if self.heard.insert(bolt.id) {
+                let pitch = 0.8 + self.random.next_f32() * 0.2;
+                sounds.push(("minecraft:entity.lightning_bolt.thunder", at, 10000.0, pitch));
+                let pitch = 0.5 + self.random.next_f32() * 0.2;
+                sounds.push(("minecraft:entity.lightning_bolt.impact", at, 2.0, pitch));
+            }
+            if bolt.life >= 0 {
+                self.sky_flash_time = 2;
+            }
+        }
     }
 
     /// `ClientLevel.tickWeatherEffects`: rain splashes (smoke on lava,
@@ -130,5 +167,14 @@ impl Weather {
         let columns = self.climate.columns(&world.scene, light, camera.to_array(), game_time, partial_tick, WEATHER_RADIUS);
         let (vertices, indices) = self.climate.column_mesh(&columns, camera.to_array(), WEATHER_RADIUS, self.rain_level);
         ChunkMesh { vertices, indices, ..ChunkMesh::default() }
+    }
+
+    /// `LightningBoltRenderer`: every bolt there is.
+    pub fn bolt_mesh(bolts: &[ServerLightning]) -> (Vec<[f32; 7]>, Vec<u32>) {
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        for bolt in bolts {
+            lightning_mesh(bolt.seed, bolt.position, &mut vertices, &mut indices);
+        }
+        (vertices, indices)
     }
 }
