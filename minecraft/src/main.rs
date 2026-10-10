@@ -27,6 +27,7 @@ mod save;
 mod setup;
 mod sounds;
 mod target;
+mod weather;
 mod world;
 
 use std::path::PathBuf;

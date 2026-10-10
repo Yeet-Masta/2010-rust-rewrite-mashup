@@ -133,6 +133,7 @@ pub struct Entities {
     /// with the server, whose answer is written over the inventory.
     pub hold_pickups: bool,
     server_snapshot: Option<EntitySnapshot>,
+
     /// The level's weather as of the last server tick: its rain and
     /// thunder levels (`ClientboundGameEventPacket`), and what is saved.
     pub weather: Option<Weather>,

@@ -211,6 +211,8 @@ pub struct WorldDraw {
     pub cracks: (Vec<[f32; 5]>, Vec<u32>),
     /// The targeted block's outline, as line segments.
     pub outline: Vec<[f32; 3]>,
+    /// Rain and snow columns (`WeatherEffectRenderer`).
+    pub weather: ChunkMesh,
     /// The hand or held item in view space, and its projection.
     pub hand: (Vec<SectionVertex>, Vec<u32>),
     pub hand_clip: Mat4,
@@ -251,6 +253,7 @@ struct Pipelines {
     entity: wgpu::RenderPipeline,
     entity_culled: wgpu::RenderPipeline,
     entity_translucent: wgpu::RenderPipeline,
+    weather: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     hand: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
@@ -1069,6 +1072,7 @@ impl Renderer {
                     bytemuck::cast_slice(&world.sprites.translucent.0),
                     &world.sprites.translucent.1,
                 ),
+                entity(&world.weather),
             ];
         }
         let outline = world.filter(|w| !w.outline.is_empty()).map(|w| {
@@ -1175,6 +1179,11 @@ impl Renderer {
                 if let Some(clouds) = &self.clouds {
                     pass.set_pipeline(&p.clouds);
                     draw(&mut pass, clouds, 0..clouds.count);
+                }
+                // `LevelRenderer`'s weather pass, after the clouds.
+                if let Some(mesh) = &frame_meshes[9] {
+                    pass.set_pipeline(&p.weather);
+                    draw(&mut pass, mesh, 0..mesh.count);
                 }
             }
         }
@@ -1636,6 +1645,15 @@ impl Pipelines {
                 alpha,
                 None,
             ),
+            // `RenderPipelines.WEATHER` without depth writes, both faces.
+            weather: world(
+                "entity_vertex",
+                "weather_fragment",
+                &entity,
+                Some((false, GreaterEqual)),
+                alpha,
+                None,
+            ),
             shadow: world(
                 "entity_vertex",
                 "shadow_fragment",
@@ -1718,5 +1736,18 @@ impl Pipelines {
                 topology: wgpu::PrimitiveTopology::TriangleList,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The world shader parses and validates, as pipeline creation needs.
+    #[test]
+    fn the_world_shader_is_valid() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).expect("the shader parses");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .expect("the shader validates");
     }
 }

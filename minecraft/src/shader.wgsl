@@ -170,7 +170,8 @@ fn celestial(ray: vec3<f32>, direction: vec3<f32>, half_size: f32, slot: f32, mo
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) { return vec4<f32>(0.0); }
     // The moon phase quad reverses both texture axes in buildMoonPhases.
     if moon { uv = vec2<f32>(1.0) - uv; }
-    let atlas_uv = vec2<f32>((slot + uv.x) / 9.0, uv.y);
+    // The celestial strip is the texture's top 32 of 288 rows.
+    let atlas_uv = vec2<f32>((slot + uv.x) / 9.0, uv.y * (32.0 / 288.0));
     return textureSampleLevel(celestials, atlas_sampler, atlas_uv, 0.0);
 }
 
@@ -302,6 +303,23 @@ fn entity_translucent_fragment(in: EntityOut) -> @location(0) vec4<f32> {
     }
     let lit = texel.rgb * in.colour.rgb;
     return vec4<f32>(mix(lit, view.environment.fog.rgb, fog_value(in.world_pos)), texel.a * in.colour.a);
+}
+
+// WeatherEffectRenderer's columns through the particle shader:
+// environment/rain.png or snow.png (beside each other under the sun and
+// moon, U from 4 meaning snow), repeating, tinted by the lightmap and the
+// column's alpha, cut out below 0.1, in fog.
+@fragment
+fn weather_fragment(in: EntityOut) -> @location(0) vec4<f32> {
+    let snow = in.uv.x >= 3.0;
+    let u = (fract(in.uv.x) + select(0.0, 1.0, snow)) * 64.0;
+    let v = 32.0 + fract(in.uv.y) * 256.0;
+    let texel = textureSampleLevel(celestials, atlas_sampler, vec2<f32>(u, v) / 288.0, 0.0);
+    let colour = texel * in.colour;
+    if colour.a < 0.1 {
+        discard;
+    }
+    return vec4<f32>(mix(colour.rgb, view.environment.fog.rgb, fog_value(in.world_pos)), colour.a);
 }
 
 // An entity model in the UI (`ENTITY_IN_UI` lighting, baked into the

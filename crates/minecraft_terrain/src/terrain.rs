@@ -196,6 +196,13 @@ impl BlockStates {
         })
     }
 
+    /// `BiomeManager.getBiome`'s biome ID at a block, plains where its
+    /// chunk is not loaded.
+    pub fn biome_id_at<'c>(&self, (x, y, z): BlockPos, chunk: impl Fn(ChunkPos) -> Option<&'c Chunk>) -> BiomeId {
+        let [qx, qy, qz] = zoom::quart_for_block(self.zoom_seed, x, y, z);
+        self.noise_biome((qx, qy, qz), chunk)
+    }
+
     pub fn biome(&self, id: BiomeId) -> BiomeSample {
         self.biomes[usize::from(id.0)]
     }

@@ -154,8 +154,8 @@ impl Level<'_> {
         }
     }
 
-    /// `ServerLevel.tickPrecipitation` for warm dry weather: nothing
-    /// freezes and nothing falls. Cold biomes and rain are not simulated.
+    /// `ServerLevel.tickPrecipitation`: exposed water freezes in the cold,
+    /// and while it rains snow piles up and cauldrons fill.
     fn tick_precipitation(&mut self, pos: BlockPos) {
         use minecraftoss_generator::feature::World;
         let top = BlockPos::new(pos.x, self.height_at(HeightmapKind::MotionBlocking, pos.x, pos.z), pos.z);

@@ -436,6 +436,45 @@ impl Scene for HandcraftedScene {
     }
 }
 impl HandcraftedScene {
+    /// `BiomeManager.getBiome`'s biome at a block of a streamed world.
+    pub fn biome_id_at(&self, pos: BlockPos) -> Option<minecraftoss_core::BiomeId> {
+        let states = self.states.as_ref()?;
+        Some(states.biome_id_at(pos, |chunk| self.generated.get(&chunk).map(Arc::as_ref)))
+    }
+
+    /// Whether a streamed world's chunk is loaded (`ClientChunkCache.hasChunk`).
+    pub fn has_chunk(&self, chunk: ChunkPos) -> bool {
+        self.generated.contains_key(&chunk)
+    }
+
+    /// `Heightmap.Types.MOTION_BLOCKING` at a column of a streamed world
+    /// (`Level.getHeight`): the generated chunk's, looked for again from
+    /// above the column's highest edit, down past cleared blocks.
+    pub fn motion_blocking_height(&self, x: i32, z: i32) -> Option<i32> {
+        use minecraftoss_core::HeightmapKind;
+        let states = self.states.as_ref()?;
+        let at = (x.div_euclid(16), z.div_euclid(16));
+        let chunk = self.generated.get(&at)?;
+        let mut top = chunk.heightmaps.get(HeightmapKind::MotionBlocking, (x & 15) as usize, (z & 15) as usize);
+        if let Some(edits) = self.blocks.get(&at) {
+            for &(_, y, edit_z) in edits.range((x, i32::MIN, i32::MIN)..=(x, i32::MAX, i32::MAX)).map(|(pos, _)| pos) {
+                if edit_z == z {
+                    top = top.max(y + 1);
+                }
+            }
+        }
+        let registries = states.registries();
+        let bit = HeightmapKind::MotionBlocking.bit();
+        while top > chunk.min_y() {
+            let state = self.state_at((x, top - 1, z)).unwrap_or(minecraftoss_core::BlockStateId::AIR);
+            if registries.heightmap_mask(state) & bit != 0 {
+                break;
+            }
+            top -= 1;
+        }
+        Some(top)
+    }
+
     /// The noise biome at a quart position of a generated world.
     pub fn noise_biome(&self, quart: (i32, i32, i32)) -> Option<minecraftoss_core::BiomeId> {
         let states = self.states.as_ref()?;

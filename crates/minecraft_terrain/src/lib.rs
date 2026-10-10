@@ -18,6 +18,7 @@ pub mod pack;
 pub mod scene;
 pub mod sections;
 pub mod terrain;
+pub mod weather;
 pub mod texture_mips;
 pub mod audio;
 pub mod server;

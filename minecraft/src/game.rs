@@ -127,6 +127,8 @@ pub struct Game {
     pub particles: Particles,
     emitters: crate::emitters::Emitters,
     ambient: crate::ambient::Ambient,
+    /// Rain, snow and lightning as the client shows them.
+    weather: crate::weather::Weather,
     save_dir: Option<PathBuf>,
     previous: DVec3,
     eye_height: f64,
@@ -286,6 +288,7 @@ impl Game {
             particles,
             emitters: crate::emitters::Emitters::default(),
             ambient: crate::ambient::Ambient::default(),
+            weather: crate::weather::Weather::new(),
             save_dir: options.save.clone(),
             previous,
             eye_height: 1.62,
@@ -654,6 +657,7 @@ impl Game {
                 std::mem::take(&mut meshes.shadows),
             ],
             cracks: self.mining.crack_mesh(),
+            weather: self.weather.mesh(&self.world, eye, self.ticks as i64, partial),
             outline,
             hand,
             hand_clip: {
@@ -1180,6 +1184,20 @@ impl Game {
         // `ClientLevel.animateTick`, then `ParticleEngine.tick`.
         self.particles.tick_explosions(&self.world);
         let mut sounds = Vec::new();
+        // `ClientLevel.tick`'s weather.
+        if let Some(weather) = &self.entities.weather {
+            self.weather
+                .set_levels(weather.rain_level, weather.thunder_level);
+        }
+        self.weather.tick(
+            &self.world,
+            &mut self.particles,
+            self.player.eye(),
+            self.ticks as i64,
+            &mut sounds,
+        );
+        self.world.rain_level = self.weather.rain_level;
+        self.world.thunder_level = self.weather.thunder();
         if self.landed {
             let eye = self.player.eye().floor();
             let around = (eye.x as i32, eye.y as i32, eye.z as i32);

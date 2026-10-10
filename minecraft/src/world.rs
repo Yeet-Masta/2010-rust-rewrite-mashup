@@ -41,6 +41,10 @@ pub struct World {
     environment_primed: bool,
     cloud_mask: Option<CloudMask>,
     cloud_center: Option<(i32, i32)>,
+    /// `Level.getRainLevel` and `getThunderLevel` (already scaled by the
+    /// rain), for the environment.
+    pub rain_level: f32,
+    pub thunder_level: f32,
 }
 
 impl World {
@@ -94,6 +98,8 @@ impl World {
             environment_primed: false,
             cloud_mask,
             cloud_center: None,
+            rain_level: 0.0,
+            thunder_level: 0.0,
         })
     }
 
@@ -160,16 +166,25 @@ impl World {
             eye[1].floor() as i32,
             eye[2].floor() as i32,
         );
-        self.environment
-            .update_rain_fog(0.0, self.light.get(eye_block), false, (dt * 20.0) as f32);
+        // `AtmosphericFogEnvironment.updateRainFogState`: the camera's
+        // biome has precipitation.
+        let rains_in_biome = self.scene.biome_id_at(eye_block).is_some_and(|biome| {
+            self.registries.biomes.get(biome).has_precipitation
+        });
+        self.environment.update_rain_fog(
+            self.rain_level,
+            self.light.get(eye_block),
+            rains_in_biome,
+            (dt * 20.0) as f32,
+        );
         self.environment_clock += dt;
         if !self.environment_primed || self.environment_clock >= TICK_SECONDS {
             self.environment_clock = (self.environment_clock % TICK_SECONDS).min(TICK_SECONDS);
             let scene = &self.scene;
             self.environment.tick(
                 self.day.ticks.floor() as i64,
-                0.0,
-                0.0,
+                self.rain_level,
+                self.thunder_level,
                 eye,
                 |x, y, z| scene.noise_biome((x, y, z)).map_or(0, |id| id.0),
                 !self.environment_primed,
@@ -182,8 +197,8 @@ impl World {
             forward,
             camera_y: eye[1] as f32,
             render_distance: self.view_distance as u32,
-            rain_level: 0.0,
-            thunder_level: 0.0,
+            rain_level: self.rain_level,
+            thunder_level: self.thunder_level,
         });
         let render_distance = self.view_distance as f32 * 16.0;
         let right = forward.cross(Vec3::Y).normalize_or(Vec3::X);
@@ -277,9 +292,20 @@ impl World {
     }
 }
 
-/// The sky's sun and moon phases, side by side as the sky shader reads them.
+/// The sky's sun and moon phases, side by side as the sky shader reads them,
+/// over the rain and snow textures (`environment/rain.png` and `snow.png`,
+/// 64 by 256) that the weather columns repeat.
 fn celestial_image(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
-    let mut celestial = image::RgbaImage::new(32 * 9, 32);
+    let mut celestial = image::RgbaImage::new(32 * 9, 32 + 256);
+    for (index, path) in ["environment/rain", "environment/snow"].iter().enumerate() {
+        let id = ResourceId::parse(&format!("minecraft:{path}"))?;
+        if let Some(bytes) = packs.texture(&id)? {
+            let img =
+                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)?.to_rgba8();
+            let tile = image::imageops::resize(&img, 64, 256, image::imageops::FilterType::Nearest);
+            image::imageops::replace(&mut celestial, &tile, (index as i64) * 64, 32);
+        }
+    }
     let names = [
         "environment/celestial/sun",
         "environment/celestial/moon/full_moon",
