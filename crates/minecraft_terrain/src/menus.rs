@@ -65,6 +65,7 @@ use minecraftoss_player::inventory::Inventory;
 use minecraftoss_player::crafting::{CookingKind, RecipeBook};
 use minecraftoss_player::menu::{self, BlockRequest, BrewingStandMenu, ChestMenu, CrafterMenu, DispenserMenu, EnchantmentMenu, FurnaceMenu, HopperMenu, Menu, MenuContext, MenuPlace, ShulkerBoxMenu};
 use minecraftoss_player::menu::enchanting::{self, EnchantingTable, TableAccess};
+use minecraftoss_player::menu::anvil::{self, AnvilMenu, EnchantmentRules};
 pub use minecraftoss_player::menu::{ContainerInput, MenuInput};
 use minecraftoss_player::rng::LegacyRandom;
 use minecraftoss_world::level::container::{ContainerRef, Store};
@@ -109,6 +110,8 @@ pub enum MenuKind {
     BrewingStand,
     /// `enchantment` (`EnchantmentMenu`).
     Enchantment,
+    /// `anvil` (`AnvilMenu`).
+    Anvil,
 }
 
 impl MenuKind {
@@ -131,6 +134,7 @@ impl MenuKind {
             Self::Crafter => "minecraft:crafter_3x3",
             Self::BrewingStand => "minecraft:brewing_stand",
             Self::Enchantment => "minecraft:enchantment",
+            Self::Anvil => "minecraft:anvil",
         }
     }
 
@@ -149,6 +153,7 @@ impl MenuKind {
             Self::Crafter => Box::new(CrafterMenu::new(own)),
             Self::BrewingStand => Box::new(BrewingStandMenu::new(own)),
             Self::Enchantment => Box::new(EnchantmentMenu::new(own)),
+            Self::Anvil => Box::new(AnvilMenu::new(own)),
         }
     }
 }
@@ -238,6 +243,28 @@ fn enchantment_mut(menu: &mut (dyn Menu + Send)) -> Option<&mut EnchantmentMenu>
     menu.as_any_mut()?.downcast_mut()
 }
 
+/// The anvil's menu behind a menu, if it is one.
+pub fn anvil(menu: &(dyn Menu + Send)) -> Option<&AnvilMenu> {
+    menu.as_any()?.downcast_ref()
+}
+
+/// A workstation's menu takes the registries its results come from: the
+/// anvil's (and on a server, `at_block`, its block's access).
+pub fn attach_rules(menu: &mut (dyn Menu + Send), rules: std::sync::Arc<TableRegistry>, at_block: bool) {
+    let Some(any) = menu.as_any_mut() else { return };
+    if let Some(anvil) = any.downcast_mut::<AnvilMenu>() {
+        anvil.set_rules(Some(rules));
+        anvil.set_at_block(at_block);
+    }
+}
+
+/// The registries the workstations read, loaded once (the client's copies
+/// of their menus read them too).
+pub fn station_rules(registries: &minecraftoss_core::Registries) -> std::sync::Arc<TableRegistry> {
+    static RULES: std::sync::OnceLock<std::sync::Arc<TableRegistry>> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| std::sync::Arc::new(TableRegistry::new(registries))).clone()
+}
+
 /// The enchanting table's registries on the server: the data pack's
 /// enchantments, chosen from by `#in_enchanting_table`, and the items'
 /// `enchantable` from the item catalog.
@@ -245,13 +272,66 @@ pub struct TableRegistry {
     enchantments: Enchantments,
     source: Vec<usize>,
     items: ItemCatalog,
+    /// `#curse`.
+    curses: std::collections::HashSet<String>,
+    /// The item tags the items' `repairable` name, by tag.
+    repair_tags: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
+
+/// The item tags of tools' and armour's `repairable`.
+const REPAIR_TAGS: &[&str] = &[
+    "wooden_tool_materials", "stone_tool_materials", "copper_tool_materials", "iron_tool_materials", "gold_tool_materials", "diamond_tool_materials", "netherite_tool_materials",
+    "repairs_leather_armor", "repairs_copper_armor", "repairs_chain_armor", "repairs_iron_armor", "repairs_gold_armor", "repairs_diamond_armor", "repairs_netherite_armor", "repairs_turtle_helmet", "repairs_wolf_armor",
+];
 
 impl TableRegistry {
     pub fn new(registries: &minecraftoss_core::Registries) -> Self {
         let enchantments = Enchantments::load(&registries.datapack).unwrap_or_else(|_| Enchantments::default());
         let source = enchantments.source(Some(&json!("#minecraft:in_enchanting_table")));
-        Self { enchantments, source, items: registries.items.clone() }
+        let curses = enchantments.source(Some(&json!("#minecraft:curse"))).into_iter().map(|index| enchantments.list[index].id.clone()).collect();
+        let repair_tags = REPAIR_TAGS.iter().map(|tag| (format!("minecraft:{tag}"), minecraftoss_core::enchantment::tag_members(&registries.datapack, "item", tag).into_iter().collect())).collect();
+        Self { enchantments, source, items: registries.items.clone(), curses, repair_tags }
+    }
+
+    fn definition(&self, id: &str) -> Option<&minecraftoss_core::enchantment::Enchantment> {
+        self.enchantments.index(id).map(|index| &self.enchantments.list[index])
+    }
+}
+
+impl EnchantmentRules for TableRegistry {
+    fn max_level(&self, enchantment: &str) -> i32 {
+        self.definition(enchantment).map_or(1, |e| e.max_level)
+    }
+
+    fn anvil_cost(&self, enchantment: &str) -> i32 {
+        self.definition(enchantment).map_or(0, |e| e.anvil_cost)
+    }
+
+    fn min_cost(&self, enchantment: &str, level: i32) -> i32 {
+        self.definition(enchantment).map_or(0, |e| e.min_cost(level))
+    }
+
+    fn can_enchant(&self, enchantment: &str, item: &str) -> bool {
+        self.definition(enchantment).is_some_and(|e| e.can_enchant(item))
+    }
+
+    fn compatible(&self, a: &str, b: &str) -> bool {
+        match (self.enchantments.index(a), self.enchantments.index(b)) {
+            (Some(a), Some(b)) => self.enchantments.compatible(a, b),
+            _ => a != b,
+        }
+    }
+
+    fn is_curse(&self, enchantment: &str) -> bool {
+        self.curses.contains(enchantment)
+    }
+
+    fn max_damage(&self, item: &str) -> i32 {
+        self.items.max_damage(item).unwrap_or(0)
+    }
+
+    fn in_item_tag(&self, tag: &str, item: &str) -> bool {
+        self.repair_tags.get(tag).is_some_and(|items| items.contains(item))
     }
 }
 
@@ -438,6 +518,7 @@ enum MenuBlock {
     Crafter,
     BrewingStand,
     EnchantingTable,
+    Anvil,
 }
 
 /// The menu blocks' classes, the most derived first. One line per kind.
@@ -455,6 +536,7 @@ const MENU_BLOCKS: &[(&str, MenuBlock)] = &[
     ("CrafterBlock", MenuBlock::Crafter),
     ("BrewingStandBlock", MenuBlock::BrewingStand),
     ("EnchantingTableBlock", MenuBlock::EnchantingTable),
+    ("AnvilBlock", MenuBlock::Anvil),
 ];
 
 fn menu_block(level: &Level<'_>, state: BlockStateId) -> Option<MenuBlock> {
@@ -823,6 +905,12 @@ impl ServerSim {
             let c = level.container_at(at, true)?;
             Some(Target { kind, source: Source::Container(c), title: custom_name(at).unwrap_or_else(|| translated(key)), stat, locked_by: vec![at], centre: centre(at) })
         };
+        // A workstation without a block entity: its own slots at its block,
+        // with a fixed title.
+        let station = |kind: MenuKind, key: &str, stat: &'static str| -> Option<Target> {
+            let block = level.registries().blocks.block_of(level.block(at));
+            Some(Target { kind, source: Source::Station(at, block), title: translated(key), stat, locked_by: Vec::new(), centre: centre(at) })
+        };
         match block {
             MenuBlock::Chest => {
                 // `ChestBlock.getMenuProvider`: none when it or its other
@@ -873,6 +961,7 @@ impl ServerSim {
                 let title = custom_name(at).unwrap_or_else(|| translated("container.enchant"));
                 Some(Target { kind: MenuKind::Enchantment, source: Source::Station(at, block), title, stat: "", locked_by: Vec::new(), centre: centre(at) })
             }
+            MenuBlock::Anvil => station(MenuKind::Anvil, "container.repair", "interact_with_anvil"),
         }
     }
 
@@ -1021,11 +1110,38 @@ impl ServerSim {
     /// player's enchantment seed.
     fn open_station(&mut self, menu: &mut (dyn Menu + Send), source: Source, player: &PlayerContext) {
         let Source::Station(pos, _) = source else { return };
+        let rules = station_rules(self.level.registries());
+        attach_rules(menu, rules, true);
         if let Some(enchanting) = enchantment_mut(menu) {
             let registries = self.level.registries();
             let table = self.menus.table.get_or_insert_with(|| std::sync::Arc::new(TableRegistry::new(registries))).clone();
             enchanting.set_access(Some(TableAccess { table, bookshelves: self.bookshelves(pos) }));
             enchanting.set_data(enchanting::SEED, player.enchantment_seed);
+        }
+    }
+
+    /// `AnvilBlock.damage` applied at the menu's block: an anvil becomes
+    /// chipped, a chipped one damaged (`setBlock` with flags 2), a damaged
+    /// one is removed. The level event it makes.
+    fn damage_anvil(&mut self, pos: LevelPos) -> i32 {
+        let state = self.level.block(pos);
+        let blocks = &self.level.registries().blocks;
+        let next = match blocks.block(blocks.block_of(state)).name.to_string().as_str() {
+            "minecraft:anvil" => Some("minecraft:chipped_anvil"),
+            "minecraft:chipped_anvil" => Some("minecraft:damaged_anvil"),
+            "minecraft:damaged_anvil" => None,
+            _ => return anvil::ANVIL_USED,
+        };
+        let facing = blocks.property(state, "facing").unwrap_or("north");
+        match next.and_then(|next| blocks.parse_state(&format!("{next}[facing={facing}]")).ok()) {
+            Some(next) => {
+                self.level.set_block(pos, next, minecraftoss_world::level::update::CLIENTS, minecraftoss_world::level::update::LIMIT);
+                anvil::ANVIL_USED
+            }
+            None => {
+                self.level.remove_block(pos, false);
+                anvil::ANVIL_BROKEN
+            }
         }
     }
 
@@ -1076,6 +1192,15 @@ impl ServerSim {
     /// once for every take; a crafter's slots take their states, in order.
     fn answer_requests(&mut self, open: &OpenMenu, cx: &mut MenuContext, feet: [f64; 3]) {
         let requests = std::mem::take(&mut cx.block_requests);
+        if let Source::Station(pos, _) = open.source {
+            for request in requests {
+                if request == BlockRequest::DamageAnvil {
+                    let event = self.damage_anvil(pos);
+                    cx.level_events.push(event);
+                }
+            }
+            return;
+        }
         let Source::Container(ContainerRef::Single(pos, store)) = open.source else { return };
         for request in requests {
             match (store, request) {
@@ -1128,9 +1253,16 @@ impl ServerSim {
         if let Source::Merchant(villager) = open.source {
             return self.mobs.merchant_still_valid(villager, 0, glam::DVec3::from_array(eye), open.creative);
         }
-        // `stillValid(access, player, block)`: the block is still there.
+        // `stillValid(access, player, block)`: the block is still there; an
+        // anvil's may be any anvil (`AnvilMenu.isValidBlock`).
         if let Source::Station(pos, block) = open.source {
-            return self.level.registries().blocks.block_of(self.level.block(pos)) == block && within_reach(pos, eye, open.creative);
+            let registries = self.level.registries();
+            let state = self.level.block(pos);
+            let valid = match open.kind {
+                MenuKind::Anvil => registries.block_tags.require("minecraft:anvil").is_ok_and(|tag| registries.block_in_tag(state, tag)),
+                _ => registries.blocks.block_of(state) == block,
+            };
+            return valid && within_reach(pos, eye, open.creative);
         }
         open.source.positions().into_iter().all(|p| self.level.block_entity_still_there(p) && within_reach(p, eye, open.creative))
     }
@@ -2249,6 +2381,38 @@ mod tests {
         }
         assert_eq!(items(&server, (8, 199, 8))[0], Some(potion_stack(&recipes, "minecraft:potion", "minecraft:awkward")));
         assert_eq!(items(&server, pos)[0], None);
+    }
+
+    #[test]
+    fn an_anvil_repairs_with_ingots_for_levels_and_renames() {
+        let Some((mut server, mut scene)) = world() else { return };
+        let pos = (8, 200, 8);
+        place(&mut server, &mut scene, pos, Block::new("minecraft:anvil"));
+        let mut inventory = Inventory::default();
+        let mut sword = stack("minecraft:iron_sword", 1, 1);
+        sword.components = Some(json!({"minecraft:damage": 200}));
+        inventory.slots[0] = Some(sword);
+        inventory.slots[1] = Some(stack("minecraft:iron_ingot", 5, 64));
+        let smith = |inventory: &Inventory| PlayerContext { xp_level: 10, ..player(inventory) };
+        let (result, updates) = server.use_block_with(pos, "north", smith(&inventory));
+        assert_eq!(result.stats, vec![("minecraft:custom".to_owned(), "minecraft:interact_with_anvil".to_owned(), 1)]);
+        let [opening] = &updates[..] else { panic!("one opening: {updates:?}") };
+        assert_eq!(opening.open, Some(MenuOpen { kind: MenuKind::Anvil, title: json!({"translate": "container.repair"}) }));
+        // Four ingots mend the sword, a quarter each, for four levels; the
+        // name costs one more.
+        let inputs = [click(30, ContainerInput::QuickMove), click(31, ContainerInput::QuickMove), MenuInput::Rename("Edge".to_owned())];
+        let update = server.menu_batch(opening.id, 1, &inputs, smith(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!(update.data, [5]);
+        let repaired = update.slots[2].clone().expect("a result");
+        assert_eq!(repaired.components, Some(json!({"minecraft:custom_name": "Edge", "minecraft:repair_cost": 1})));
+        server.take_level_events();
+        let update = server.menu_batch(opening.id, 2, &[click(2, ContainerInput::Pickup)], smith(&inventory));
+        apply(&mut inventory, &update);
+        assert_eq!((update.xp_levels, &update.data[..]), (5, &[0][..]));
+        assert_eq!(inventory.cursor, Some(repaired));
+        assert_eq!(update.slots, [None, Some(stack("minecraft:iron_ingot", 1, 64)), None]);
+        assert_eq!(server.take_level_events(), [(pos, anvil::ANVIL_USED, 0)], "a new anvil is used or chipped");
     }
 
     #[test]

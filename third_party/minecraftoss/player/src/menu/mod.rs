@@ -21,7 +21,9 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+pub mod anvil;
 pub mod brewing;
+mod combiner;
 pub mod crafter;
 pub mod enchanting;
 pub mod furnace;
@@ -29,6 +31,7 @@ pub mod storage;
 #[cfg(test)]
 mod tests;
 
+pub use anvil::AnvilMenu;
 pub use brewing::BrewingStandMenu;
 pub use crafter::CrafterMenu;
 pub use enchanting::EnchantmentMenu;
@@ -123,6 +126,9 @@ pub enum BlockRequest {
     /// `CrafterBlockEntity.setSlotState`: the player toggled an empty grid
     /// slot.
     SlotState { slot: usize, enabled: bool },
+    /// `AnvilBlock.damage`: a use wore the anvil down a stage (chipped,
+    /// damaged, then gone, with `ANVIL_BROKEN`; `ANVIL_USED` otherwise).
+    DamageAnvil,
 }
 
 /// What a menu slot shows and changes.

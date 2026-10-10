@@ -16,6 +16,8 @@ use super::Gui;
 use crate::font::rgb;
 use crate::render::UiList;
 
+#[path = "screens/anvil.rs"]
+mod anvil;
 #[path = "screens/brewing_stand.rs"]
 mod brewing_stand;
 #[path = "screens/crafter.rs"]
@@ -27,6 +29,7 @@ mod furnace;
 #[path = "screens/merchant.rs"]
 mod merchant;
 
+pub use anvil::{NameBox, name_to_send as anvil_name_to_send, renames as anvil_renames};
 pub use enchanting::{EnchantingBook, book_model, row_at as enchanting_row_at};
 pub use merchant::TradeList;
 
@@ -116,6 +119,8 @@ pub fn layout(kind: MenuKind) -> Layout {
         // `BrewingStandScreen.init` centres the title.
         MenuKind::BrewingStand => Layout::plain("brewing_stand", 166.0, TitleX::Centred),
         MenuKind::Enchantment => Layout::plain("enchanting_table", 166.0, TitleX::At(8.0)),
+        // `AnvilScreen`: the title at 60.
+        MenuKind::Anvil => Layout::plain("anvil", 166.0, TitleX::At(60.0)),
     }
 }
 
@@ -170,6 +175,8 @@ pub struct MenuView<'a> {
     /// player can pay (the enchanting table's rows).
     pub xp_level: i32,
     pub creative: bool,
+    /// The anvil's name box: its text, and whether its cursor shows.
+    pub name: Option<(&'a str, bool)>,
 }
 
 impl Gui {
@@ -304,6 +311,7 @@ impl Gui {
             MenuKind::Crafter => self.crafter_extras(ui, view, left, top),
             MenuKind::BrewingStand => self.brewing_stand_extras(ui, view, left, top),
             MenuKind::Enchantment => self.enchanting_extras(ui, view, left, top),
+            MenuKind::Anvil => self.anvil_extras(ui, view, left, top),
         }
     }
 
@@ -417,6 +425,7 @@ mod tests {
             MenuKind::Crafter,
             MenuKind::BrewingStand,
             MenuKind::Enchantment,
+            MenuKind::Anvil,
         ] {
             let layout = layout(kind);
             let menu = kind.menu(Vec::new());

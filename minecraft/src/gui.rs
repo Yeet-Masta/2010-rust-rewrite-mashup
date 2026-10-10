@@ -16,7 +16,8 @@ use crate::render::{Renderer, TextureId, UiList};
 #[path = "menu_gui.rs"]
 mod menu_gui;
 pub use menu_gui::{
-    EnchantingBook, MenuSlotView, MenuView, SlotDrag, TradeList, book_model, enchanting_row_at,
+    EnchantingBook, MenuSlotView, MenuView, NameBox, SlotDrag, TradeList, anvil_name_to_send,
+    anvil_renames, book_model, enchanting_row_at,
 };
 
 /// Icons in a row of the icon atlas, and rows: room for every creative
@@ -382,6 +383,19 @@ const SPRITES: &[(&str, &str, f32)] = &[
         "gui/sprites/container/enchanting_table/level_3_disabled",
         0.0,
     ),
+    // The anvil (`AnvilScreen`).
+    ("anvil", "gui/container/anvil", 0.0),
+    (
+        "anvil_text_field",
+        "gui/sprites/container/anvil/text_field",
+        0.0,
+    ),
+    (
+        "anvil_text_field_disabled",
+        "gui/sprites/container/anvil/text_field_disabled",
+        0.0,
+    ),
+    ("anvil_error", "gui/sprites/container/anvil/error", 0.0),
 ];
 
 /// Empty slots' icons that menus name (`Slot.getNoItemIcon`, as

@@ -15,8 +15,8 @@
 use std::time::Instant;
 
 use minecraft_terrain::menus::{
-    ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, crafter,
-    merchant,
+    ContainerInput, MenuExtra, MenuInput, MenuKind, MenuOpen, MenuUpdate, PlayerContext, anvil,
+    crafter, merchant,
 };
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 use minecraftoss_player::menu::{self, Menu, MenuContext, OFFHAND, SLOT_CLICKED_OUTSIDE, SlotRef};
@@ -25,7 +25,8 @@ use serde_json::Value;
 
 use super::{Game, Input, Key};
 use crate::gui::{
-    EnchantingBook, Gui, MenuSlotView, MenuView, Screen, SlotDrag, TradeList, enchanting_row_at,
+    EnchantingBook, Gui, MenuSlotView, MenuView, NameBox, Screen, SlotDrag, TradeList,
+    enchanting_row_at,
 };
 use crate::render::GuiModel;
 
@@ -130,11 +131,17 @@ pub(super) struct ClientMenu {
     xp_level: i32,
     /// The enchanting table screen's book.
     book: EnchantingBook,
+    /// The anvil screen's name box.
+    name: NameBox,
 }
 
 impl ClientMenu {
     fn new(update: &MenuUpdate, open: MenuOpen, game: &Game) -> Self {
         let mut menu = open.kind.menu(update.slots.clone());
+        // The workstations' results come from the registries, as the
+        // server's (without its block's access).
+        let rules = minecraft_terrain::menus::station_rules(&game.world.registries);
+        minecraft_terrain::menus::attach_rules(menu.as_mut(), rules, false);
         for (id, value) in update.data.iter().enumerate() {
             menu.set_data(id, *value);
         }
@@ -164,6 +171,7 @@ impl ClientMenu {
             sounds: Vec::new(),
             xp_level: game.xp_level(),
             book: EnchantingBook::new(game.ticks),
+            name: NameBox::default(),
         }
     }
 
@@ -588,7 +596,54 @@ impl ClientMenu {
             trades: &self.trades,
             xp_level: self.xp_level,
             creative: self.creative,
+            name: (self.kind == MenuKind::Anvil)
+                .then(|| (self.name.text.as_str(), self.name.cursor())),
         }
+    }
+
+    /// `AnvilScreen.slotChanged`: another stack in the input resets the
+    /// name box to its name, which the box then answers.
+    fn watch_anvil_input(&mut self, gui: &Gui) {
+        if self.kind != MenuKind::Anvil {
+            return;
+        }
+        let input = self.item(0).cloned();
+        if self
+            .name
+            .input_changed(input.as_ref(), |stack| gui.stack_name(stack))
+        {
+            self.name_changed(gui);
+        }
+    }
+
+    /// `AnvilScreen.onNameChanged`: the name, or none for the input's own,
+    /// goes to the menu when it would take it (`setItemName`).
+    fn name_changed(&mut self, gui: &Gui) {
+        let Some(input) = self.item(0).cloned() else {
+            return;
+        };
+        let name = crate::gui::anvil_name_to_send(&self.name.text, &input, &gui.stack_name(&input));
+        let current =
+            anvil(self.menu.as_ref()).and_then(|menu| menu.item_name().map(str::to_owned));
+        if crate::gui::anvil_renames(current.as_deref(), &name) {
+            self.send(MenuInput::Rename(name));
+        }
+    }
+
+    /// `AnvilScreen.keyPressed`: while the input holds a stack, the name box
+    /// takes every key (E types an e). Whether it took the key.
+    fn anvil_key(&mut self, key: Key, gui: &Gui, ctrl: bool) -> bool {
+        if self.kind != MenuKind::Anvil || self.item(0).is_none() {
+            return false;
+        }
+        let typed = match key {
+            Key::Char(c) => Some(c),
+            _ => None,
+        };
+        if self.name.key(typed, key == Key::Backspace, ctrl) {
+            self.name_changed(gui);
+        }
+        true
     }
 
     /// `EnchantmentScreen.mouseClicked`: a press in a row the menu would
@@ -828,6 +883,7 @@ impl Game {
             return;
         };
         menu.xp_level = level;
+        menu.watch_anvil_input(gui);
         let (hovered, outside) = gui.menu_slot_at(menu.kind, menu.menu.slots());
         // The trading screen's list: the wheel scrolls it, and a held
         // scroller follows the mouse (`mouseScrolled`, `mouseDragged`).
@@ -877,6 +933,12 @@ impl Game {
 
     /// The menu screen's keys; true when the screen took the key.
     pub(super) fn menu_key(&mut self, key: Key, gui: &Gui, ctrl: bool) -> bool {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.watch_anvil_input(gui);
+            if key != Key::Escape && menu.anvil_key(key, gui, ctrl) {
+                return true;
+            }
+        }
         if matches!(key, Key::Escape | Key::Inventory) {
             self.close_menu();
             return true;
@@ -955,6 +1017,7 @@ mod tests {
             sounds: Vec::new(),
             xp_level: 0,
             book: EnchantingBook::new(0),
+            name: NameBox::default(),
         }
     }
 

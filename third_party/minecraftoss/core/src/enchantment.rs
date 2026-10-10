@@ -16,6 +16,8 @@ pub struct Enchantment {
     pub id: String,
     pub max_level: i32,
     pub weight: i32,
+    /// `anvil_cost`: what the anvil charges a level of it.
+    pub anvil_cost: i32,
     /// `Enchantment.Cost`: its base, and what each level above the first
     /// adds.
     min_cost: (i32, i32),
@@ -119,6 +121,7 @@ impl Enchantments {
                 id: ident.to_string(),
                 max_level: json["max_level"].as_i64().unwrap_or(1) as i32,
                 weight: json["weight"].as_i64().unwrap_or(1) as i32,
+                anvil_cost: json["anvil_cost"].as_i64().unwrap_or(0) as i32,
                 min_cost: cost(&json["min_cost"]),
                 max_cost: cost(&json["max_cost"]),
                 supported: holder_set(pack, "item", &json["supported_items"]).into_iter().collect(),
