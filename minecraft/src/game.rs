@@ -1429,6 +1429,7 @@ impl Game {
         if (input.attack || attacked) && mob_distance.is_none() && self.eating.is_none() {
             let on_ground = self.player.on_ground || self.player.flying;
             let water = self.eyes_in_water();
+            let modifiers = self.enchantment_modifiers();
             let swing = self.mining.tick(
                 &self.world.registries,
                 &self.world.scene,
@@ -1439,6 +1440,7 @@ impl Game {
                 self.creative,
                 attacked,
                 &self.player.survival.effects,
+                &modifiers,
             );
             if target.is_some() {
                 self.start_swing();
@@ -1552,6 +1554,13 @@ impl Game {
                 return;
             }
         }
+    }
+
+    /// The attribute modifiers the worn and held items' enchantments give
+    /// (`EnchantmentHelper.forEachModifier` as equipment changes).
+    fn enchantment_modifiers(&self) -> Vec<minecraftoss_player::item_catalog::AttributeModifier> {
+        let inventory = &self.entities.inventory;
+        inventory.recipes.enchantments().equipment_modifiers(&inventory.equipment(self.entities.selected))
     }
 
     fn attack(&mut self, held: Option<&ItemStack>, eye: DVec3, look: DVec3) {

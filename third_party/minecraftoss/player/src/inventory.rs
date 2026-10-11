@@ -85,6 +85,8 @@ pub struct Inventory {
     /// Remainders that could not fit the crafting grid or player inventory.
     pending_drops: Vec<ItemStack>,
     pending_stats: Vec<(String, String, i32)>,
+    /// The draws unbreaking makes on wear (the level's random in vanilla).
+    wear_random: crate::rng::LegacyRandom,
 }
 
 /// Where a shift-clicked crafting result goes (`InventoryMenu` and
@@ -125,6 +127,7 @@ impl Default for Inventory {
             unlock_sequence: Vec::new(),
             pending_drops: Vec::new(),
             pending_stats: Vec::new(),
+            wear_random: crate::rng::LegacyRandom::new(0x5eed_d0e5),
         }
     }
 }
@@ -387,8 +390,10 @@ impl Inventory {
         self.wear_tool(selected, per_block)
     }
 
-    /// Apply ItemStack.hurtAndBreak-style durability from a successful item use.
-    /// Returns true when the selected stack breaks and disappears.
+    /// Apply ItemStack.hurtAndBreak-style durability from a successful item use,
+    /// after the stack's enchantments (unbreaking) change the wear
+    /// (`processDurabilityChange`). Returns true when the stack breaks and
+    /// disappears.
     pub fn wear_tool(&mut self, selected: usize, amount: u32) -> bool {
         if amount == 0 || selected >= self.slots.len() {
             return false;
@@ -399,6 +404,13 @@ impl Inventory {
         let Some((current_damage, max_damage)) = self.recipes.durability(stack) else {
             return false;
         };
+        let amount = self.recipes.enchantments().durability_change(stack, amount as i32, &mut self.wear_random);
+        let Ok(amount) = u32::try_from(amount) else {
+            return false;
+        };
+        if amount == 0 {
+            return false;
+        }
         let new_damage = current_damage.saturating_add(amount).min(max_damage);
         if new_damage >= max_damage {
             self.slots[selected] = None;
@@ -1100,6 +1112,31 @@ impl Inventory {
         }
         Some(stack)
     }
+    /// `getItemBySlot` for every `EquipmentSlot` that holds something: the
+    /// selected hotbar slot is the main hand, then the off hand, the armor
+    /// (36 feet to 39 head), the body and the saddle.
+    pub fn equipment(&self, selected: usize) -> Vec<(crate::enchantment::Slot, &ItemStack)> {
+        use crate::enchantment::Slot;
+        let slots = [(selected, Slot::MainHand), (40, Slot::OffHand), (36, Slot::Feet), (37, Slot::Legs), (38, Slot::Chest), (39, Slot::Head), (41, Slot::Body), (42, Slot::Saddle)];
+        slots.into_iter().filter_map(|(index, slot)| Some((slot, self.slots.get(index)?.as_ref()?))).collect()
+    }
+
+    /// The inventory index of an equipment slot, with `selected` the main
+    /// hand.
+    pub fn equipment_index(slot: crate::enchantment::Slot, selected: usize) -> usize {
+        use crate::enchantment::Slot;
+        match slot {
+            Slot::MainHand => selected,
+            Slot::OffHand => 40,
+            Slot::Feet => 36,
+            Slot::Legs => 37,
+            Slot::Chest => 38,
+            Slot::Head => 39,
+            Slot::Body => 41,
+            Slot::Saddle => 42,
+        }
+    }
+
     /// The HUD uses LivingEntity.getArmorValue: floor the effective armor
     /// attribute after equipped items contribute their default modifiers.
     pub fn armor_value(&self) -> u8 {

@@ -174,17 +174,12 @@ struct LootContext<'a> {
     random: Option<RefCell<&'a mut dyn LootRandom>>,
 }
 
+/// The tool's fortune level and whether it has silk touch
+/// (`minecraft:tool/can_silk_touch`), from its `enchantments`.
 fn tool_enchantments(stack: &ItemStack) -> (u32, bool) {
-    let levels = stack
-        .components
-        .as_ref()
-        .and_then(|value| value.get("minecraft:enchantments"))
-        .and_then(|value| value.get("levels"))
-        .unwrap_or(&Value::Null);
-    (
-        levels["minecraft:fortune"].as_u64().unwrap_or(0) as u32,
-        levels["minecraft:silk_touch"].as_u64().unwrap_or(0) > 0,
-    )
+    let levels = crate::enchantment::item_enchantments(stack);
+    let level = |id: &str| levels.iter().find(|&&(e, _)| e == id).map_or(0, |&(_, level)| level);
+    (level("minecraft:fortune").max(0) as u32, level("minecraft:silk_touch") > 0)
 }
 
 fn condition(value: Option<&Value>, context: &LootContext<'_>) -> Option<bool> {

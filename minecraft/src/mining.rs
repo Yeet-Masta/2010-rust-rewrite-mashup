@@ -10,6 +10,7 @@ use minecraft_terrain::scene::{Block, BlockPos, HandcraftedScene, Scene};
 use minecraftoss_core::registries::Registries;
 use minecraftoss_core::tags::TagId;
 use minecraftoss_player::inventory::ItemStack;
+use minecraftoss_player::item_catalog::{AttributeModifier, attribute_value};
 use minecraftoss_player::loot::LootBook;
 use minecraftoss_player::rng::XoroshiroRandom;
 
@@ -239,6 +240,7 @@ impl Mining {
         creative: bool,
         pressed: bool,
         effects: &minecraftoss_player::effects::ActiveEffects,
+        modifiers: &[AttributeModifier],
     ) -> Swing {
         // `startDestroyBlock`, on a press, doesn't wait out the delay that
         // holding the button does.
@@ -289,10 +291,19 @@ impl Mining {
                 cracked: None,
             };
         }
-        // Haste, conduit power and mining fatigue.
-        let mut speed = effects.destroy_speed(dig.speed);
+        // A tool that speeds mining at all gains `MINING_EFFICIENCY`
+        // (efficiency); then haste, conduit power and mining fatigue; under
+        // water `SUBMERGED_MINING_SPEED` (0.2, aqua affinity's more).
+        let attribute = |id: &str, base: f64, range: (f64, f64)| {
+            attribute_value(base, modifiers.iter().filter(|m| m.attribute == id), range) as f32
+        };
+        let mut speed = dig.speed;
+        if speed > 1.0 {
+            speed += attribute("minecraft:mining_efficiency", 0.0, (0.0, 1024.0));
+        }
+        let mut speed = effects.destroy_speed(speed);
         if eyes_in_water {
-            speed *= 0.2;
+            speed *= attribute("minecraft:submerged_mining_speed", 0.2, (0.0, 20.0));
         }
         if !on_ground {
             speed /= 5.0;
