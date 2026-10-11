@@ -307,6 +307,7 @@ impl Entities {
             sprinting: false,
             can_critical: false,
             can_sweep: false,
+            ..Default::default()
         };
         self.server.mob_action(hit, Some(attack), &self.inventory.clone(), self.selected, false);
         true
@@ -344,6 +345,7 @@ impl Entities {
             sprinting: false,
             can_critical: false,
             can_sweep: false,
+            ..Default::default()
         };
         self.server
             .mob_action(hit, Some(attack), &minecraftoss_player::inventory::Inventory::default(), 0, false);

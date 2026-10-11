@@ -164,6 +164,7 @@ fn main() {
                     sprinting: false,
                     can_critical: false,
                     can_sweep: false,
+                    ..Default::default()
                 };
                 let mob = &mobs[data["target"].as_str().unwrap()];
                 let at = format!("{scenario} tick {} attack {}", row["tick"], data["target"]);

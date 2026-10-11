@@ -1,16 +1,22 @@
 //! A player's melee hit on a mob (26.3 `Player.attack`, the server's half):
-//! the weapon's damage scaled by the attack strength, criticals, the
-//! sprinting knockback attack and the sword's sweep; then each mob's
-//! `hurtServer` with `player_attack` (armor, the damage cooldown, the
-//! default knockback away from the player) and its reaction: animals panic
+//! the weapon's damage scaled by the attack strength, its enchantments'
+//! damage (`ServerPlayer.getEnchantedDamage`), criticals, the extra
+//! knockback of sprinting and of the weapon (`getKnockback`), the sword's
+//! sweep (`SWEEPING_DAMAGE_RATIO`), the mace's smash, and the weapon's
+//! post-attack effects (`EnchantmentHelper.doPostAttackEffects`: fire,
+//! slowness); then each mob's `hurtServer` with `player_attack` (armor,
+//! less what breach takes off it, the damage cooldown, the default
+//! knockback away from the player) and its reaction: animals panic
 //! (`#panic_causes`), creepers remember the attacker for `HurtByTargetGoal`,
 //! and zombies and skeletons turn on the player.
 use super::*;
+use minecraftoss_player::enchantment::{DamageFacts, EnchantmentEffects, EntityEffect, EntityFacts, PlayerFacts, PostAttack, Slot, Target};
+use minecraftoss_player::item_catalog::attribute_value;
 use minecraftoss_player::minecraft_sin_cos;
 
 /// What the attacking player brings to `Player.attack`. The player runs on
 /// the client, which works these out from its state and held item.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PlayerAttack {
     pub player_id: u64,
     /// Feet position and facing.
@@ -27,6 +33,43 @@ pub struct PlayerAttack {
     /// `isSweepAttack`'s player half: on the ground, slower than two and a
     /// half times its speed, a sword in the main hand.
     pub can_sweep: bool,
+    /// The main hand (`getWeaponItem`): its enchantments act on the hit.
+    pub weapon: Option<ItemStack>,
+    /// `fallDistance`, `onGround`, flying (abilities or gliding) and
+    /// gliding alone: the mace's smash and the conditions read them.
+    pub fall_distance: f64,
+    pub on_ground: bool,
+    pub flying: bool,
+    pub fall_flying: bool,
+    /// Its game mode (`survival`, `creative`...) and food level, for the
+    /// conditions.
+    pub game_mode: &'static str,
+    pub food_level: i32,
+}
+
+impl PlayerAttack {
+    /// The attacker as the enchantments' conditions see it.
+    fn facts(&self) -> EntityFacts {
+        EntityFacts {
+            type_id: "minecraft:player".to_owned(),
+            position: self.position,
+            width: 0.6,
+            height: 1.8,
+            fall_distance: self.fall_distance,
+            on_ground: self.on_ground,
+            sprinting: self.sprinting,
+            flying: self.flying,
+            fall_flying: self.fall_flying,
+            player: Some(PlayerFacts { game_mode: self.game_mode.to_owned(), food_level: self.food_level }),
+            main_hand: self.weapon.clone(),
+            ..EntityFacts::default()
+        }
+    }
+
+    /// `MaceItem.canSmashAttack` with a mace in hand.
+    fn smashes(&self) -> bool {
+        self.weapon.as_ref().is_some_and(|w| w.id == "minecraft:mace") && self.fall_distance > 1.5 && !self.fall_flying
+    }
 }
 
 /// What an attack did.
@@ -47,6 +90,18 @@ pub struct AttackResult {
     pub swept: Vec<(u64, bool, bool)>,
     /// The health the target lost (`damageStatsAndHearts`).
     pub damage_dealt: f32,
+    /// `causeExtraKnockback` pushed the target (sprinting, or the weapon's
+    /// knockback): the player slows to 60% and stops sprinting.
+    pub extra_knockback: bool,
+    /// The weapon's enchantments added damage (`magicCrit`'s sparks).
+    pub magic: bool,
+    /// The mace's smash landed (`MaceItem.hurtEnemy`): its sound, and the
+    /// player's fall ends.
+    pub smash: Option<&'static str>,
+    /// What the weapon's post-attack effects do to the player who swung it
+    /// (`affected: attacker`), and its own wear (`change_item_damage`), for
+    /// the client to carry out.
+    pub attacker_effects: Vec<EntityEffect>,
 }
 
 /// `LivingEntity.knockback(power, xd, zd)`: away along (xd, zd), halving
@@ -69,18 +124,73 @@ fn knockback(body: &mut Body, random: &mut LegacyRandom, power: f64, mut xd: f64
 }
 
 impl EntityWorld {
-    /// `Player.attack` on the mob `target`.
+    /// The enchantments' effects, from the recipe book (none without one).
+    pub(super) fn enchantment_effects(&self) -> Arc<EnchantmentEffects> {
+        self.recipes.as_ref().map_or_else(|| Arc::new(EnchantmentEffects::default()), |recipes| recipes.enchantments().clone())
+    }
+
+    /// A mob as the enchantments' conditions see it.
+    pub(super) fn mob_facts(&self, id: u64) -> Option<EntityFacts> {
+        let (body, _) = self.mob_body(id)?;
+        Some(EntityFacts {
+            type_id: self.entity_type(id)?.to_owned(),
+            position: body.position,
+            width: body.width,
+            height: body.height,
+            movement: body.velocity,
+            fall_distance: body.fall_distance,
+            on_ground: body.on_ground,
+            on_fire: body.fire_ticks > 0,
+            swimming: body.swimming,
+            in_water: body.touching_water,
+            baby: self.zombies.iter().any(|e| e.id == id && e.zombie.baby),
+            ..EntityFacts::default()
+        })
+    }
+
+    /// `Player.attack` on the mob `target`. The enchantments draw on the
+    /// level's random.
     pub fn player_attack(&mut self, attack: &PlayerAttack, target: u64) -> AttackResult {
+        let effects = self.enchantment_effects();
+        let mut random = std::mem::take(&mut self.level_random);
+        let result = self.attack_with(attack, target, &effects, &mut random);
+        self.level_random = random;
+        result
+    }
+
+    fn attack_with(&mut self, attack: &PlayerAttack, target: u64, effects: &EnchantmentEffects, random: &mut LegacyRandom) -> AttackResult {
         let mut result = AttackResult::default();
+        let Some(victim) = self.mob_facts(target) else { return result };
+        let player = attack.facts();
+        let weapon = attack.weapon.as_ref();
+        // `getItemDamageSource`: a smashing mace deals `mace_smash`.
+        let smash = attack.smashes();
+        let source = DamageFacts { damage_type: if smash { "minecraft:mace_smash" } else { "minecraft:player_attack" }, attacker: Some(&player), direct: Some(&player), is_direct: true };
+        // `getEnchantedDamage`: the weapon's `modifyDamage` on a victim.
+        let enchanted = |victim: &EntityFacts, damage: f32, random: &mut LegacyRandom| weapon.map_or(damage, |w| effects.damage(w, victim, &source, damage, random));
         let scale = attack.strength;
-        // Without enchantments there is no magic boost.
-        let magic = 0.0_f32;
-        let mut base = attack.attack_damage as f32 * (0.2 + scale * scale * 0.8);
+        let mut base = attack.attack_damage as f32;
+        let magic = scale * (enchanted(&victim, base, random) - base);
+        base *= 0.2 + scale * scale * 0.8;
         if !(base > 0.0 || magic > 0.0) {
             return result;
         }
         result.full_strength = scale > 0.9;
         result.knockback = attack.sprinting && result.full_strength;
+        // `getAttackDamageBonus`: the mace's smash grows with the fall, and
+        // density adds its share a block fallen.
+        if smash {
+            let fallen = attack.fall_distance;
+            let bonus = if fallen <= 3.0 {
+                4.0 * fallen
+            } else if fallen <= 8.0 {
+                12.0 + 2.0 * (fallen - 3.0)
+            } else {
+                22.0 + fallen - 8.0
+            };
+            let density = weapon.map_or(0.0, |w| effects.fall_based_damage(w, &victim, &source, 0.0, random));
+            base += (bonus + f64::from(density) * fallen) as f32;
+        }
         result.critical = result.full_strength && attack.can_critical;
         if result.critical {
             base *= 1.5;
@@ -88,24 +198,45 @@ impl EntityWorld {
         result.sweep = result.full_strength && !result.critical && !result.knockback && attack.can_sweep;
         let health = |world: &Self| world.mob_body(target).map_or(0.0, |(_, health)| health.max(0.0));
         let before = health(self);
-        let Some(hit) = self.hurt_by_player(target, base + magic, attack) else { return AttackResult::default() };
+        // `CombatRules.getDamageAfterAbsorb` with the weapon's
+        // `modifyArmorEffectiveness` (breach) on the armor's share.
+        let armor = |damage: f32, armor: f32, toughness: f32, victim: &EntityFacts, random: &mut LegacyRandom| {
+            let toughness = 2.0 + toughness / 4.0;
+            let fraction = (armor - damage / toughness).clamp(armor * 0.2, 20.0) / 25.0;
+            let fraction = weapon.map_or(fraction, |w| effects.armor_effectiveness(w, victim, &source, fraction, random).clamp(0.0, 1.0));
+            damage * (1.0 - fraction)
+        };
+        let Some(hit) = self.hurt_by_player(target, base + magic, attack, &mut |d, a, t| armor(d, a, t, &victim, random)) else { return AttackResult::default() };
         (result.hurt, result.died, result.full_hit) = (hit.applied, hit.died, hit.full);
         result.damage_dealt = before - health(self);
         if !hit.applied {
             return result;
         }
+        result.magic = magic > 0.0;
         // `setLastHurtMob` at the player's tick count.
-        let victim = if self.villagers.iter().any(|e| e.id == target) { crate::monster_ai::Target::Villager(target) } else { crate::monster_ai::Target::Mob(target) };
+        let victim_target = if self.villagers.iter().any(|e| e.id == target) { crate::monster_ai::Target::Villager(target) } else { crate::monster_ai::Target::Mob(target) };
         let fights = self.player_fights.entry(attack.player_id).or_default();
-        fights.hurt_mob = Some((victim, fights.tick_count));
-        // `causeExtraKnockback` along the player's facing.
+        fights.hurt_mob = Some((victim_target, fights.tick_count));
+        // `causeExtraKnockback` along the player's facing: the weapon's
+        // `getKnockback` (`ATTACK_KNOCKBACK`, 0 for a player, through
+        // `modifyKnockback`, halved) and the sprint's half.
         let (sin, cos) = minecraft_sin_cos(f64::from(attack.yaw));
+        let mut extra = weapon.map_or(0.0, |w| effects.knockback(w, &victim, &source, 0.0, random)) / 2.0;
         if result.knockback {
-            self.knock_back(target, f64::from(0.5_f32), sin, -cos);
+            extra += 0.5;
+        }
+        if extra > 0.0 {
+            self.knock_back(target, f64::from(extra), sin, -cos);
+            result.extra_knockback = true;
         }
         if result.sweep {
-            // `doSweepAttack`: 1 + SWEEPING_DAMAGE_RATIO (0) × base, scaled.
-            let damage = (1.0_f32 + 0.0 * base) * scale;
+            // `doSweepAttack`: 1 + SWEEPING_DAMAGE_RATIO × base, through
+            // each victim's `getEnchantedDamage`, scaled.
+            let ratio = weapon.map_or(0.0, |w| {
+                let modifiers = effects.attribute_modifiers(w, Slot::MainHand);
+                attribute_value(0.0, modifiers.iter().filter(|m| m.attribute == "minecraft:sweeping_damage_ratio"), (0.0, 1.0))
+            });
+            let damage = 1.0_f32 + ratio as f32 * base;
             let Some((target_body, _)) = self.mob_body(target) else { return result };
             let half = f64::from(target_body.width / 2.0);
             let p = target_body.position;
@@ -123,15 +254,98 @@ impl EntityWorld {
                 if !touches || attack.position.distance_squared(q) >= 9.0 {
                     continue;
                 }
-                if let Some(hit) = self.hurt_by_player(id, damage, attack) {
+                let Some(nearby) = self.mob_facts(id) else { continue };
+                let amount = enchanted(&nearby, damage, random) * scale;
+                if let Some(hit) = self.hurt_by_player(id, amount, attack, &mut |d, a, t| armor(d, a, t, &nearby, random)) {
                     if hit.applied {
                         self.knock_back(id, f64::from(0.4_f32), sin, -cos);
                         result.swept.push((id, hit.full, hit.died));
+                        let after = effects.post_attack(&[], weapon, &nearby, &source, random);
+                        self.apply_post_attack(id, after, &mut result.attacker_effects);
                     }
                 }
             }
         }
+        // `itemAttackInteraction`: the mace's `hurtEnemy`, then the weapon's
+        // post-attack effects.
+        if smash {
+            result.smash = Some(if !victim.on_ground {
+                "item.mace.smash_air"
+            } else if attack.fall_distance > 5.0 {
+                "item.mace.smash_ground_heavy"
+            } else {
+                "item.mace.smash_ground"
+            });
+            self.mace_knockback(attack, target);
+        }
+        let after = effects.post_attack(&[], weapon, &victim, &source, random);
+        self.apply_post_attack(target, after, &mut result.attacker_effects);
         result
+    }
+
+    /// `MaceItem.knockback`: the living things within 3.5 blocks of the
+    /// struck mob, but for it and the attacker, are thrown away from it and
+    /// up, twice as hard after a fall of more than five blocks.
+    fn mace_knockback(&mut self, attack: &PlayerAttack, target: u64) {
+        let Some((struck, _)) = self.mob_body(target) else { return };
+        let center = struck.position;
+        let heavy = if attack.fall_distance > 5.0 { 2.0 } else { 1.0 };
+        for key in self.order.clone() {
+            let id = key.id();
+            if id == target {
+                continue;
+            }
+            let Some((body, _)) = self.mob_body(id) else { continue };
+            let direction = body.position - center;
+            if direction.length_squared() > 3.5 * 3.5 {
+                continue;
+            }
+            let Some((body, _, resistance)) = self.body_random_mut(id) else { continue };
+            let power = (3.5 - direction.length()) * f64::from(0.7_f32) * heavy * (1.0 - resistance);
+            if power > 0.0 {
+                let push = direction.normalize_or_zero() * power;
+                body.velocity += DVec3::new(push.x, f64::from(0.7_f32), push.z);
+                body.needs_sync = true;
+            }
+        }
+    }
+
+    /// Carries out `doPostAttack`'s effects of a hit on the mob `victim`:
+    /// on the mob its status effects and fire; what lands on the attacker
+    /// (or wears the weapon) goes to `attacker`.
+    pub(super) fn apply_post_attack(&mut self, victim: u64, effects: Vec<PostAttack>, attacker: &mut Vec<EntityEffect>) {
+        for PostAttack { affected, effect, .. } in effects {
+            // The enchanted item's own wear is the attacker's to take.
+            if affected != Target::Victim || matches!(effect, EntityEffect::ItemDamage { .. }) {
+                attacker.push(effect);
+                continue;
+            }
+            self.apply_entity_effect(victim, &effect);
+        }
+    }
+
+    /// An enchantment's entity effect on a mob: `addEffect`, `igniteForSeconds`
+    /// and its sounds; the rest has nothing to act on here.
+    pub(super) fn apply_entity_effect(&mut self, id: u64, effect: &EntityEffect) {
+        match effect {
+            EntityEffect::MobEffect { effect, duration, amplifier } => {
+                if let Some(kind) = crate::effects::MobEffect::from_id(effect) {
+                    self.add_mob_effect(id, crate::effects::EffectInstance::new(kind, *duration, *amplifier));
+                }
+            }
+            EntityEffect::Ignite { seconds } => {
+                // `igniteForTicks(floor(seconds * 20))`.
+                let ticks = (seconds * 20.0).floor() as i32;
+                if let Some((body, _, _)) = self.body_random_mut(id) {
+                    body.fire_ticks = body.fire_ticks.max(ticks);
+                }
+            }
+            EntityEffect::Sound { event, position, volume, pitch } => {
+                let event = event.strip_prefix("minecraft:").unwrap_or(event).to_owned();
+                self.sounds.push(MobSound { event, position: *position, volume: *volume, pitch: *pitch, category: "hostile_volume" });
+            }
+            _ => {}
+        }
     }
 
     /// A living mob's feet, width and height, by ID.
@@ -189,56 +403,63 @@ impl EntityWorld {
         None
     }
 
-    /// `LivingEntity.knockback` on a mob, by ID.
-    pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
-        let (body, random) = if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
-            (&mut e.witch.body, &mut e.random)
+    /// A mob's body and random, by ID, with its `KNOCKBACK_RESISTANCE`.
+    pub(super) fn body_random_mut(&mut self, id: u64) -> Option<(&mut Body, &mut LegacyRandom, f64)> {
+        if let Some(e) = self.witches.iter_mut().find(|e| e.id == id) {
+            Some((&mut e.witch.body, &mut e.random, 0.0))
         } else if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
-            (&mut e.bat.body, &mut e.random)
+            Some((&mut e.bat.body, &mut e.random, 0.0))
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
-            (&mut e.zombie.body, &mut e.random)
+            Some((&mut e.zombie.body, &mut e.random, 0.0))
         } else if let Some(e) = self.skeletons.iter_mut().find(|e| e.id == id) {
-            (&mut e.skeleton.body, &mut e.random)
+            Some((&mut e.skeleton.body, &mut e.random, 0.0))
         } else if let Some(e) = self.creepers.iter_mut().find(|e| e.id == id) {
-            (&mut e.creeper.body, &mut e.random)
+            Some((&mut e.creeper.body, &mut e.random, 0.0))
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
-            (&mut e.spider.body, &mut e.random)
+            Some((&mut e.spider.body, &mut e.random, 0.0))
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
-            (&mut e.slime.body, &mut e.random)
+            Some((&mut e.slime.body, &mut e.random, 0.0))
         } else if let Some(e) = self.endermen.iter_mut().find(|e| e.id == id) {
-            (&mut e.enderman.body, &mut e.random)
+            Some((&mut e.enderman.body, &mut e.random, 0.0))
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
-            (&mut e.villager.body, &mut e.random)
-        } else if self.iron_golems.iter().any(|e| e.id == id) {
-            // `KNOCKBACK_RESISTANCE` 1: knockback has no power left.
-            return;
+            Some((&mut e.villager.body, &mut e.random, 0.0))
+        } else if let Some(e) = self.iron_golems.iter_mut().find(|e| e.id == id) {
+            // `IronGolem.createAttributes`: `KNOCKBACK_RESISTANCE` 1.
+            Some((&mut e.golem.body, &mut e.random, 1.0))
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
-            (&mut e.wolf.body, &mut e.random)
+            Some((&mut e.wolf.body, &mut e.random, 0.0))
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
-            (&mut e.cow.body, &mut e.random)
+            Some((&mut e.cow.body, &mut e.random, 0.0))
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
-            (&mut e.body, &mut e.random)
+            Some((&mut e.body, &mut e.random, 0.0))
         } else if let Some(e) = self.pigs.iter_mut().find(|e| e.id == id) {
-            (&mut e.pig.body, &mut e.random)
+            Some((&mut e.pig.body, &mut e.random, 0.0))
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
-            (&mut e.chicken.body, &mut e.random)
+            Some((&mut e.chicken.body, &mut e.random, 0.0))
         } else {
-            return;
-        };
-        knockback(body, random, power, xd, zd);
+            None
+        }
+    }
+
+    /// `LivingEntity.knockback` on a mob, by ID: its resistance takes its
+    /// share off the power.
+    pub(super) fn knock_back(&mut self, id: u64, power: f64, xd: f64, zd: f64) {
+        if let Some((body, random, resistance)) = self.body_random_mut(id) {
+            knockback(body, random, power * (1.0 - resistance), xd, zd);
+        }
     }
 
     /// `hurtServer` with `player_attack` on a mob: its armor, the damage
     /// cooldown, the attacker remembered, and on a full hit the default
     /// knockback away from the player. `None` when no such mob lives.
-    fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack) -> Option<DamageResult> {
+    fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack, armor: &mut dyn FnMut(f32, f32, f32) -> f32) -> Option<DamageResult> {
         let source = DamageSourceKind::PlayerAttack;
         let player = attack.player_id;
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
             // `Zombie.createAttributes`: 2 armor.
-            let hit = e.hurt(damage_after_armor(amount, 2.0, 0.0));
+            let hit = e.hurt(armor(amount, 2.0, 0.0));
             if hit.applied {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     // `setLastHurtByMob`, for `HurtByTargetGoal`.
@@ -314,8 +535,12 @@ impl EntityWorld {
         } else {
             return None;
         };
-        // `resolvePlayerResponsibleForDamage`: the player is remembered.
+        // `resolvePlayerResponsibleForDamage`: the player is remembered,
+        // and a kill keeps the weapon for the loot.
         self.credit(id, hit, "minecraft:player", true);
+        if hit.died {
+            self.kill_weapons.insert(id, attack.weapon.clone());
+        }
         if hit.applied {
             self.villager_hurt_by(id, PLAYER_TARGET + player);
         }

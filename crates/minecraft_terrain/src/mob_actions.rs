@@ -101,6 +101,10 @@ pub fn attack(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor, attack: &
         let event = if result.full_strength { "entity.player.attack.strong" } else { "entity.player.attack.weak" };
         outcome.sound(event, at, 1.0, "players_volume");
     }
+    // `MaceItem.hurtEnemy`'s smash, where the player is.
+    if let Some(event) = result.smash {
+        outcome.sound(event, at, 1.0, "players_volume");
+    }
     outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
     outcome.attack = Some((id, result));
     outcome

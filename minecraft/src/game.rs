@@ -753,6 +753,7 @@ impl Game {
         }
         for (id, result) in events.attacks {
             self.attack_particles(id, &result);
+            self.attack_landed(&result);
         }
         for pos in events.bone_meal_used {
             let mut sounds = Vec::new();
@@ -1610,6 +1611,13 @@ impl Game {
                 && !self.player.sprinting
                 && !self.player.survival.has_effect(MobEffect::Blindness),
             can_sweep: self.player.on_ground && held.is_some_and(|s| s.id.ends_with("_sword")),
+            weapon: held.cloned(),
+            fall_distance: f64::from(self.player.fall_distance),
+            on_ground: self.player.on_ground,
+            flying: self.player.flying,
+            fall_flying: false,
+            game_mode: if self.creative { "creative" } else { "survival" },
+            food_level: i32::from(self.player.survival.food.level),
         };
         if self.entities.attack(eye, look, self.entity_reach(), attack) {
             self.player.attack_strength_ticker = 0;
@@ -2052,6 +2060,52 @@ impl Game {
         }
     }
 
+    /// What a landed hit does to the player who made it: extra knockback
+    /// slows it and ends its sprint (`causeExtraKnockback`), a mace's smash
+    /// ends its fall (`MaceItem.hurtEnemy`, `postHurtEnemy`), and the
+    /// weapon's post-attack effects on it land.
+    fn attack_landed(&mut self, result: &minecraftoss_entities::world::AttackResult) {
+        if result.extra_knockback {
+            self.player.velocity.x *= 0.6;
+            self.player.velocity.z *= 0.6;
+            self.player.sprinting = false;
+        }
+        if result.smash.is_some() {
+            self.player.velocity.y = f64::from(0.01_f32);
+            self.player.fall_distance = 0.0;
+        }
+        for effect in &result.attacker_effects {
+            self.enchantment_effect_on_player(effect, minecraftoss_player::enchantment::Slot::MainHand);
+        }
+    }
+
+    /// An enchantment's entity effect on the player, from the item in
+    /// `slot`: its wear (`ChangeItemDamage`), status effects, fire, food
+    /// exhaustion, damage and sounds.
+    fn enchantment_effect_on_player(&mut self, effect: &minecraftoss_player::enchantment::EntityEffect, slot: minecraftoss_player::enchantment::Slot) {
+        use minecraftoss_player::enchantment::EntityEffect;
+        match effect {
+            EntityEffect::ItemDamage { amount } if !self.creative => {
+                let index = minecraftoss_player::inventory::Inventory::equipment_index(slot, self.entities.selected);
+                let id = self.entities.inventory.slots.get(index).and_then(Option::as_ref).map(|s| s.id.clone());
+                if let (Ok(amount), Some(id)) = (u32::try_from(*amount), id)
+                    && self.entities.inventory.wear_tool(index, amount)
+                {
+                    self.item_broke(&id);
+                }
+            }
+            EntityEffect::MobEffect { effect, duration, amplifier } => {
+                if let Some(kind) = MobEffect::from_id(effect) {
+                    self.player.survival.add_effect_instance(EffectInstance::new(kind, *duration, *amplifier));
+                }
+            }
+            EntityEffect::Ignite { seconds } => self.player.survival.ignite_for_ticks((seconds * 20.0).floor() as i32),
+            EntityEffect::Exhaustion { amount } => self.player.survival.food.add_exhaustion(*amount),
+            EntityEffect::Sound { event, position, volume, pitch } => self.play(event, Some(*position), *volume, *pitch),
+            _ => {}
+        }
+    }
+
     /// `LivingEntity.breakItem`: the snap, and crumbs of the item.
     fn item_broke(&mut self, item: &str) {
         let eye = self.player.eye();
@@ -2086,6 +2140,16 @@ impl Game {
                 id,
                 bounds,
                 crate::particles::Type::Crit,
+            );
+        }
+        // `magicCrit`: the enchantments' sparks.
+        if result.magic {
+            self.emitters.track(
+                &mut self.particles,
+                &self.world,
+                id,
+                bounds,
+                crate::particles::Type::EnchantedHit,
             );
         }
         if result.sweep {

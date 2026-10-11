@@ -211,6 +211,7 @@ fn main() {
                     sprinting: false,
                     can_critical: false,
                     can_sweep: false,
+                    ..Default::default()
                 };
                 let target = ids[data["target"].as_str().unwrap()];
                 let result = world.player_attack(&attack, target);

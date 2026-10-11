@@ -155,6 +155,7 @@ fn main() {
                     sprinting: false,
                     can_critical: false,
                     can_sweep: false,
+                    ..Default::default()
                 };
                 let target = ids[data["target"].as_str().unwrap()];
                 assert!(world.player_attack(&attack, target).hurt, "{scenario} the probe's hit lands");

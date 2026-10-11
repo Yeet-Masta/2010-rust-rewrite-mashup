@@ -15,7 +15,11 @@ use zip::ZipArchive;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntityLootContext {
     pub on_fire: bool,
+    /// The killer's looting level (`getEnchantmentLevel`).
     pub looting: u32,
+    /// The direct attacker's main hand has an enchantment of
+    /// `#smelts_loot` (fire aspect).
+    pub smelts_loot: bool,
     pub has_direct_attacker: bool,
     pub sheep_color: Option<u8>,
     pub sheep_sheared: bool,
@@ -412,6 +416,15 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     }
                     // Looting 0 adds nothing and draws nothing.
                     "minecraft:enchanted_count_increase" if context.looting == 0 => {}
+                    // `EnchantedCountIncreaseFunction`: the level times the
+                    // count, rounded, then held to a positive limit.
+                    "minecraft:enchanted_count_increase" if function["enchantment"] == "minecraft:looting" => {
+                        let extra = context.looting as f32 * float_number(&function["count"], random)?;
+                        count += (f64::from(extra) + 0.5).floor() as i64;
+                        if let Some(limit) = function["limit"].as_i64().filter(|&limit| limit > 0) {
+                            count = count.min(limit);
+                        }
+                    }
                     "minecraft:furnace_smelt" => item = data.smelting.get(&item)?.clone(),
                     // `SetPotionFunction`: the potion contents component.
                     "minecraft:set_potion" => potion = Some(function["id"].as_str()?.to_owned()),
@@ -455,6 +468,16 @@ fn int_provider(value: &Value, random: &mut impl LootRandom) -> Option<i32> {
     }
 }
 
+/// `NumberProvider.getFloat` with draws: a constant or a uniform
+/// (`Mth.nextFloat`).
+fn float_number(value: &Value, random: &mut impl LootRandom) -> Option<f32> {
+    if value["type"] == "minecraft:uniform" {
+        let (min, max) = (float_number(&value["min"], random)?, float_number(&value["max"], random)?);
+        return Some(if min >= max { min } else { random.next_float() * (max - min) + min });
+    }
+    float_provider(value)
+}
+
 /// A number provider's float.
 fn float_provider(value: &Value) -> Option<f32> {
     if let Some(f) = value.as_f64() {
@@ -490,10 +513,15 @@ fn condition_true(data: &LootData, value: &Value, context: EntityLootContext, ra
         "minecraft:random_chance" => Some(random.next_float() < float_provider(&value["chance"])?),
         // Without looting the plain chance; with it, the level-based one.
         "minecraft:random_chance_with_enchanted_bonus" => {
-            if context.looting > 0 {
+            if value["enchantment"] != "minecraft:looting" {
                 return None;
             }
-            Some(random.next_float() < float_provider(&value["unenchanted_chance"])?)
+            let chance = if context.looting > 0 {
+                minecraftoss_player::enchantment::level_value(&value["enchanted_chance"], context.looting as i32)
+            } else {
+                float_provider(&value["unenchanted_chance"])?
+            };
+            Some(random.next_float() < chance)
         }
         "minecraft:entity_properties" => entity_properties(data, value, context),
         // `DamageSourceCondition` on the source's entity type (the killer).
@@ -561,9 +589,13 @@ fn entity_properties(data: &LootData, value: &Value, context: EntityLootContext)
             }
             Some(data.type_matches(predicate.get("minecraft:entity_type")?.as_str()?, context.attacker))
         }
-        // No enchantments are modelled: an attacker's weapon never has one.
         "direct_attacker" if !context.has_direct_attacker => Some(false),
-        "direct_attacker" if predicate.keys().all(|k| k == "minecraft:equipment") => Some(false),
+        // The main hand's enchantments: only `#smelts_loot` is known.
+        "direct_attacker" if predicate.keys().all(|k| k == "minecraft:equipment") => {
+            let wanted = &predicate["minecraft:equipment"]["mainhand"]["predicates"]["minecraft:enchantments"];
+            let smelts = wanted.as_array().is_some_and(|list| list.len() == 1 && list[0]["enchantments"] == "#minecraft:smelts_loot" && list[0].get("levels").is_none());
+            smelts.then_some(context.smelts_loot)
+        }
         _ => None,
     }
 }

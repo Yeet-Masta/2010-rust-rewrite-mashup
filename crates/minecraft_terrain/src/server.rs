@@ -2614,6 +2614,7 @@ mod tests {
                 sprinting: false,
                 can_critical: false,
                 can_sweep: false,
+                ..Default::default()
             };
             let (result, _) = server.mob_action(hit, Some(attack), inventory.clone(), 0, false);
             sounds.extend(result.sounds.into_iter().map(|s| s.event).filter(|s| s.starts_with("entity.cow")));

@@ -756,7 +756,7 @@ fn main() {
                 exact(&data["strength"], 1.0, &format!("{at} strength"));
                 let probe = &probes[data["probe"].as_str().unwrap()];
                 let (candidate, yaw) = (probe.candidate, probe.yaw);
-                let attack = PlayerAttack { player_id: candidate.id, position: candidate.position, yaw, attack_damage: 1.0, strength: 1.0, sprinting: false, can_critical: false, can_sweep: false };
+                let attack = PlayerAttack { player_id: candidate.id, position: candidate.position, yaw, attack_damage: 1.0, strength: 1.0, sprinting: false, can_critical: false, can_sweep: false, ..Default::default() };
                 let target = ids[data["target"].as_str().unwrap()];
                 let result = world.player_attack(&attack, target);
                 assert!(result.hurt, "{at} hurts");

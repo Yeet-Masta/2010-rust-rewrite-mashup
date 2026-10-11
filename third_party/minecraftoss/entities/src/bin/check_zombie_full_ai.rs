@@ -132,6 +132,7 @@ fn main() {
                     sprinting: false,
                     can_critical: false,
                     can_sweep: false,
+                    ..Default::default()
                 };
                 let target = case.ids[data["target"].as_str().unwrap()];
                 let result = case.world.player_attack(&attack, target);

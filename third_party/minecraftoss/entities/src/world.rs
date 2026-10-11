@@ -2298,6 +2298,9 @@ pub struct EntityWorld {
     trade_experience: Vec<(DVec3, i32)>,
     /// Players' main-hand items, as villagers see them.
     player_main_hands: HashMap<u64, String>,
+    /// The weapon of the player's hit that killed a mob, by mob: its
+    /// looting and fire reach the loot (`ATTACKING_ENTITY`'s equipment).
+    kill_weapons: HashMap<u64, Option<ItemStack>>,
     /// `broadcastEntityEvent` since last taken: entity, event (12 hearts,
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
@@ -2365,6 +2368,7 @@ impl Default for EntityWorld {
             player_heroes: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
+            kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
         }
     }
@@ -3494,6 +3498,31 @@ impl EntityWorld {
         let mut deaths = Vec::new();
         let plain = EntityLootContext::default();
         let mob_drops = self.mob_drops;
+        // A player's killing blow: its weapon's looting
+        // (`getEnchantmentLevel` on the killer) and whether it smelts
+        // (`#smelts_loot`, fire aspect).
+        use minecraftoss_player::enchantment::{DamageFacts, EntityFacts, Slot};
+        let effects = self.enchantment_effects();
+        let weapons = std::mem::take(&mut self.kill_weapons);
+        let kills: HashMap<u64, (u32, bool)> = weapons
+            .iter()
+            .map(|(&id, weapon)| {
+                let weapon = weapon.as_ref();
+                let looting = weapon.map_or(0, |w| effects.equipment_level("minecraft:looting", &[(Slot::MainHand, w)]));
+                (id, (looting.max(0) as u32, weapon.is_some_and(|w| effects.has_tag(w, "minecraft:smelts_loot"))))
+            })
+            .collect();
+        // `processEquipmentDropChance` for a player's kill: the killer's
+        // `equipment_drops` effects (looting) on the chance a mob's own
+        // equipment drops.
+        let player = EntityFacts { type_id: "minecraft:player".to_owned(), ..EntityFacts::default() };
+        let mut chance_random = LegacyRandom::new(0);
+        let mut drop_chance = |id: u64, kind: &str, chance: f32| {
+            let Some(Some(weapon)) = weapons.get(&id) else { return chance };
+            let victim = EntityFacts { type_id: kind.to_owned(), ..EntityFacts::default() };
+            let source = DamageFacts { damage_type: "minecraft:player_attack", attacker: Some(&player), direct: Some(&player), is_direct: true };
+            effects.equipment_drop_chance(&[], Some(&[(Slot::MainHand, weapon)]), &victim, &source, chance, &mut chance_random)
+        };
         // Animals, bats and villagers drop their loot only as adults
         // (`LivingEntity.shouldDropLoot`); monsters as babies too.
         let adult = |baby: bool, table: &'static str| (!baby).then_some(table);
@@ -3528,6 +3557,7 @@ impl EntityWorld {
             // of its wear: `max - nextInt(1 + nextInt(max(max - 3, 1)))`.
             let chance = e.skeleton.bow_drop_chance;
             let preserve = chance > 1.0;
+            let chance = drop_chance(e.id, kind, chance);
             if mob_drops && chance != 0.0 && e.skeleton.holds_bow && (death.context.killed_by_player || preserve) && e.random.next_float() < chance {
                 let mut bow = ItemStack::new("minecraft:bow", 1);
                 bow.max = 1;
@@ -3579,7 +3609,7 @@ impl EntityWorld {
             // `dropCustomDeathLoot`: the potion it was drinking, for a
             // player's kill, 8.5% of the time (`DropChances.DEFAULT`).
             if let Some(potion) = held {
-                if mob_drops && death.context.killed_by_player && e.random.next_float() < 0.085 {
+                if mob_drops && death.context.killed_by_player && e.random.next_float() < drop_chance(e.id, "minecraft:witch", 0.085) {
                     let mut stack = ItemStack::new("minecraft:potion", 1);
                     stack.components = Some(serde_json::json!({ "minecraft:potion_contents": { "potion": potion.id() } }));
                     death.equipment.push(stack);
@@ -3646,6 +3676,12 @@ impl EntityWorld {
             let Some((order, mut death)) = death_of(e.id, &mut e.chicken.damage, "minecraft:chicken", adult(baby, "minecraft:chicken"), EntityLootContext { baby, ..plain }) else { continue };
             animal(&mut death, &mut e.random);
             deaths.push((order, death));
+        }
+        for (_, death) in &mut deaths {
+            if let Some(&(looting, smelts)) = kills.get(&death.id) {
+                death.context.looting = looting;
+                death.context.smelts_loot = smelts;
+            }
         }
         deaths.sort_by_key(|&(order, _)| order);
         if !mob_drops {
@@ -4314,6 +4350,7 @@ impl EntityWorld {
             player_heroes: self.player_heroes.clone(),
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
+            kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
@@ -6665,6 +6702,7 @@ mod tests {
             sprinting: false,
             can_critical: false,
             can_sweep: false,
+            ..Default::default()
         };
         assert!(world.player_attack(&attack, baby).died);
         let deaths = world.take_deaths();

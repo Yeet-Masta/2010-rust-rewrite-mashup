@@ -321,6 +321,7 @@ fn main() {
                     sprinting: false,
                     can_critical: false,
                     can_sweep: false,
+                    ..Default::default()
                 };
                 // `Player.attack` tires the attacker; the harness puts the
                 // attacking probe on the ground.

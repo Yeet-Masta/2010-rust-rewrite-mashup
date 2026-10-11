@@ -107,7 +107,7 @@ fn main() {
                 // A diamond sword: 7 damage, 1.6 attacks a second.
                 let delay = (1.0 / (4.0 - 2.4000000953674316) * 20.0) as f32;
                 let strength = ((action["attack_ticker"].as_i64().unwrap() as f32 + 0.5) / delay).clamp(0.0, 1.0);
-                let attack = PlayerAttack { player_id: 1, position: probe.0, yaw: probe.1, attack_damage: 7.0, strength, sprinting: false, can_critical: false, can_sweep: true };
+                let attack = PlayerAttack { player_id: 1, position: probe.0, yaw: probe.1, attack_damage: 7.0, strength, sprinting: false, can_critical: false, can_sweep: true, ..Default::default() };
                 let target = ids[row["data"]["target"].as_str().unwrap()];
                 let result = world.player_attack(&attack, target);
                 assert!(result.hurt, "tick {tick} attack lands");

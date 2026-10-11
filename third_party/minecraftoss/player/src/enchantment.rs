@@ -543,6 +543,12 @@ impl EnchantmentEffects {
         self.on_item(stack).any(|(definition, _)| definition.effects.contains_key(component))
     }
 
+    /// `EnchantmentHelper.hasTag`: one of the stack's enchantments is in
+    /// the enchantment tag.
+    pub fn has_tag(&self, stack: &ItemStack, tag: &str) -> bool {
+        item_enchantments(stack).into_iter().any(|(id, _)| self.in_tag("enchantment", tag, id))
+    }
+
     /// `getHighestLevel`: the highest-levelled enchantment with the
     /// component, its value and level (`pickHighestLevel` picks from a
     /// list by it).

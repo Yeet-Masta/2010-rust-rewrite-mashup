@@ -187,6 +187,7 @@ fn main() {
                     sprinting,
                     can_critical: fall_distance > 0.0 && !on_ground && !sprinting,
                     can_sweep: on_ground && 0.0 < sweep_speed * sweep_speed && probe.item.ends_with("_sword"),
+                    ..Default::default()
                 };
                 let target = case.ids[data["target"].as_str().unwrap()];
                 let result = case.world.player_attack(&attack, target);
