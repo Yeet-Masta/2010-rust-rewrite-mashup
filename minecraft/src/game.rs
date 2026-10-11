@@ -220,6 +220,7 @@ impl Game {
             player.survival.refresh_attributes();
             player.survival.health = saved.health.clamp(1.0, player.survival.max_health);
             player.survival.set_absorption(saved.absorption);
+            player.survival.fire_ticks = saved.fire;
             player.survival.food.level = saved.food;
             player.survival.food.saturation = saved.saturation;
             (
@@ -476,6 +477,7 @@ impl Game {
             // Death clears them (`LivingEntity.die`'s `removeAllEffects`).
             effects: if dead { Default::default() } else { status.effects.clone() },
             absorption: if dead { 0.0 } else { status.absorption },
+            fire: if dead { 0 } else { status.fire_ticks },
             flying: self.player.flying,
             selected: self.entities.selected,
             slots: self.entities.inventory.slots.clone(),
@@ -676,6 +678,7 @@ impl Game {
             lightning: crate::weather::Weather::bolt_mesh(self.entities.lightning()),
             outline,
             hand,
+            screen_fire: self.screen_fire(),
             hand_clip: {
                 // Vanilla's fixed 70 degree hand, reverse-Z with no far plane.
                 let f = 1.0 / (35.0f32.to_radians()).tan();
@@ -838,8 +841,11 @@ impl Game {
         for (kind, amplifier, scale) in splash.instant {
             self.player.survival.apply_instant(kind, amplifier, scale, self.creative);
         }
-        if splash.extinguish {
-            self.player.survival.fire_ticks = 0;
+        // `extinguishFire`, with its hiss when it was burning.
+        if splash.extinguish && self.player.survival.on_fire() {
+            self.player.survival.clear_fire();
+            let pitch = 1.6 + (self.sounds.random() - self.sounds.random()) * 0.4;
+            self.play("minecraft:entity.generic.extinguish_fire", Some(self.player.pos), 0.7, pitch);
         }
         if self.player.survival.health < health {
             self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
@@ -2089,6 +2095,13 @@ impl Game {
         let fall = self.player.fall_distance;
         let was_in_water = self.player.in_water;
         let health = self.player.survival.health;
+        // What the survival tick's fire needs: the armor, the rain where
+        // the player stands, and the level random's draw for fire blocks.
+        let inventory = &self.entities.inventory;
+        let toughness = inventory.armor_toughness().0 as f32;
+        self.player.armor = Armor { value: Some((f32::from(inventory.armor_value()), toughness)) };
+        self.player.in_rain = self.raining_on_player();
+        self.player.fire_spread = 1 + i32::from(self.sounds.random() < 0.5);
         if self.creative {
             // Effects run out for creative players too, harmlessly.
             self.player.survival.tick_effects_as(true);
@@ -2103,9 +2116,15 @@ impl Game {
         }
         self.player.tick_attack_strength(held.as_ref());
         let motion = self.player.pos - before;
+        if self.player.extinguished {
+            let pitch = 1.6 + (self.sounds.random() - self.sounds.random()) * 0.4;
+            self.play("minecraft:entity.generic.extinguish_fire", Some(self.player.pos), 0.7, pitch);
+        }
         // Fall and other damage the survival tick dealt.
         if self.player.survival.health < health {
-            let event = if self.player.on_ground && fall > 3.0 {
+            let event = if self.player.survival.burned {
+                "minecraft:entity.player.hurt_on_fire"
+            } else if self.player.on_ground && fall > 3.0 {
                 if fall > 7.0 {
                     "minecraft:entity.player.big_fall"
                 } else {
@@ -2249,8 +2268,12 @@ impl Game {
                 self.player.velocity += knockback;
                 (HitFrom::Explosion, "player_explosion")
             }
-            // `lightning_bolt`: `#no_knockback`, like a blast's own push.
-            PlayerHitKind::Lightning => (HitFrom::Explosion, "lightning_bolt"),
+            // `lightning_bolt`: `#no_knockback`, like a blast's own push;
+            // `thunderHit` sets the player alight first.
+            PlayerHitKind::Lightning => {
+                self.player.survival.thunder_ignite();
+                (HitFrom::Explosion, "lightning_bolt")
+            }
         };
         let inventory = &self.entities.inventory;
         let (toughness, resistance) = inventory.armor_toughness();
@@ -2275,6 +2298,16 @@ impl Game {
                 self.player.survival.add_effect_instance(effect);
             }
         }
+    }
+
+    /// `Entity.isInRain`: rain falls on the player's block or the one at
+    /// the top of its box.
+    fn raining_on_player(&self) -> bool {
+        let p = self.player.pos;
+        let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
+        let top = (p.y + if self.player.swimming { 0.6 } else if self.player.crouching { 1.5 } else { 1.8 }).floor() as i32;
+        self.weather.raining_at(&self.world, (x, p.y.floor() as i32, z))
+            || self.weather.raining_at(&self.world, (x, top, z))
     }
 
     /// `DeathScreen`'s buttons wait twenty ticks.
@@ -2426,6 +2459,40 @@ impl Game {
             let start = vertices.len() as u32;
             vertices.extend(mesh.vertices.iter().map(SectionVertex::from_vertex));
             indices.extend(mesh.indices.iter().map(|index| index + start));
+        }
+        (vertices, indices)
+    }
+
+    /// `ScreenEffectRenderer.submitFire`: a burning player sees two sheets
+    /// of `fire_1`, at 90% white, half a block ahead and turned ten degrees
+    /// in toward the middle from either side, low on the screen.
+    fn screen_fire(&self) -> (Vec<SectionVertex>, Vec<u32>) {
+        if !self.alive() || !self.player.survival.on_fire() {
+            return Default::default();
+        }
+        let Ok(sprite) = minecraft_terrain::pack::ResourceId::parse("minecraft:block/fire_1") else {
+            return Default::default();
+        };
+        if !self.world.atlas.contains(&sprite) {
+            return Default::default();
+        }
+        let [u0, v0, u1, v1] = self.world.atlas.region(&sprite);
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        for side in [1.0f32, -1.0] {
+            let pose = Mat4::from_translation(Vec3::new(0.24 * side, -0.3, 0.0))
+                * Mat4::from_rotation_y(-std::f32::consts::PI / 18.0 * side);
+            let start = vertices.len() as u32;
+            // `buildSpriteQuad`: the sprite's corners flipped both ways.
+            for (x, y, u, v) in [(-0.5, -0.5, u1, v1), (0.5, -0.5, u0, v1), (0.5, 0.5, u0, v0), (-0.5, 0.5, u1, v0)] {
+                vertices.push(SectionVertex {
+                    position: pose.transform_point3(Vec3::new(x, y, -0.5)).to_array(),
+                    uv: [u, v],
+                    color: [255, 255, 255, 229],
+                    light: [240, 240],
+                    pad: [0; 2],
+                });
+            }
+            indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
         }
         (vertices, indices)
     }

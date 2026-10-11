@@ -1152,6 +1152,18 @@ pub struct Player {
     pub selected: usize,
     pub hotbar: [Block; 9],
     pub survival: SurvivalStatus,
+    /// The armor fire and lava meet (`ARMOR` and `ARMOR_TOUGHNESS`), as the
+    /// caller last set it.
+    pub armor: survival::Armor,
+    /// Rain falls where the player stands (`Entity.isInRain`), as the
+    /// caller last set it.
+    pub in_rain: bool,
+    /// The player's fire went out this tick by water or rain, for the
+    /// extinguishing hiss (`playEntityOnFireExtinguishedSound`).
+    pub extinguished: bool,
+    /// The level random's draw for a fire block's touch (1 or 2), as the
+    /// caller last set it.
+    pub fire_spread: i32,
 }
 impl Player {
     pub fn new(pos: DVec3) -> Self {
@@ -1192,6 +1204,10 @@ impl Player {
             selected: 0,
             hotbar: ids.map(|id| Block::new(format!("minecraft:{id}"))),
             survival: SurvivalStatus::default(),
+            armor: survival::Armor::default(),
+            in_rain: false,
+            extinguished: false,
+            fire_spread: 1,
         }
     }
     pub fn set_game_mode(&mut self, mode: GameMode) {
@@ -1643,10 +1659,7 @@ impl Player {
         let in_lava = world
             .block(feet)
             .is_some_and(|block| block.id == "minecraft:lava");
-        let in_water = world
-            .block(feet)
-            .is_some_and(|block| block.id == "minecraft:water");
-        self.survival.tick_fire(in_lava, in_water);
+        self.survival.tick_fire(in_lava, false);
         let eye = self.eye().floor();
         let eye_block = (eye.x as i32, eye.y as i32, eye.z as i32);
         let submerged = world
@@ -1656,17 +1669,7 @@ impl Player {
         let before = self.pos;
         let jumped = input.jump && self.on_ground && !self.flying && !self.in_water;
         self.tick(world, input);
-        let after_feet = (
-            self.pos.x.floor() as i32,
-            self.pos.y.floor() as i32,
-            self.pos.z.floor() as i32,
-        );
-        if world
-            .block(after_feet)
-            .is_some_and(|block| block.id == "minecraft:lava")
-        {
-            self.survival.touch_lava();
-        }
+        self.apply_fire_from_blocks(world);
         let motion = self.pos - before;
         if self.flying || self.in_water {
             self.fall_distance = 0.0;
@@ -1717,6 +1720,48 @@ impl Player {
         self.survival
             .tick_with_rules(natural_regeneration, difficulty, self.tick);
     }
+    /// `Entity.applyEffectsFromBlocks`'s fire: the blocks the player's box
+    /// is inside after moving light it (`BaseFireBlock.entityInside`: fire
+    /// a point, soul fire two, as `in_fire`; lava fifteen seconds and 4 as
+    /// `lava`), water then rain put it out, and a player not burning (nor
+    /// lit this tick) is immune again for a second.
+    fn apply_fire_from_blocks(&mut self, world: &impl World) {
+        let was_on_fire = self.survival.on_fire();
+        let previous = self.survival.fire_ticks;
+        let bbox = self.bbox();
+        let (min, max) = (bbox.min + DVec3::splat(1.0e-5), bbox.max - DVec3::splat(1.0e-5));
+        let (mut fire, mut lava, mut water) = (None, false, false);
+        for x in min.x.floor() as i32..=max.x.floor() as i32 {
+            for y in min.y.floor() as i32..=max.y.floor() as i32 {
+                for z in min.z.floor() as i32..=max.z.floor() as i32 {
+                    match world.block((x, y, z)).as_ref().map(|b| b.id.as_str()) {
+                        Some("minecraft:fire") => fire = Some(fire.map_or(1.0_f32, |f: f32| f.max(1.0))),
+                        Some("minecraft:soul_fire") => fire = Some(2.0),
+                        Some("minecraft:lava") => lava = true,
+                        Some("minecraft:water") => water = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // The effects apply in `InsideBlockEffectType` order: fire, lava,
+        // then water.
+        if let Some(damage) = fire {
+            self.survival.fire_ignite(self.fire_spread);
+            self.survival.hurt_by_fire(damage, self.armor, 0.1, false);
+        }
+        if lava && self.survival.touch_lava_with(self.armor, false) {
+            self.survival.burned = true;
+        }
+        if water || self.in_rain {
+            self.survival.clear_fire();
+        }
+        self.extinguished = was_on_fire && !self.survival.on_fire();
+        if !self.survival.on_fire() && self.survival.fire_ticks <= previous {
+            self.survival.fire_ticks = -20;
+        }
+    }
+
     pub fn target(&self, world: &impl World, reach: f64) -> Option<Hit> {
         self.target_with_fluid_sources(world, reach, FluidRay::None)
     }

@@ -217,6 +217,8 @@ pub struct WorldDraw {
     pub lightning: (Vec<[f32; 7]>, Vec<u32>),
     /// The hand or held item in view space, and its projection.
     pub hand: (Vec<SectionVertex>, Vec<u32>),
+    /// The fire over the view of a burning player, in the hand's space.
+    pub screen_fire: (Vec<SectionVertex>, Vec<u32>),
     pub hand_clip: Mat4,
 }
 
@@ -259,6 +261,7 @@ struct Pipelines {
     lightning: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     hand: wgpu::RenderPipeline,
+    screen_fire: wgpu::RenderPipeline,
     outline: wgpu::RenderPipeline,
     ui: wgpu::RenderPipeline,
     ui_invert: wgpu::RenderPipeline,
@@ -1081,6 +1084,11 @@ impl Renderer {
                     bytemuck::cast_slice(&world.lightning.0),
                     &world.lightning.1,
                 ),
+                upload(
+                    &self.device,
+                    bytemuck::cast_slice(&world.screen_fire.0),
+                    &world.screen_fire.1,
+                ),
             ];
         }
         let outline = world.filter(|w| !w.outline.is_empty()).map(|w| {
@@ -1199,9 +1207,12 @@ impl Renderer {
                 }
             }
         }
-        // The hand over everything in the world, in a depth range of its own.
-        if let (Some(mesh), Some(bind)) = (
-            frame_meshes.get(6).and_then(Option::as_ref),
+        // The hand over everything in the world, in a depth range of its own,
+        // then the screen's fire over it.
+        let hand_mesh = frame_meshes.get(6).and_then(Option::as_ref);
+        let fire_mesh = frame_meshes.get(11).and_then(Option::as_ref);
+        if let (true, Some(bind)) = (
+            hand_mesh.is_some() || fire_mesh.is_some(),
             self.world_bind.as_ref(),
         ) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1228,8 +1239,14 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, bind, &[]);
-            pass.set_pipeline(&self.pipelines.hand);
-            draw(&mut pass, mesh, 0..mesh.count);
+            if let Some(mesh) = hand_mesh {
+                pass.set_pipeline(&self.pipelines.hand);
+                draw(&mut pass, mesh, 0..mesh.count);
+            }
+            if let Some(mesh) = fire_mesh {
+                pass.set_pipeline(&self.pipelines.screen_fire);
+                draw(&mut pass, mesh, 0..mesh.count);
+            }
         }
         if let Some(buffer) = ui_buffer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1710,6 +1727,15 @@ impl Pipelines {
                 &section,
                 Some((true, GreaterEqual)),
                 None,
+                None,
+            ),
+            // `RenderPipelines.FIRE_SCREEN_EFFECT`: blended, over everything.
+            screen_fire: world(
+                "hand_vertex",
+                "screen_fire_fragment",
+                &section,
+                Some((false, wgpu::CompareFunction::Always)),
+                alpha,
                 None,
             ),
             outline: make(Spec {

@@ -57,6 +57,15 @@ impl Weather {
     }
 
     /// `Level.getThunderLevel`: scaled by the rain.
+    /// `Level.isRainingAt`: raining (above a fifth), open to the sky
+    /// (nothing motion-blocking above) and a biome where it rains.
+    pub fn raining_at(&self, world: &World, pos: (i32, i32, i32)) -> bool {
+        let scene = &world.scene;
+        self.rain_level > 0.2
+            && scene.motion_blocking_height(pos.0, pos.2).is_none_or(|top| top <= pos.1)
+            && self.climate.precipitation_at(scene, pos) == Precipitation::Rain
+    }
+
     pub fn thunder(&self) -> f32 {
         self.thunder_level * self.rain_level
     }

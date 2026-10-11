@@ -403,6 +403,14 @@ fn hand_fragment(in: Out) -> @location(0) vec4<f32> {
     return vec4<f32>(texel.rgb * in.colour.rgb, 1.0);
 }
 
+// The fire over a burning player's view: the sprite times its colour,
+// full bright (the vertices carry full light), blended.
+@fragment
+fn screen_fire_fragment(in: Out) -> @location(0) vec4<f32> {
+    let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+    return texel * in.colour;
+}
+
 // The destroy stage over a block being mined, blended as the crumbling
 // render type: source times destination, twice.
 struct CrackOut {

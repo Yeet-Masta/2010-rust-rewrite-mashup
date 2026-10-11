@@ -141,7 +141,12 @@ pub struct SurvivalStatus {
     /// `MAX_ABSORPTION`'s value: what absorption can hold (the absorption
     /// effect's 4 a level).
     pub max_absorption: f32,
-    pub fire_ticks: u32,
+    /// `remainingFireTicks`: burning while above zero; below, the ticks a
+    /// fire block's touch takes to light the player (`getFireImmuneTicks`).
+    pub fire_ticks: i32,
+    /// Fire or lava hurt the player this tick, for the hurt sound
+    /// (`Player.getHurtSound`'s `#is_fire`).
+    pub burned: bool,
     damage_cooldown: u8,
     last_hurt: f32,
     /// `activeEffects`.
@@ -165,6 +170,7 @@ impl Default for SurvivalStatus {
             absorption: 0.0,
             max_absorption: 0.0,
             fire_ticks: 0,
+            burned: false,
             damage_cooldown: 0,
             last_hurt: 0.0,
             effects: ActiveEffects::default(),
@@ -456,30 +462,78 @@ impl SurvivalStatus {
         }
     }
 
-    /// Entity.baseTick applies fire once per 20 remaining ticks outside lava.
-    /// Contact with water extinguishes it; lava contact itself is applied by
-    /// the movement caller after block intersection.
-    pub fn tick_fire(&mut self, in_lava: bool, in_water: bool) {
-        if in_water {
-            self.fire_ticks = 0;
-            return;
-        }
+    /// `isOnFire`.
+    pub fn on_fire(&self) -> bool {
+        self.fire_ticks > 0
+    }
+
+    /// `Entity.baseTick`'s burning: a point of `on_fire` damage (through
+    /// no armor) each second, none while in lava, and a tick off the fire.
+    pub fn tick_fire(&mut self, in_lava: bool, invulnerable: bool) {
+        self.burned = false;
         if self.fire_ticks > 0 {
-            if self.fire_ticks % 20 == 0
-                && !in_lava
-                && !self.has_effect(EffectKind::FireResistance)
-            {
-                self.damage(1.0);
+            if self.fire_ticks % 20 == 0 && !in_lava {
+                self.hurt_by_fire(1.0, Armor::default(), 0.0, invulnerable);
             }
             self.fire_ticks -= 1;
         }
     }
 
-    pub fn touch_lava(&mut self) {
-        self.fire_ticks = self.fire_ticks.max(300);
-        if !self.has_effect(EffectKind::FireResistance) {
-            self.damage(4.0);
+    /// `hurtServer` for `#is_fire` damage, which fire resistance turns away.
+    pub fn hurt_by_fire(&mut self, amount: f32, armor: Armor, exhaustion: f32, invulnerable: bool) {
+        if invulnerable || self.has_effect(EffectKind::FireResistance) {
+            return;
         }
+        if self.hurt(amount, armor, exhaustion).is_some() {
+            self.burned = true;
+        }
+    }
+
+    /// `igniteForTicks`: burning at least this long.
+    pub fn ignite_for_ticks(&mut self, ticks: i32) {
+        if self.fire_ticks < ticks {
+            self.fire_ticks = ticks;
+        }
+    }
+
+    /// `clearFire`: put out, keeping any immunity left.
+    pub fn clear_fire(&mut self) {
+        self.fire_ticks = self.fire_ticks.min(0);
+    }
+
+    /// `BaseFireBlock.fireIgnite` for a player in a fire block: the
+    /// immunity counts down a tick, or the fire grows by `added` (the
+    /// level random's 1 or 2); once not immune it burns for eight seconds.
+    pub fn fire_ignite(&mut self, added: i32) {
+        if self.fire_ticks < 0 {
+            self.fire_ticks += 1;
+        } else {
+            self.fire_ticks += added;
+        }
+        if self.fire_ticks >= 0 {
+            self.ignite_for_ticks(160);
+        }
+    }
+
+    /// `Entity.thunderHit`'s fire: struck while not immune, eight seconds.
+    pub fn thunder_ignite(&mut self) {
+        self.fire_ticks += 1;
+        if self.fire_ticks == 0 {
+            self.ignite_for_ticks(160);
+        }
+    }
+
+    /// `lavaIgnite` and `lavaHurt`: fifteen seconds alight and 4 damage
+    /// (`lava`, through armor). Whether it hurt.
+    pub fn touch_lava(&mut self) -> bool {
+        self.touch_lava_with(Armor::default(), false)
+    }
+
+    pub fn touch_lava_with(&mut self, armor: Armor, invulnerable: bool) -> bool {
+        self.ignite_for_ticks(300);
+        let health = self.health;
+        self.hurt_by_fire(4.0, armor, 0.1, invulnerable);
+        self.health < health
     }
 
     /// LivingEntity.baseTick consumes one air per submerged tick. Without
@@ -896,11 +950,30 @@ mod tests {
         status.tick_fire(true, false);
         status.touch_lava();
         assert_eq!(status.health, 12.0);
-        status.tick_fire(false, true);
+        status.clear_fire();
         assert_eq!(status.fire_ticks, 0);
         status.add_effect(EffectKind::FireResistance, 100, 0);
         status.touch_lava();
         assert_eq!(status.health, 12.0);
+    }
+
+    #[test]
+    fn fire_blocks_wait_out_the_immunity_then_burn_eight_seconds() {
+        let mut status = SurvivalStatus::default();
+        status.fire_ticks = -20;
+        for _ in 0..19 {
+            status.fire_ignite(1);
+        }
+        assert_eq!(status.fire_ticks, -1);
+        status.fire_ignite(2);
+        assert_eq!(status.fire_ticks, 160);
+        // A point each second, not in lava.
+        let health = status.health;
+        status.fire_ticks = 20;
+        status.tick_fire(false, false);
+        assert_eq!((status.health, status.fire_ticks, status.burned), (health - 1.0, 19, true));
+        status.thunder_ignite();
+        assert_eq!(status.fire_ticks, 20);
     }
 
     #[test]

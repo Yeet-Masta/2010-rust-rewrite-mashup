@@ -21,6 +21,8 @@ pub struct Saved {
     /// `active_effects` and `AbsorptionAmount`.
     pub effects: ActiveEffects,
     pub absorption: f32,
+    /// `Fire`: the ticks left burning (below zero, the immunity).
+    pub fire: i32,
     /// A creative player in the air stays there.
     pub flying: bool,
     pub selected: usize,
@@ -67,6 +69,7 @@ pub fn read(dir: &Path) -> Option<Saved> {
         day_ticks: value["day_ticks"].as_f64().unwrap_or(1000.0),
         effects: ActiveEffects::from_json(&player["active_effects"]),
         absorption: player["absorption"].as_f64().unwrap_or(0.0) as f32,
+        fire: player["fire"].as_i64().unwrap_or(0).clamp(-32768, 32767) as i32,
         flying: player["flying"].as_bool().unwrap_or(false),
         selected: player["selected"].as_u64().unwrap_or(0).min(8) as usize,
         slots,
@@ -138,6 +141,7 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             "pitch": saved.pitch,
             "health": saved.health,
             "absorption": saved.absorption,
+            "fire": saved.fire,
             "active_effects": saved.effects.to_json(),
             "food": saved.food,
             "saturation": saved.saturation,
