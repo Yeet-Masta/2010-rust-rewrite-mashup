@@ -892,6 +892,39 @@ impl Game {
         self.play("minecraft:entity.splash_potion.break", Some(at), 1.0, pitch);
     }
 
+    /// `LivingEntity.tickEffects` on the client: now and then (one tick in
+    /// four, fifteen when invisible, five times rarer when every effect is
+    /// ambient) a swirl in one visible effect's colour, faint for an
+    /// ambient one, somewhere in the player's box.
+    fn effect_particles(&mut self) {
+        use crate::particles::{Options, Type};
+        let effects = &self.player.survival.effects;
+        let colours: Vec<[f32; 4]> = effects
+            .iter()
+            .filter(|e| e.visible)
+            .map(|e| {
+                let c = e.effect.color();
+                let alpha = if e.ambient { 38.0 / 255.0 } else { 1.0 };
+                [alpha, ((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0]
+            })
+            .collect();
+        if colours.is_empty() {
+            return;
+        }
+        let bound = if effects.has(MobEffect::Invisibility) { 15 } else { 4 } * if effects.all_ambient() { 5 } else { 1 };
+        let random = &mut self.particles.random;
+        if random.next_int(bound) != 0 {
+            return;
+        }
+        let colour = colours[random.next_int(colours.len() as i32) as usize];
+        let p = self.player.pos;
+        let height = if self.player.swimming { 0.6 } else if self.player.crouching { 1.5 } else { 1.8 };
+        let x = p.x + 0.6 * (2.0 * random.next_double() - 1.0) * 0.5;
+        let y = p.y + height * random.next_double();
+        let z = p.z + 0.6 * (2.0 * random.next_double() - 1.0) * 0.5;
+        self.particles.spawn(&self.world, &Options::Color(Type::EntityEffect, colour), DVec3::new(x, y, z), DVec3::ONE);
+    }
+
     /// `AreaEffectCloud.clientTick`: a waiting cloud's two motes at its
     /// heart, every other tick, or a working cloud's mote for each square
     /// block it covers, in the potion's colour (waiting, half of them
@@ -1332,6 +1365,9 @@ impl Game {
                 .tick(&self.world, &mut self.particles, around, &mut sounds);
         }
         self.cloud_particles();
+        if self.alive() {
+            self.effect_particles();
+        }
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
         let entities = &self.entities;
         self.emitters
