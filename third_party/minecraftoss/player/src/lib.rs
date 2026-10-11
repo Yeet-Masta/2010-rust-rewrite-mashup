@@ -12,6 +12,7 @@ pub mod crafting;
 pub mod daylight;
 pub mod dropper;
 pub mod effects;
+pub mod enchantment;
 pub mod food;
 pub mod furnace;
 pub mod hopper;

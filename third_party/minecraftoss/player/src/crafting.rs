@@ -258,6 +258,8 @@ pub struct RecipeBook {
     auto_unlocks: Vec<AutoUnlockRule>,
     display_indices: HashMap<String, Vec<u32>>,
     item_catalog: Option<Arc<ItemCatalog>>,
+    /// The enchantments' effects and the tags they read.
+    enchantments: Arc<crate::enchantment::EnchantmentEffects>,
 }
 impl RecipeBook {
     pub fn from_jar(path: &Path) -> Result<Self> {
@@ -271,7 +273,8 @@ impl RecipeBook {
                 || name.starts_with("data/minecraft/tags/item/")
                 || name.starts_with("data/minecraft/advancement/recipes/")
                 || name.starts_with("data/minecraft/banner_pattern/")
-                || name.starts_with("data/minecraft/tags/banner_pattern/");
+                || name.starts_with("data/minecraft/tags/banner_pattern/")
+                || crate::enchantment::wanted_file(&name);
             if !name.ends_with(".json") || !is_data {
                 continue;
             }
@@ -287,6 +290,9 @@ impl RecipeBook {
     /// The book from the data pack's recipes, item tags and recipe
     /// advancements, each by its path in the JAR (`data/minecraft/...`).
     pub fn from_files(files: Vec<(String, Value)>) -> Self {
+        let enchantments = Arc::new(crate::enchantment::EnchantmentEffects::from_files(
+            files.iter().map(|(name, value)| (name.as_str(), value)),
+        ));
         let mut tags = HashMap::new();
         let mut raw_recipes = Vec::new();
         let mut raw_advancements = Vec::new();
@@ -458,7 +464,13 @@ impl RecipeBook {
             auto_unlocks,
             display_indices: HashMap::new(),
             item_catalog: None,
+            enchantments,
         }
+    }
+
+    /// The enchantments' effects (`EnchantmentHelper`'s data).
+    pub fn enchantments(&self) -> &Arc<crate::enchantment::EnchantmentEffects> {
+        &self.enchantments
     }
 
     /// Load display IDs observed from the pinned server recipe manager. The
