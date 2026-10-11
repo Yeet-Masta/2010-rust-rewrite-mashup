@@ -1279,6 +1279,9 @@ impl Game {
     /// One 20 Hz tick.
     fn tick(&mut self, input: &Input) {
         self.ticks += 1;
+        if self.screen == Screen::Dead && self.ticks == self.died_at + 20 {
+            self.death_effects();
+        }
         // `MinecraftServer.autoSave`: every five minutes.
         if self.ticks.is_multiple_of(6000) && self.save_dir.is_some() {
             self.save_chunks();
@@ -2385,6 +2388,57 @@ impl Game {
             || self.weather.raining_at(&self.world, (x, top, z))
     }
 
+    /// `LivingEntity.tickDeath`'s removal twenty ticks after death and
+    /// `triggerOnDeathMobEffects`: oozing leaves two slimes of size 2 half
+    /// a block up (`OozingMobEffect.onMobRemoved`), weaving two or three
+    /// cobwebs on sturdy ground about the player
+    /// (`WeavingMobEffect.spawnCobwebsRandomlyAround`), and the effects end.
+    /// (Wind charged's burst and infested's silverfish have no entities
+    /// here.)
+    fn death_effects(&mut self) {
+        let effects = std::mem::take(&mut self.player.survival.effects);
+        let p = self.player.pos;
+        if effects.has(MobEffect::Oozing) {
+            for _ in 0..2 {
+                self.entities.summon_slime([p.x, p.y + 0.5, p.z], 2);
+            }
+        }
+        if effects.has(MobEffect::Weaving) {
+            let count = 2 + usize::from(self.sounds.random() < 0.5);
+            let center = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            let mut webs: Vec<BlockPos> = Vec::new();
+            for _ in 0..15 {
+                let mut offset = || (self.sounds.random() * 3.0).floor() as i32 - 1;
+                let pos = (center.0 + offset(), center.1 + offset(), center.2 + offset());
+                let below = (pos.0, pos.1 - 1, pos.2);
+                let replaceable = self.world.block(pos).is_none_or(|b| {
+                    matches!(
+                        b.id.path.as_str(),
+                        "air" | "cave_air" | "void_air" | "water" | "lava" | "short_grass" | "tall_grass" | "fern"
+                            | "large_fern" | "dead_bush" | "vine" | "fire" | "soul_fire" | "seagrass" | "tall_seagrass"
+                            | "light" | "structure_void"
+                    )
+                });
+                let sturdy = minecraftoss_player::collision_boxes_at(&self.world.scene, below).iter().any(|(min, max)| {
+                    let (min, max) = (*min - below_offset(below), *max - below_offset(below));
+                    min.x <= 0.0 && min.z <= 0.0 && max.x >= 1.0 && max.z >= 1.0 && max.y >= 1.0
+                });
+                if !webs.contains(&pos) && replaceable && sturdy {
+                    webs.push(pos);
+                    if webs.len() >= count {
+                        break;
+                    }
+                }
+            }
+            for pos in webs {
+                let web = minecraft_terrain::scene::Block::new("minecraft:cobweb");
+                self.world.set_blocks(&[(pos, Some(web))]);
+                self.entities.edited(&self.world.scene, pos, true);
+            }
+        }
+        self.player.survival.refresh_attributes();
+    }
+
     /// `DeathScreen`'s buttons wait twenty ticks.
     fn death_buttons_ready(&self) -> bool {
         self.ticks.saturating_sub(self.died_at) >= 20
@@ -2974,6 +3028,11 @@ fn take_notches(scroll: &mut f32) -> i32 {
     let notches = scroll.trunc();
     *scroll -= notches;
     notches as i32
+}
+
+/// A block's corner, to take block-relative boxes from world ones.
+fn below_offset(pos: BlockPos) -> DVec3 {
+    DVec3::new(f64::from(pos.0), f64::from(pos.1), f64::from(pos.2))
 }
 
 fn center(pos: BlockPos) -> DVec3 {
