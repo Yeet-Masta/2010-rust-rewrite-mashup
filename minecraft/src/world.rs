@@ -46,6 +46,29 @@ pub struct World {
     pub rain_level: f32,
     pub thunder_level: f32,
     pub sky_flash: bool,
+    /// What the player's effects do to the view, as the game last set it.
+    pub vision: Vision,
+}
+
+/// What the player's effects do to the view: `FogRenderer` with the
+/// blindness and darkness fog environments, and the lightmap's night
+/// vision and darkness (`LightmapRenderStateExtractor`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Vision {
+    /// Blindness's or darkness's fog (`setupFog`): the environmental fog's
+    /// start and end and the sky's end, in blocks.
+    pub fog: Option<(f32, f32, f32)>,
+    /// `getModifiedDarkness`: how dark the fog's colour turns.
+    pub darkness: f32,
+    /// Fog colour brightened toward full by night vision.
+    pub brighten: f32,
+    /// `doesMobEffectBlockSky`: the sky pass is skipped.
+    pub sky_blocked: bool,
+    /// The lightmap's `NightVisionFactor`, `DarknessScale` and the
+    /// brightness option less darkness.
+    pub night_vision: f32,
+    pub darkness_scale: f32,
+    pub brightness: f32,
 }
 
 impl World {
@@ -102,6 +125,7 @@ impl World {
             rain_level: 0.0,
             thunder_level: 0.0,
             sky_flash: false,
+            vision: Vision { brightness: 0.5, ..Vision::default() },
         })
     }
 
@@ -161,7 +185,7 @@ impl World {
         eye: [f64; 3],
         forward: Vec3,
         aspect: f32,
-    ) -> [[f32; 4]; 16] {
+    ) -> [[f32; 4]; 17] {
         self.day.advance(dt);
         let eye_block = (
             eye[0].floor() as i32,
@@ -203,6 +227,29 @@ impl World {
             rain_level: self.rain_level,
             thunder_level: self.thunder_level,
         });
+        let mut sky = sky;
+        let vision = self.vision;
+        // `FogRenderer.computeFogColor`: the effect's darkness, then night
+        // vision's brightening toward the brightest channel.
+        if vision.darkness > 0.0 {
+            sky.fog *= (1.0 - vision.darkness) * (1.0 - vision.darkness);
+        }
+        if vision.brighten > 0.0 && sky.fog.x != 0.0 && sky.fog.y != 0.0 && sky.fog.z != 0.0 {
+            let scale = 1.0 / sky.fog.max_element();
+            sky.fog = sky.fog.lerp(sky.fog * scale, vision.brighten);
+        }
+        // The sky pass skipped: what shows is the fog's colour.
+        if vision.sky_blocked {
+            sky.sky = sky.fog;
+            sky.sunset[3] = 0.0;
+            sky.rain_brightness = 0.0;
+            sky.star_brightness = 0.0;
+        }
+        if let Some((start, end, sky_end)) = vision.fog {
+            sky.fog_start = start;
+            sky.fog_end = end;
+            sky.sky_fog_end = sky_end;
+        }
         let render_distance = self.view_distance as f32 * 16.0;
         let right = forward.cross(Vec3::Y).normalize_or(Vec3::X);
         let up = right.cross(forward).normalize_or(Vec3::Y);
@@ -239,8 +286,8 @@ impl World {
                 sky.moon_direction.z,
                 sky.rain_brightness,
             ],
-            // The brightness option at its default.
-            [sky.cloud.x, sky.cloud.y, sky.cloud.z, 0.5],
+            // The brightness option at its default, less darkness's.
+            [sky.cloud.x, sky.cloud.y, sky.cloud.z, vision.brightness],
             [aspect, 0.0, sky.star_brightness, sky.star_angle],
             [
                 sky.moon_phase as f32,
@@ -270,6 +317,7 @@ impl World {
                 sky.block_light_tint.z,
                 sky.block_factor,
             ],
+            [vision.night_vision, vision.darkness_scale, 0.0, 0.0],
         ]
     }
 

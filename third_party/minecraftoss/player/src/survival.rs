@@ -207,6 +207,11 @@ impl SurvivalStatus {
         }
     }
 
+    /// `damageCooldownTime`: ticks left of the last hit's cooldown.
+    pub fn damage_cooldown(&self) -> u8 {
+        self.damage_cooldown
+    }
+
     /// `getEffect`.
     pub fn effect(&self, kind: EffectKind) -> Option<&EffectInstance> {
         self.effects.get(kind)

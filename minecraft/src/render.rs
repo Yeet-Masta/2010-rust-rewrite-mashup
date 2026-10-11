@@ -20,7 +20,7 @@ struct ViewUniform {
     rel_from_clip: [f32; 16],
     hand_clip: [f32; 16],
     camera: [f32; 4],
-    environment: [[f32; 4]; 16],
+    environment: [[f32; 4]; 17],
 }
 
 /// One 2D vertex: window pixels, texture coordinates, colour.
@@ -198,7 +198,7 @@ pub struct WorldDraw {
     pub clip_from_rel: Mat4,
     /// The eye in blocks.
     pub eye: [f32; 3],
-    pub environment: [[f32; 4]; 16],
+    pub environment: [[f32; 4]; 17],
     /// Sections to draw, nearest first.
     pub visible: Vec<SectionPos>,
     /// Break particles and item entities, as section vertices.
@@ -595,7 +595,7 @@ impl Renderer {
             rel_from_clip: model.clip_from_model.inverse().to_cols_array(),
             hand_clip: glam::Mat4::IDENTITY.to_cols_array(),
             camera: [0.0; 4],
-            environment: [[0.0; 4]; 16],
+            environment: [[0.0; 4]; 17],
         };
         self.queue
             .write_buffer(&self.model_view_buffer, 0, bytemuck::bytes_of(&uniform));

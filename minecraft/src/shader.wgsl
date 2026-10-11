@@ -7,6 +7,8 @@ struct Environment {
     fog_distances: vec4<f32>,
     ambient: vec4<f32>,
     block_tint: vec4<f32>,
+    // Night vision's factor and darkness's scale for the lightmap.
+    effects: vec4<f32>,
 }
 struct View {
     clip_from_rel: mat4x4<f32>,
@@ -38,11 +40,14 @@ fn lightmap(sky_level: f32, block_level: f32) -> vec3<f32> {
     let environment = view.environment;
     let sky = sky_level / 15.0;
     let block = block_level / 15.0;
-    var color = environment.ambient.rgb;
+    // lightmap.fsh: night vision's grey lifts the ambient light.
+    var color = max(environment.ambient.rgb, vec3<f32>(0.6) * environment.effects.x);
     color += environment.light.rgb * (light_brightness(sky) * environment.light.w);
     let parabolic = (2.0 * block - 1.0) * (2.0 * block - 1.0);
     let block_color = mix(environment.block_tint.rgb, vec3<f32>(1.0), 0.9 * parabolic);
     color += block_color * (light_brightness(block) * environment.block_tint.w);
+    // Darkness's pulse takes light away everywhere.
+    color = color - vec3<f32>(environment.effects.y);
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
     let greatest = max(color.r, max(color.g, color.b));
     let inverted = 1.0 - greatest;

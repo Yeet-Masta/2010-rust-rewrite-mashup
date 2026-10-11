@@ -182,6 +182,12 @@ pub struct Game {
     enchantment_seed: i32,
     /// The action bar's message, and the ticks it has left.
     overlay: Option<(serde_json::Value, u32)>,
+    /// `LocalPlayer.spinningEffectTime` and `spinningEffectSpeed`, for
+    /// nausea's warp.
+    spin: (f32, f32),
+    /// `Hud`'s `lastHealth`, `healthBlinkTime`, `displayHealth` and
+    /// `lastHealthTime`.
+    health_blink: (i32, u64, i32, Instant),
 }
 
 impl Game {
@@ -336,6 +342,8 @@ impl Game {
             ender_items,
             enchantment_seed,
             overlay: None,
+            spin: (0.0, 0.0),
+            health_blink: (0, 0, 0, Instant::now()),
         };
         // A new world's seed is on disk before any of its chunks.
         if new_world {
@@ -600,8 +608,9 @@ impl Game {
         };
         let fov = FOV * fov_modifier * water;
         let bob = self.bob_matrix(partial);
-        let view_matrix = bob * Mat4::look_to_rh(Vec3::ZERO, forward, up);
+        let view_matrix = bob * self.nausea_matrix(partial) * Mat4::look_to_rh(Vec3::ZERO, forward, up);
         let projection = Mat4::perspective_infinite_reverse_rh(fov.to_radians(), aspect, 0.05);
+        self.world.vision = self.vision(partial);
         let camera = CullCamera {
             position: eye,
             forward,
@@ -1276,6 +1285,11 @@ impl Game {
             self.eating = None;
         }
         self.swing.tick(self.swing_duration());
+        // `LocalPlayer.tickSpinningEffect`: nausea turns the warp at seven
+        // degrees a tick, as strong as it has faded in.
+        let nausea = self.player.survival.effect(MobEffect::Nausea).map_or(0.0, |e| e.blend_factor(1.0));
+        self.spin.1 = if nausea > 0.0 { 7.0 } else { 0.0 };
+        self.spin.0 += self.spin.1;
         if let Some((_, left)) = self.overlay.as_mut() {
             *left = left.saturating_sub(1);
         }
@@ -2300,6 +2314,31 @@ impl Game {
         }
     }
 
+    /// `Hud.extractPlayerHealth`'s blink: a hit in its cooldown blinks the
+    /// hearts for a second, healing in it for half; the hearts lost show
+    /// blinking until a second passes.
+    fn hearts(&mut self) -> crate::gui::Hearts {
+        let status = &self.player.survival;
+        let health = status.health.ceil() as i32;
+        let (last, blink_until, display, last_time) = &mut self.health_blink;
+        let tick = self.ticks;
+        let now = Instant::now();
+        if health < *last && status.damage_cooldown() > 0 {
+            *last_time = now;
+            *blink_until = tick + 20;
+        } else if health > *last && status.damage_cooldown() > 0 {
+            *last_time = now;
+            *blink_until = tick + 10;
+        }
+        if now.duration_since(*last_time).as_millis() > 1000 {
+            *display = health;
+            *last_time = now;
+        }
+        *last = health;
+        let blink = *blink_until > tick && (*blink_until - tick) / 3 % 2 == 1;
+        crate::gui::Hearts { tick, blink, display_health: *display }
+    }
+
     /// `Entity.isInRain`: rain falls on the player's block or the one at
     /// the top of its box.
     fn raining_on_player(&self) -> bool {
@@ -2348,6 +2387,67 @@ impl Game {
         self.landed = false;
         self.score = 0;
         self.screen = Screen::Playing;
+    }
+
+    /// `GameRenderer.renderLevel`'s spinning effect: the view squeezed
+    /// across a tilted axis that turns, the stronger the nausea.
+    fn nausea_matrix(&self, partial: f32) -> Mat4 {
+        let intensity = self.player.survival.effect(MobEffect::Nausea).map_or(0.0, |e| e.blend_factor(partial));
+        if intensity <= 0.0 {
+            return Mat4::IDENTITY;
+        }
+        let skew = 5.0 / (intensity * intensity + 5.0) - intensity * 0.04;
+        let skew = skew * skew;
+        let axis = Vec3::new(0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2);
+        let angle = (self.spin.0 + partial * self.spin.1).to_radians();
+        Mat4::from_axis_angle(axis, angle) * Mat4::from_scale(Vec3::new(1.0 / skew, 1.0, 1.0)) * Mat4::from_axis_angle(axis, -angle)
+    }
+
+    /// What the player's effects do to the view (`FogRenderer.setupFog`
+    /// and `computeFogColor`, `LightmapRenderStateExtractor.extract`):
+    /// blindness's fog closing in to five blocks, darkness's to fifteen as
+    /// it fades in, both hiding the sky; night vision's light, and
+    /// darkness's pulse.
+    fn vision(&self, partial: f32) -> crate::world::Vision {
+        let effects = &self.player.survival.effects;
+        let render_distance = self.world.view_distance as f32 * 16.0;
+        let mut vision = crate::world::Vision { brightness: 0.5, ..Default::default() };
+        let blindness = effects.get(MobEffect::Blindness);
+        let darkness = effects.get(MobEffect::Darkness);
+        if let Some(effect) = blindness {
+            let distance = if effect.infinite() {
+                5.0
+            } else {
+                render_distance + ((effect.duration as f32 / 20.0).min(1.0)) * (5.0 - render_distance)
+            };
+            vision.fog = Some((distance * 0.25, distance, distance * 0.8));
+            vision.darkness = if effect.ends_within(19) { effect.duration as f32 / 20.0 } else { 1.0 };
+        } else if let Some(effect) = darkness {
+            let blend = effect.blend_factor(partial);
+            let distance = render_distance + blend * (15.0 - render_distance);
+            vision.fog = Some((distance * 0.75, distance, distance));
+            vision.darkness = blend;
+        }
+        vision.sky_blocked = blindness.is_some() || darkness.is_some();
+        if let Some(effect) = effects.get(MobEffect::NightVision) {
+            // `GameRenderer.nightVisionScale`: flickering out over its
+            // last ten seconds.
+            let scale = if !effect.ends_within(200) {
+                1.0
+            } else {
+                0.7 + minecraftoss_player::mth::sin(f64::from((effect.duration as f32 - partial) * std::f32::consts::PI * 0.2)) * 0.3
+            };
+            vision.night_vision = scale;
+            if darkness.is_none() {
+                vision.brighten = scale;
+            }
+        }
+        // `calculateDarknessScale`, at the default darkness option of 1.
+        let gloom = darkness.map_or(0.0, |e| e.blend_factor(partial));
+        vision.brightness = (0.5 - gloom).max(0.0);
+        let pulse = minecraftoss_player::mth::cos(f64::from((self.ticks as f32 - partial) * std::f32::consts::PI * 0.025));
+        vision.darkness_scale = (pulse * 0.45 * gloom).max(0.0);
+        vision
     }
 
     /// Vanilla's `bobHurt` and `bobView`, in view space.
@@ -2555,6 +2655,7 @@ impl Game {
 
     fn ui(&mut self, gui: &mut Gui, _dt: f64, sections: usize) -> UiList {
         let mut ui = UiList::default();
+        let hearts = self.hearts();
         let packs = &self.world.packs;
         if !self.landed && self.screen != Screen::Dead {
             gui.loading_screen(&mut ui, "Loading terrain...", None);
@@ -2575,14 +2676,17 @@ impl Game {
                     alpha / 255.0,
                 )
             });
+            let screen_lists_effects = gui.effects_origin(self.screen).is_some();
             let hud = Hud {
+                effects: &self.player.survival.effects,
+                hearts,
+                screen_lists_effects,
                 inventory: self.shown_inventory(),
                 selected: self.entities.selected,
                 survival: (!self.creative).then_some(&self.player.survival),
                 armor: self.entities.inventory.armor_value(),
                 eyes_in_water: self.eyes_in_water(),
                 selected_name,
-                shake: self.ticks,
                 debug,
                 overlay,
             };
@@ -2645,6 +2749,13 @@ impl Game {
                 view.tabs = &tabs;
                 gui.creative_screen(&mut ui, packs, &view);
             }
+            _ => {}
+        }
+        if let Some(origin) = gui.effects_origin(self.screen) {
+            gui.effects_in_inventory(&mut ui, &self.player.survival.effects, origin);
+        }
+        match self.screen {
+            Screen::Playing | Screen::Inventory | Screen::Crafting | Screen::Creative => {}
             Screen::Menu => {
                 let partial = (self.clock / TICK_SECONDS) as f32;
                 if let Some(book) = self.enchanting_book(gui, partial) {

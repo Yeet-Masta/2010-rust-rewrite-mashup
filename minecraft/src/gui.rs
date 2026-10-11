@@ -8,11 +8,14 @@ use std::collections::HashMap;
 use image::RgbaImage;
 use minecraft_terrain::pack::{PackStack, ResourceId};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
+use minecraftoss_player::effects::MobEffect;
 use minecraftoss_player::survival::SurvivalStatus;
 
 use crate::font::{Font, LINE, rgb};
 use crate::render::{Renderer, TextureId, UiList};
 
+#[path = "effects_gui.rs"]
+mod effects_gui;
 #[path = "menu_gui.rs"]
 mod menu_gui;
 pub use menu_gui::{
@@ -101,12 +104,25 @@ pub struct Hud<'a> {
     pub eyes_in_water: bool,
     /// The selected item's name and how opaque it still is.
     pub selected_name: Option<(String, f32)>,
-    /// Hearts shake when health is low.
-    pub shake: u64,
     pub debug: Option<Vec<String>>,
     /// The action bar's message (`setOverlayMessage`) and how opaque it
     /// still is.
     pub overlay: Option<(String, f32)>,
+    /// The player's effects, for their icons and the hearts.
+    pub effects: &'a minecraftoss_player::effects::ActiveEffects,
+    /// The hearts' blink and the health they show while it lasts.
+    pub hearts: Hearts,
+    /// The open screen lists the effects itself (`showsActiveEffects`).
+    pub screen_lists_effects: bool,
+}
+
+/// `Hud.extractPlayerHealth`'s state: the GUI's tick count, whether the
+/// hearts blink this frame, and the health they had before the blink.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hearts {
+    pub tick: u64,
+    pub blink: bool,
+    pub display_health: i32,
 }
 
 /// Item icons drawn at the GUI's pixel size, 16 pixels to a GUI scale
@@ -178,6 +194,14 @@ const SPRITES: &[(&str, &str, f32)] = &[
     ("heart_container", "gui/sprites/hud/heart/container", 0.0),
     ("heart_full", "gui/sprites/hud/heart/full", 0.0),
     ("heart_half", "gui/sprites/hud/heart/half", 0.0),
+    // The effects' icon backgrounds (`Hud`, `EffectsInInventory`).
+    ("effect_background", "gui/sprites/hud/effect_background", 0.0),
+    ("effect_background_ambient", "gui/sprites/hud/effect_background_ambient", 0.0),
+    ("inventory_effect_background", "gui/sprites/container/inventory/effect_background", 4.0),
+    ("inventory_effect_background_ambient", "gui/sprites/container/inventory/effect_background_ambient", 4.0),
+    ("food_empty_hunger", "gui/sprites/hud/food_empty_hunger", 0.0),
+    ("food_half_hunger", "gui/sprites/hud/food_half_hunger", 0.0),
+    ("food_full_hunger", "gui/sprites/hud/food_full_hunger", 0.0),
     ("food_empty", "gui/sprites/hud/food_empty", 0.0),
     ("food_half", "gui/sprites/hud/food_half", 0.0),
     ("food_full", "gui/sprites/hud/food_full", 0.0),
@@ -604,6 +628,21 @@ impl Gui {
                 SLOT_ICONS
                     .iter()
                     .map(|id| (id.to_string(), format!("gui/sprites/{id}"), 0.0)),
+            )
+            // Each effect's icon (`Hud.getMobEffectSprite`).
+            .chain(
+                minecraftoss_player::effects::MobEffect::all()
+                    .map(|e| (format!("mob_effect/{}", e.name()), format!("mob_effect/{}", e.name()), 0.0)),
+            )
+            // The hearts' kinds and their blinks (`Hud.HeartType`).
+            .chain(
+                ["container_blinking", "full_blinking", "half_blinking"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .chain(["poisoned", "withered", "absorbing", "frozen"].into_iter().flat_map(|kind| {
+                        ["full", "full_blinking", "half", "half_blinking"].map(|part| format!("{kind}_{part}"))
+                    }))
+                    .map(|name| (format!("heart_{name}"), format!("gui/sprites/hud/heart/{name}"), 0.0)),
             );
         for (name, path, border) in named {
             let Ok(id) = ResourceId::parse(&format!("minecraft:{path}")) else {
@@ -1109,27 +1148,61 @@ impl Gui {
                 }
                 self.text(ui, &text, x, y, rgb(0x80FF20), false);
             }
-            // Health, with a shake when low.
+            // `extractPlayerHealth` and `extractHearts`: the containers for
+            // the maximum, then absorption's beyond them, the hearts of the
+            // health before a blink, then the health; jittered when low,
+            // a wave running along them under regeneration, rows closing
+            // up as they grow.
+            let mut random = minecraftoss_player::rng::LegacyRandom::new(hud.hearts.tick.wrapping_mul(312871));
             let left = center - 91.0;
             let top = h - 39.0;
-            let hearts = (status.max_health / 2.0).ceil() as i32;
             let health = status.health.ceil() as i32;
-            for i in (0..hearts).rev() {
+            let old_health = hud.hearts.display_health;
+            let max_health = status.max_health.max(old_health.max(health) as f32);
+            let absorption = status.absorption.ceil() as i32;
+            let rows = ((max_health + absorption as f32) / 2.0 / 10.0).ceil() as i32;
+            let row_height = (10 - (rows - 2)).max(3) as f32;
+            let wave = hud.effects.has(MobEffect::Regeneration).then(|| (hud.hearts.tick % (max_health + 5.0).ceil() as u64) as i32);
+            let kind = if hud.effects.has(MobEffect::Poison) {
+                "poisoned_"
+            } else if hud.effects.has(MobEffect::Wither) {
+                "withered_"
+            } else {
+                ""
+            };
+            let containers = (max_health / 2.0).ceil() as i32;
+            let absorbing = (absorption as f32 / 2.0).ceil() as i32;
+            let heart = |ui: &mut UiList, kind: &str, half: bool, blink: bool, x: f32, y: f32| {
+                let name = format!("heart_{kind}{}{}", if half { "half" } else { "full" }, if blink { "_blinking" } else { "" });
+                self.sprite(ui, &name, x, y, 9.0, 9.0);
+            };
+            for i in (0..containers + absorbing).rev() {
                 let x = left + (i % 10) as f32 * 8.0;
-                let mut y = top - (i / 10) as f32 * 10.0;
-                if health <= 4 {
-                    y +=
-                        ((hud.shake.wrapping_mul(31).wrapping_add(i as u64 * 17)) % 3) as f32 - 1.0;
+                let mut y = top - (i / 10) as f32 * row_height;
+                if health + absorption <= 4 {
+                    y += random.next_int(2) as f32;
                 }
-                self.sprite(ui, "heart_container", x, y, 9.0, 9.0);
-                if i * 2 + 1 < health {
-                    self.sprite(ui, "heart_full", x, y, 9.0, 9.0);
-                } else if i * 2 + 1 == health {
-                    self.sprite(ui, "heart_half", x, y, 9.0, 9.0);
+                if i < containers && Some(i) == wave {
+                    y -= 2.0;
+                }
+                let container = if hud.hearts.blink { "heart_container_blinking" } else { "heart_container" };
+                self.sprite(ui, container, x, y, 9.0, 9.0);
+                let halves = i * 2;
+                if i >= containers {
+                    let absorbed = halves - containers * 2;
+                    if absorbed < absorption {
+                        let shown = if kind == "withered_" { kind } else { "absorbing_" };
+                        heart(ui, shown, absorbed + 1 == absorption, false, x, y);
+                    }
+                }
+                if hud.hearts.blink && halves < old_health {
+                    heart(ui, kind, halves + 1 == old_health, true, x, y);
+                }
+                if halves < health {
+                    heart(ui, kind, halves + 1 == health, false, x, y);
                 }
             }
-            let rows = ((hearts - 1) / 10 + 1) as f32;
-            let above = top - (rows - 1.0) * 10.0 - 10.0;
+            let above = top - (rows - 1) as f32 * row_height - 10.0;
             if hud.armor > 0 {
                 let armor = i32::from(hud.armor);
                 for i in 0..10 {
@@ -1144,16 +1217,22 @@ impl Gui {
                     self.sprite(ui, name, x, above, 9.0, 9.0);
                 }
             }
-            // Hunger.
+            // Hunger (`extractFood`): the hunger effect's sickly shanks,
+            // trembling at no saturation.
             let right = center + 91.0;
             let food = i32::from(status.food.level);
+            let sick = if hud.effects.has(MobEffect::Hunger) { "_hunger" } else { "" };
             for i in 0..10 {
                 let x = right - i as f32 * 8.0 - 9.0;
-                self.sprite(ui, "food_empty", x, top, 9.0, 9.0);
+                let mut y = top;
+                if status.food.saturation <= 0.0 && hud.hearts.tick.is_multiple_of(food as u64 * 3 + 1) {
+                    y += random.next_int(3) as f32 - 1.0;
+                }
+                self.sprite(ui, &format!("food_empty{sick}"), x, y, 9.0, 9.0);
                 if i * 2 + 1 < food {
-                    self.sprite(ui, "food_full", x, top, 9.0, 9.0);
+                    self.sprite(ui, &format!("food_full{sick}"), x, y, 9.0, 9.0);
                 } else if i * 2 + 1 == food {
-                    self.sprite(ui, "food_half", x, top, 9.0, 9.0);
+                    self.sprite(ui, &format!("food_half{sick}"), x, y, 9.0, 9.0);
                 }
             }
             // Air, while under water or getting it back.
@@ -1173,6 +1252,9 @@ impl Gui {
                     );
                 }
             }
+        }
+        if !hud.screen_lists_effects {
+            self.effect_icons(ui, hud.effects);
         }
         if let Some((name, alpha)) = hud.selected_name.as_ref()
             && *alpha > 0.0
