@@ -1179,6 +1179,9 @@ pub struct Player {
     /// The player's fire went out this tick by water or rain, for the
     /// extinguishing hiss (`playEntityOnFireExtinguishedSound`).
     pub extinguished: bool,
+    /// Lava hurt the player this tick (`lavaHurt`), for
+    /// `entity.generic.burn`.
+    pub lava_burn: bool,
     /// The level random's draw for a fire block's touch (1 or 2), as the
     /// caller last set it.
     pub fire_spread: i32,
@@ -1238,6 +1241,7 @@ impl Player {
             armor: survival::Armor::default(),
             in_rain: false,
             extinguished: false,
+            lava_burn: false,
             fire_spread: 1,
             equipped: enchantment::Equipped::default(),
             last_block: None,
@@ -1895,6 +1899,22 @@ impl Player {
     /// `lava`), water then rain put it out, and a player not burning (nor
     /// lit this tick) is immune again for a second.
     fn apply_fire_from_blocks(&mut self, world: &impl World) {
+        self.apply_fire_from_blocks_as(world, false);
+    }
+
+    /// A creative player's fire (`abilities.invulnerable`): the blocks
+    /// still light it, but `setRemainingFireTicks` keeps it to a tick, and
+    /// nothing hurts.
+    pub fn tick_creative_fire(&mut self, world: &impl World) {
+        let feet = (self.pos.x.floor() as i32, self.pos.y.floor() as i32, self.pos.z.floor() as i32);
+        let in_lava = world.block(feet).is_some_and(|block| block.id == "minecraft:lava");
+        self.survival.tick_fire(in_lava, true);
+        self.apply_fire_from_blocks_as(world, true);
+        self.survival.fire_ticks = self.survival.fire_ticks.min(1);
+    }
+
+    fn apply_fire_from_blocks_as(&mut self, world: &impl World, invulnerable: bool) {
+        self.lava_burn = false;
         let was_on_fire = self.survival.on_fire();
         let previous = self.survival.fire_ticks;
         let bbox = self.bbox();
@@ -1918,11 +1938,12 @@ impl Player {
         if let Some(damage) = fire {
             self.survival.fire_ignite(self.fire_spread);
             let armor = survival::Armor { protection: self.survival.protection.against("minecraft:in_fire"), ..self.armor };
-            self.survival.hurt_by_fire(damage, armor, 0.1, false);
+            self.survival.hurt_by_fire(damage, armor, 0.1, invulnerable);
         }
         let lava_armor = survival::Armor { protection: self.survival.protection.against("minecraft:lava"), ..self.armor };
-        if lava && self.survival.touch_lava_with(lava_armor, false) {
+        if lava && self.survival.touch_lava_with(lava_armor, invulnerable) {
             self.survival.burned = true;
+            self.lava_burn = true;
         }
         if water || self.in_rain {
             self.survival.clear_fire();

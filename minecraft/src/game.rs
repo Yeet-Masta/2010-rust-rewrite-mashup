@@ -2598,6 +2598,7 @@ impl Game {
             // Effects run out for creative players too, harmlessly.
             self.player.survival.tick_effects_as(true);
             self.player.tick(&self.world.scene, movement);
+            self.player.tick_creative_fire(&self.world.scene);
         } else {
             self.player.tick_survival_with_rules(
                 &self.world.scene,
@@ -2620,6 +2621,11 @@ impl Game {
         if self.player.extinguished {
             let pitch = 1.6 + (self.sounds.random() - self.sounds.random()) * 0.4;
             self.play("minecraft:entity.generic.extinguish_fire", Some(self.player.pos), 0.7, pitch);
+        }
+        // `Entity.lavaHurt`'s sizzle when lava hurts.
+        if self.player.lava_burn {
+            let pitch = 2.0 + self.sounds.random() * 0.4;
+            self.play("minecraft:entity.generic.burn", Some(self.player.pos), 0.4, pitch);
         }
         // Fall and other damage the survival tick dealt.
         if self.player.survival.health < health {
