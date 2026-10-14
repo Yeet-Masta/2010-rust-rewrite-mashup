@@ -501,6 +501,7 @@ impl ServerSim {
             *mobs.level_random_mut() = minecraftoss_player::rng::LegacyRandom::from_raw_state(state);
         }
         mobs.tick_with_players_where(&mut world, players, &ticks);
+        mobs.tick_wind_charges(&world, players);
         // Births and summons are listed for replays that tag them; the game
         // needs no list.
         let _ = (mobs.take_born_villagers(), mobs.take_born_wolves(), mobs.take_summoned_golems());
@@ -531,6 +532,15 @@ impl ServerSim {
         }
         for (position, amount) in spawned.experience {
             self.level.award_experience(position.to_array(), amount);
+        }
+        // The wind's blasts in the level: the blocks they work, the items
+        // they push, the clients' gusts (`TRIGGER`, no harm).
+        for blast in spawned.wind {
+            use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
+            let mut explosion = Explosion::new(blast.center.to_array(), blast.radius, BlockInteraction::TriggerBlock, None);
+            explosion.knockback = blast.knockback;
+            explosion.wind = Some(blast.sound);
+            self.level.explode(explosion);
         }
         self.explode_creepers();
     }
@@ -600,7 +610,7 @@ impl ServerSim {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for blast in self.mobs.take_creeper_explosions() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
-            self.level.explode(Explosion { center: blast.position.to_array(), radius: blast.radius, fire: false, interaction, source: None });
+            self.level.explode(Explosion::new(blast.position.to_array(), blast.radius, interaction, None));
         }
     }
 
@@ -986,6 +996,12 @@ pub enum Command {
     Shoot(Box<minecraftoss_entities::world::PlayerShot>),
     /// A trident the player threw: the shot's first projectile.
     ThrowTrident(Box<minecraftoss_entities::world::PlayerShot>),
+    /// A wind charge the player threw: its feet, its eyes' height, the
+    /// look (pitch, yaw) and its motion.
+    ThrowWindCharge { feet: [f64; 3], eye_y: f64, rotation: (f32, f32), motion: [f64; 3] },
+    /// A wind blast the player's side set off (a mace's wind burst, a wind
+    /// charged death), the player already pushed.
+    WindBlast(minecraftoss_entities::world::WindBlast),
     /// A snowball, egg, ender pearl or bottle o' enchanting the player
     /// threw: the eyes, the look (pitch, yaw) and the player's motion.
     ThrowItem { item: minecraftoss_entities::potion::ThrownItem, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3] },
@@ -1366,6 +1382,16 @@ impl ServerHandle {
         self.send(Command::ThrowTrident(Box::new(shot)));
     }
 
+    /// The player throws a wind charge.
+    pub fn throw_wind_charge(&mut self, feet: [f64; 3], eye_y: f64, rotation: (f32, f32), motion: [f64; 3]) {
+        self.send(Command::ThrowWindCharge { feet, eye_y, rotation, motion });
+    }
+
+    /// A wind blast the player set off, the player already pushed.
+    pub fn wind_blast(&mut self, blast: minecraftoss_entities::world::WindBlast) {
+        self.send(Command::WindBlast(blast));
+    }
+
     /// The player throws a snowball, egg, ender pearl or bottle o'
     /// enchanting.
     pub fn throw_item(&mut self, item: minecraftoss_entities::potion::ThrownItem, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3]) {
@@ -1505,6 +1531,10 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::Shoot(shot) => sim.mobs.shoot_player(&shot),
                 Command::ThrowTrident(shot) => sim.mobs.throw_trident(&shot),
+                Command::ThrowWindCharge { feet, eye_y, rotation, motion } => {
+                    sim.mobs.throw_wind_charge(0, glam::DVec3::from_array(feet), eye_y, rotation.0, rotation.1, glam::DVec3::from_array(motion));
+                }
+                Command::WindBlast(blast) => sim.mobs.queue_wind_blast(blast, false, Some(0)),
                 Command::ThrowItem { item, eye, rotation, motion } => {
                     sim.mobs.throw_item(0, item, glam::DVec3::from_array(eye), rotation.0, rotation.1, glam::DVec3::from_array(motion));
                 }

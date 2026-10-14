@@ -1149,6 +1149,11 @@ pub struct Player {
     pub auto_spin: bool,
     /// `horizontalCollision`: the last move was stopped across.
     pub horizontal_collision: bool,
+    /// `currentImpulseImpactPos` and `currentImpulseContextResetGraceTime`:
+    /// where a wind charge's push struck the player, its fall counted only
+    /// from below there, and the ticks before landing may forget it.
+    pub impulse_impact: Option<DVec3>,
+    pub impulse_grace: i32,
     pub in_water: bool,
     /// Entity.checkFallDamage accumulates collision-clipped downward travel.
     pub fall_distance: f32,
@@ -1210,6 +1215,8 @@ impl Player {
             previous_crouch_input: false,
             auto_spin: false,
             horizontal_collision: false,
+            impulse_impact: None,
+            impulse_grace: 0,
             sprinting: false,
             flying: false,
             flying_speed: 0.05,
@@ -1387,6 +1394,10 @@ impl Player {
         false
     }
     pub fn tick(&mut self, world: &impl World, input: Input) {
+        // `LivingEntity.tick`: the impulse's grace runs down.
+        if self.impulse_grace > 0 {
+            self.impulse_grace -= 1;
+        }
         self.tick += 1;
         // `LivingEntity.baseTick`: `EnchantmentHelper.tickEffects` (soul
         // speed's souls and sounds).
@@ -1823,10 +1834,23 @@ impl Player {
                 self.fall_distance -= motion.y as f32;
             }
             if self.on_ground {
+                // `LivingEntity.causeFallDamage`: after a wind charge's push
+                // the fall counts from where it struck, and landing at or
+                // above there (or after its grace) forgets it.
+                let mut fall = f64::from(self.fall_distance);
+                if let Some(impact) = self.impulse_impact.filter(|_| self.fall_distance > 0.0) {
+                    fall = fall.min(impact.y - self.pos.y);
+                    if fall <= 0.0 || self.impulse_grace == 0 {
+                        self.impulse_impact = None;
+                        self.impulse_grace = 0;
+                    }
+                }
                 // The scene's solid terrain uses the ordinary fall reduction
                 // and the player's SAFE_FALL_DISTANCE attribute.
-                let damage = (self.fall_distance as f64 + 1.0e-6 - self.safe_fall_distance()).floor() as f32;
+                let damage = (fall + 1.0e-6 - self.safe_fall_distance()).floor() as f32;
                 if damage > 0.0 {
+                    self.impulse_impact = None;
+                    self.impulse_grace = 0;
                     self.survival.damage_with_difficulty(
                         damage,
                         difficulty,

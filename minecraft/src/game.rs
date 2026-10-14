@@ -814,6 +814,13 @@ impl Game {
         }
         for blast in events.explosions {
             let center = DVec3::from_array(blast.center);
+            // A wind blast's gusts (`GUST_EMITTER_SMALL` or `_LARGE`), with
+            // no block particles.
+            if blast.wind.is_some() {
+                let kind = if blast.small { crate::particles::Type::GustEmitterSmall } else { crate::particles::Type::GustEmitterLarge };
+                self.particles.spawn(&self.world, &kind.into(), center, DVec3::new(1.0, 0.0, 0.0));
+                continue;
+            }
             self.particles.explosion(
                 &self.world,
                 center,
@@ -1898,6 +1905,10 @@ impl Game {
             self.throw_item(item);
             return;
         }
+        if stack.id == "minecraft:wind_charge" {
+            self.throw_wind_charge();
+            return;
+        }
         if self.start_using(self.entities.selected) {
             return;
         }
@@ -1931,6 +1942,29 @@ impl Game {
         if item == ThrownItem::EnderPearl {
             self.add_cooldown("minecraft:ender_pearl", 20);
         }
+        if !self.creative {
+            let selected = self.entities.selected;
+            if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                held.count -= 1;
+                if held.count == 0 {
+                    self.entities.inventory.slots[selected] = None;
+                }
+            }
+        }
+        self.start_swing();
+    }
+
+    /// `WindChargeItem.use`: the charge in flight (the server's) with
+    /// `entity.wind_charge.throw`, one spent, half a second of cooldown
+    /// (`use_cooldown`), and the arm swings.
+    fn throw_wind_charge(&mut self) {
+        let motion = self.player.pos - self.previous;
+        let motion = if self.player.on_ground { DVec3::new(motion.x, 0.0, motion.z) } else { motion };
+        let rotation = (self.player.pitch as f32, self.player.yaw as f32);
+        self.entities.throw_wind_charge(self.player.pos.to_array(), self.player.eye().y, rotation, motion.to_array());
+        let pitch = 0.4 / (self.sounds.random() * 0.4 + 0.8);
+        self.play("minecraft:entity.wind_charge.throw", Some(self.player.pos), 0.5, pitch);
+        self.add_cooldown("minecraft:wind_charge", 10);
         if !self.creative {
             let selected = self.entities.selected;
             if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
@@ -2297,9 +2331,9 @@ impl Game {
             EntityEffect::Sound { event, position, volume, pitch } => self.play(event, Some(*position), *volume, *pitch),
             // Wind burst's blast where the player stands (`ServerExplosion`
             // with no damage): straight up from its centre by the knockback
-            // multiplier, less `EXPLOSION_KNOCKBACK_RESISTANCE`, and the
-            // impulse spares the fall (`currentImpulseImpactPos`). The gust
-            // particles are not drawn, nor are mobs nearby pushed.
+            // multiplier, less `EXPLOSION_KNOCKBACK_RESISTANCE`; the server
+            // pushes the mobs about and works the blocks, and the clients
+            // see its gusts and hear it.
             EntityEffect::Explode { position, radius, knockback_multiplier, definition, .. } => {
                 let distance = self.player.pos.distance(*position) / f64::from(radius * 2.0);
                 if *radius >= 1.0e-5 && distance <= 1.0 && !(self.creative && self.player.flying) {
@@ -2309,10 +2343,13 @@ impl Game {
                     self.player.velocity += direction * power;
                     self.player.fall_distance = 0.0;
                 }
-                if let Some(sound) = definition["sound"].as_str().or_else(|| definition["sound"]["sound_id"].as_str()) {
-                    let pitch = (1.0 + (self.sounds.random() - self.sounds.random()) * 0.2) * 0.7;
-                    self.play(sound, Some(*position), 4.0, pitch);
-                }
+                let sound = definition["sound"].as_str().or_else(|| definition["sound"]["sound_id"].as_str()).unwrap_or("");
+                self.entities.wind_blast(minecraftoss_entities::world::WindBlast {
+                    center: *position,
+                    radius: *radius,
+                    knockback: knockback_multiplier.unwrap_or(1.0),
+                    sound: minecraftoss_entities::world::wind_sound(sound),
+                });
             }
             _ => {}
         }
@@ -2645,6 +2682,20 @@ impl Game {
     }
 
     fn hurt_by_mob(&mut self, hit: minecraftoss_entities::world::PlayerHit) {
+        // `ServerExplosion.hitPlayers` for the wind: a push (less
+        // `EXPLOSION_KNOCKBACK_RESISTANCE`) unless flying in creative, and a
+        // wind charge's spares the fall (`onExplosionHit`).
+        if let PlayerHitKind::Wind { knockback, impulse } = hit.kind {
+            if self.alive() && !(self.creative && self.player.flying) {
+                let resistance = self.player.equipped.attribute("minecraft:explosion_knockback_resistance", 0.0, (0.0, 1.0));
+                self.player.velocity += knockback * (1.0 - resistance);
+                if impulse {
+                    self.player.impulse_impact = Some(self.player.pos);
+                    self.player.impulse_grace = self.player.impulse_grace.max(40);
+                }
+            }
+            return;
+        }
         if self.creative || !self.alive() {
             return;
         }
@@ -2681,6 +2732,7 @@ impl Game {
                 self.player.survival.thunder_ignite();
                 (HitFrom::Explosion, "lightning_bolt")
             }
+            PlayerHitKind::Wind { .. } => return,
         };
         let inventory = &self.entities.inventory;
         let (toughness, resistance) = inventory.armor_toughness();
@@ -2800,11 +2852,21 @@ impl Game {
     /// a block up (`OozingMobEffect.onMobRemoved`), weaving two or three
     /// cobwebs on sturdy ground about the player
     /// (`WeavingMobEffect.spawnCobwebsRandomlyAround`), and the effects end.
-    /// (Wind charged's burst and infested's silverfish have no entities
-    /// here.)
+    /// `WindChargedMobEffect.onMobRemoved` bursts the wind about the
+    /// middle of the body (3 to 5 across, `entity.breeze.wind_burst`).
+    /// (Infested's silverfish have no entity here.)
     fn death_effects(&mut self) {
         let effects = std::mem::take(&mut self.player.survival.effects);
         let p = self.player.pos;
+        if effects.has(MobEffect::WindCharged) {
+            let radius = 3.0 + self.sounds.random() * 2.0;
+            self.entities.wind_blast(minecraftoss_entities::world::WindBlast {
+                center: DVec3::new(p.x, p.y + 0.9, p.z),
+                radius,
+                knockback: 1.0,
+                sound: "minecraft:entity.breeze.wind_burst",
+            });
+        }
         if effects.has(MobEffect::Oozing) {
             for _ in 0..2 {
                 self.entities.summon_slime([p.x, p.y + 0.5, p.z], 2);

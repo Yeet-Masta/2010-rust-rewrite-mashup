@@ -7,7 +7,7 @@
 use crate::lighting::SkyLight;
 use crate::mesh::{Atlas, ChunkMesh};
 use crate::pack::ResourceId;
-use crate::special_icon::{arrow_model, emit_part, trident_model};
+use crate::special_icon::{arrow_model, emit_part, trident_model, wind_charge_model};
 use glam::{DVec3, Mat4, Vec3};
 use minecraftoss_entities::projectile::ArrowKind;
 use minecraftoss_entities::world::ArrowEntity;
@@ -25,13 +25,35 @@ fn texture(entity: &ArrowEntity) -> &'static str {
     }
 }
 
-/// The sheets arrows and tridents are drawn with.
-pub const SHEETS: [&str; 4] = [
+/// The sheets arrows, tridents and wind charges are drawn with.
+pub const SHEETS: [&str; 5] = [
     "minecraft:entity/projectiles/arrow",
     "minecraft:entity/projectiles/tipped_arrow",
     "minecraft:entity/projectiles/spectral_arrow",
     "minecraft:entity/trident/trident",
+    "minecraft:entity/projectiles/wind_charge",
 ];
+
+/// `WindChargeRenderer`: each charge's spinning model at its drawn
+/// position, full bright (the breeze wind's look, without its scroll).
+pub fn append_wind_charges<'a>(mesh: &mut ChunkMesh, charges: impl IntoIterator<Item = (&'a minecraftoss_entities::world::WindChargeEntity, DVec3)>, atlas: &Atlas, partial: f32) {
+    let Ok(sheet) = ResourceId::parse("minecraft:entity/projectiles/wind_charge") else { return };
+    if !atlas.contains(&sheet) {
+        return;
+    }
+    let region = atlas.entity_region(&sheet);
+    let shade = |_: Vec3| 1.0;
+    for (charge, at) in charges {
+        // `shouldRenderAtSqrDistance`: not in its first ticks.
+        if charge.tick_count < 2 {
+            continue;
+        }
+        let pose = Mat4::from_translation(at.as_vec3());
+        for part in wind_charge_model(charge.tick_count as f32 + partial) {
+            emit_part(mesh, &part, pose, region, [64.0, 32.0], [1.0; 3], &shade, [15.0, 15.0]);
+        }
+    }
+}
 
 /// Appends each arrow at its drawn position, `partial` through the tick.
 pub fn append_arrows<'a>(mesh: &mut ChunkMesh, arrows: impl IntoIterator<Item = (&'a ArrowEntity, DVec3)>, atlas: &Atlas, light: &SkyLight, partial: f32) {

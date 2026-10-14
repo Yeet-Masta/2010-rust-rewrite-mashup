@@ -309,6 +309,16 @@ pub(crate) fn trident_model() -> Vec<Part> {
     ])]
 }
 
+/// `WindChargeModel.createBodyLayer` on its 64 by 32 sheet, posed by
+/// `setupAnim` at `age` ticks: the wind's rings (turned an eighth) spin
+/// one way and the core the other, 16 degrees a tick.
+pub(crate) fn wind_charge_model(age: f32) -> Vec<Part> {
+    let spin = (age * 16.0).to_radians();
+    let wind = part([0.0; 3], vec![cube(15.0, 20.0, [-4.0, -1.0, -4.0], [8.0, 2.0, 8.0]), cube(0.0, 9.0, [-3.0, -2.0, -3.0], [6.0, 4.0, 6.0])]).rotated([0.0, -0.7854 + spin, 0.0]);
+    let core = part([0.0; 3], vec![cube(0.0, 0.0, [-2.0, -2.0, -2.0], [4.0, 4.0, 4.0])]).rotated([0.0, -spin, 0.0]);
+    vec![part([0.0; 3], Vec::new()).with(vec![wind, core])]
+}
+
 /// `ArrowModel.createBodyLayer`, its mesh scaled by 0.9: the fletching's
 /// square (its own pose scaled 0.8) and the shaft's two crossed planes,
 /// whose UVs count in a sheet 0.8 as tall (`addBox`'s `vScale`). Each

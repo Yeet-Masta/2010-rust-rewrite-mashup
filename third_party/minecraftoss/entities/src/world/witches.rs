@@ -398,7 +398,7 @@ impl EntityWorld {
 
     /// Every living, pickable thing a potion may strike (`canHitEntity`),
     /// the thrower marked.
-    fn potion_targets(&self, owner: Option<u64>, players: &[PlayerCandidate]) -> Vec<PotionTarget> {
+    pub(super) fn potion_targets(&self, owner: Option<u64>, players: &[PlayerCandidate]) -> Vec<PotionTarget> {
         let mut targets: Vec<PotionTarget> = self
             .order
             .iter()

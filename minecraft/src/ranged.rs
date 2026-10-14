@@ -337,7 +337,7 @@ impl Game {
         }
         let (source, disables) = match hit.kind {
             PlayerHitKind::Melee { attacker, weapon, .. } => (attacker, weapon.disables_blocking),
-            PlayerHitKind::Arrow { pierces: true, .. } | PlayerHitKind::Lightning => return false,
+            PlayerHitKind::Arrow { pierces: true, .. } | PlayerHitKind::Lightning | PlayerHitKind::Wind { .. } => return false,
             PlayerHitKind::Arrow { position, .. } => (position, 0.0),
             PlayerHitKind::Explosion { center, .. } => (center, 0.0),
         };

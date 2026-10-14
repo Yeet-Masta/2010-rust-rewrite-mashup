@@ -37,6 +37,19 @@ pub struct Explosion {
     pub interaction: BlockInteraction,
     /// The direct source entity's ID (`source`), excluded from the blast.
     pub source: Option<i32>,
+    /// `ExplosionDamageCalculator.getKnockbackMultiplier`: 1, a wind
+    /// charge's 1.22.
+    pub knockback: f32,
+    /// A wind burst (`AbstractWindCharge`'s calculator: no harm to
+    /// entities), with its sound: gusts rather than smoke.
+    pub wind: Option<&'static str>,
+}
+
+impl Explosion {
+    /// An ordinary blast (`Level.explode`'s defaults).
+    pub fn new(center: [f64; 3], radius: f32, interaction: BlockInteraction, source: Option<i32>) -> Self {
+        Self { center, radius, fire: false, interaction, source, knockback: 1.0, wind: None }
+    }
 }
 
 /// A blast as the clients near it hear of it (`ClientboundExplodePacket`).
@@ -53,6 +66,9 @@ pub struct ExplosionView {
     /// `ServerExplosion.isSmall` (under 2 in radius, or keeping the
     /// blocks): `EXPLOSION` rather than `EXPLOSION_EMITTER`.
     pub small: bool,
+    /// A wind burst's sound: its particles are gusts
+    /// (`GUST_EMITTER_SMALL`), with no block particles.
+    pub wind: Option<&'static str>,
 }
 
 /// `Mth.lerp`.
@@ -123,7 +139,7 @@ impl Level<'_> {
                 // `getY(0.0625)`: a sixteenth of the way up the box.
                 let y = e.pos[1] + f64::from(e.height) * 0.0625;
                 let interaction = if self.tnt_explosion_drop_decay { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Destroy };
-                self.explode(Explosion { center: [e.pos[0], y, e.pos[2]], radius: power, fire: false, interaction, source: Some(e.id) });
+                self.explode(Explosion::new([e.pos[0], y, e.pos[2]], power, interaction, Some(e.id)));
             }
         } else {
             self.entity_update_fluid_interaction(e);
@@ -142,7 +158,7 @@ impl Level<'_> {
         }
         // `ServerLevel.explode` tells the players within 64 blocks.
         let small = ex.radius < 2.0 || ex.interaction == BlockInteraction::Keep;
-        self.explosions.push(ExplosionView { center: ex.center, radius: ex.radius, block_count: to_blow.len(), small });
+        self.explosions.push(ExplosionView { center: ex.center, radius: ex.radius, block_count: to_blow.len(), small, wind: ex.wind });
         to_blow.len()
     }
 
@@ -269,11 +285,11 @@ impl Level<'_> {
             // `getEntityDamageAmount`, then `hurtServer`.
             let pow = (1.0 - dist) * f64::from(exposure);
             let damage = ((pow * pow + pow) / 2.0 * 7.0 * r + 1.0) as f32;
-            let knockback = (1.0 - dist) * f64::from(exposure) * f64::from(1.0f32) * (1.0 - 0.0);
+            let knockback = (1.0 - dist) * f64::from(exposure) * f64::from(ex.knockback) * (1.0 - 0.0);
             let explosion_proof = self.entities[i].item_data().is_some_and(|d| self.explosion_proof_item(&d.stack));
             let e = &mut self.entities[i];
             if let EntityKind::Item(data) = &mut e.kind {
-                if !explosion_proof {
+                if !explosion_proof && ex.wind.is_none() {
                     data.health = (data.health as f32 - damage) as i32;
                     if data.health <= 0 {
                         e.removed = true;
@@ -313,7 +329,12 @@ impl Level<'_> {
 
     /// `BlockBehaviour.onExplosionHit` (and `TntBlock`'s `wasExploded`).
     fn on_explosion_hit(&mut self, state: BlockStateId, pos: BlockPos, ex: &Explosion, stacks: &mut Vec<(BlockPos, Stack)>) {
-        if self.registries().blocks.is_air(state) || ex.interaction == BlockInteraction::TriggerBlock {
+        if self.registries().blocks.is_air(state) {
+            return;
+        }
+        // `canTriggerBlocks`: the blast only works what it hits.
+        if ex.interaction == BlockInteraction::TriggerBlock {
+            self.trigger_by_explosion(pos);
             return;
         }
         for class in ["BeehiveBlock", "CreakingHeartBlock", "BellBlock", "AbstractCandleBlock"] {

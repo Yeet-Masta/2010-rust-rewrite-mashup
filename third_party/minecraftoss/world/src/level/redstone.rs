@@ -81,6 +81,30 @@ pub struct Kinds {
     pub redstone_block: BlockId,
 }
 
+
+/// A set's sound for a part (`door`, `trapdoor`, `button`) in either
+/// state: `minecraft:block.<set>_<part>.<on or off>`.
+macro_rules! set_sound {
+    ($set:expr, $part:literal, $on:expr, $yes:literal, $no:literal) => {
+        match ($set, $on) {
+            (BlockSet::Cherry, true) => concat!("minecraft:block.cherry_wood_", $part, ".", $yes),
+            (BlockSet::Cherry, false) => concat!("minecraft:block.cherry_wood_", $part, ".", $no),
+            (BlockSet::Bamboo, true) => concat!("minecraft:block.bamboo_wood_", $part, ".", $yes),
+            (BlockSet::Bamboo, false) => concat!("minecraft:block.bamboo_wood_", $part, ".", $no),
+            (BlockSet::Nether, true) => concat!("minecraft:block.nether_wood_", $part, ".", $yes),
+            (BlockSet::Nether, false) => concat!("minecraft:block.nether_wood_", $part, ".", $no),
+            (BlockSet::Iron, true) => concat!("minecraft:block.iron_", $part, ".", $yes),
+            (BlockSet::Iron, false) => concat!("minecraft:block.iron_", $part, ".", $no),
+            (BlockSet::Copper, true) => concat!("minecraft:block.copper_", $part, ".", $yes),
+            (BlockSet::Copper, false) => concat!("minecraft:block.copper_", $part, ".", $no),
+            (BlockSet::Stone, true) => concat!("minecraft:block.stone_", $part, ".", $yes),
+            (BlockSet::Stone, false) => concat!("minecraft:block.stone_", $part, ".", $no),
+            (BlockSet::Wooden, true) => concat!("minecraft:block.wooden_", $part, ".", $yes),
+            (BlockSet::Wooden, false) => concat!("minecraft:block.wooden_", $part, ".", $no),
+        }
+    };
+}
+
 impl Kinds {
     pub fn new(registries: &Registries) -> Self {
         // Most derived class first.
@@ -702,7 +726,7 @@ impl Level<'_> {
                 // `!defaultBlockState().is(block)`: another door's own update is ignored.
                 if source != self.block_id(state) && signal != self.flag(state, "powered") {
                     if signal != self.flag(state, "open") {
-                        self.random.next_f32();
+                        self.toggle_sound(state, pos, signal);
                     }
                     let next = self.with_bool(self.with_bool(state, "powered", signal), "open", signal);
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
@@ -714,7 +738,7 @@ impl Level<'_> {
                     let mut next = state;
                     if self.flag(state, "open") != signal {
                         next = self.with_bool(next, "open", signal);
-                        self.random.next_f32();
+                        self.toggle_sound(state, pos, signal);
                     }
                     let next = self.with_bool(next, "powered", signal);
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
@@ -729,7 +753,7 @@ impl Level<'_> {
                     let next = self.with_bool(self.with_bool(state, "powered", signal), "open", signal);
                     self.set_block(pos, next, update::CLIENTS, update::LIMIT);
                     if self.flag(state, "open") != signal {
-                        self.random.next_f32();
+                        self.toggle_sound(state, pos, signal);
                     }
                 }
             }
@@ -808,6 +832,7 @@ impl Level<'_> {
                 if self.flag(state, "powered") {
                     self.set_block_and_update(pos, self.with_bool(state, "powered", false));
                     self.attached_update_neighbours(pos, state);
+                    self.button_sound(state, pos, false);
                 }
             }
             Kind::Observer => {
@@ -854,15 +879,85 @@ impl Level<'_> {
 
     // ---- lever and button -----------------------------------------------------
 
-    /// `LeverBlock.pull`: the lever flips and updates around it and its support.
+    /// `LeverBlock.pull`: the lever flips and updates around it and its
+    /// support, with `block.lever.click` (0.3, high as it turns on).
     pub fn pull_lever(&mut self, pos: BlockPos) {
         let state = self.block(pos);
         if self.redstone_kind(state) != Some(Kind::Lever) {
             return;
         }
-        let next = self.with_bool(state, "powered", !self.flag(state, "powered"));
+        let on = !self.flag(state, "powered");
+        let next = self.with_bool(state, "powered", on);
         self.set_block_and_update(pos, next);
         self.attached_update_neighbours(pos, next);
+        self.play_sound("minecraft:block.lever.click", center(pos), 0.3, if on { 0.6 } else { 0.5 });
+    }
+
+    /// `ButtonBlock.playSound`: its set's click.
+    fn button_sound(&mut self, state: BlockStateId, pos: BlockPos, on: bool) {
+        let set = BlockSet::of(self.name(state));
+        self.play_sound(set_sound!(set, "button", on, "click_on", "click_off"), center(pos), 1.0, 1.0);
+    }
+
+    /// `DoorBlock.playSound`, `TrapDoorBlock.playSound` and the fence
+    /// gate's: its set's open or close sound, pitched with the level
+    /// random.
+    fn toggle_sound(&mut self, state: BlockStateId, pos: BlockPos, open: bool) {
+        let name = self.name(state);
+        let set = BlockSet::of(name);
+        let event = if name.ends_with("_trapdoor") {
+            set_sound!(set, "trapdoor", open, "open", "close")
+        } else if name.ends_with("_fence_gate") {
+            // `WoodType`'s, the plain woods' without a prefix.
+            match (set, open) {
+                (BlockSet::Cherry, true) => "minecraft:block.cherry_wood_fence_gate.open",
+                (BlockSet::Cherry, false) => "minecraft:block.cherry_wood_fence_gate.close",
+                (BlockSet::Bamboo, true) => "minecraft:block.bamboo_wood_fence_gate.open",
+                (BlockSet::Bamboo, false) => "minecraft:block.bamboo_wood_fence_gate.close",
+                (BlockSet::Nether, true) => "minecraft:block.nether_wood_fence_gate.open",
+                (BlockSet::Nether, false) => "minecraft:block.nether_wood_fence_gate.close",
+                (_, true) => "minecraft:block.fence_gate.open",
+                (_, false) => "minecraft:block.fence_gate.close",
+            }
+        } else {
+            set_sound!(set, "door", open, "open", "close")
+        };
+        let pitch = self.random.next_f32() * 0.1 + 0.9;
+        self.play_sound(event, center(pos), 1.0, pitch);
+    }
+
+    /// `onExplosionHit` of a blast that triggers blocks (a wind
+    /// charge's): an unpressed button presses, a lever pulls, and an
+    /// unpowered door (by its lower half), trapdoor or fence gate that the
+    /// wind opens (not iron) swings, each with its sound.
+    pub(super) fn trigger_by_explosion(&mut self, pos: BlockPos) {
+        let state = self.block(pos);
+        let iron = matches!(self.name(state), "minecraft:iron_door" | "minecraft:iron_trapdoor");
+        let powered = self.flag(state, "powered");
+        match self.redstone_kind(state) {
+            Some(Kind::Button(_)) if !powered => self.press_button(pos),
+            Some(Kind::Lever) => self.pull_lever(pos),
+            Some(Kind::Door) if !iron && !powered && self.prop(state, "half") == Some("lower") => {
+                let open = !self.flag(state, "open");
+                self.set_block(pos, self.with_bool(state, "open", open), update::CLIENTS | 8, update::LIMIT);
+                self.toggle_sound(state, pos, open);
+            }
+            Some(Kind::TrapDoor) if !iron && !powered => {
+                let open = !self.flag(state, "open");
+                let next = self.with_bool(state, "open", open);
+                self.set_block(pos, next, update::CLIENTS, update::LIMIT);
+                if self.flag(next, "waterlogged") {
+                    self.schedule_water_tick(pos);
+                }
+                self.toggle_sound(state, pos, open);
+            }
+            Some(Kind::FenceGate) if !powered => {
+                let open = !self.flag(state, "open");
+                self.set_block_and_update(pos, self.with_bool(state, "open", open));
+                self.toggle_sound(state, pos, open);
+            }
+            _ => {}
+        }
     }
 
     /// `ButtonBlock.press`.
@@ -874,6 +969,7 @@ impl Level<'_> {
         }
         self.set_block_and_update(pos, self.with_bool(state, "powered", true));
         self.attached_update_neighbours(pos, state);
+        self.button_sound(state, pos, true);
         let block = self.block_id(state);
         self.schedule_block_tick_priority(pos, block, ticks, priority::NORMAL);
     }
@@ -907,17 +1003,19 @@ impl Level<'_> {
         let iron = matches!(self.name(state), "minecraft:iron_door" | "minecraft:iron_trapdoor");
         match self.redstone_kind(state) {
             Some(Kind::Door) if !iron => {
-                let next = self.with_bool(state, "open", !self.flag(state, "open"));
+                let open = !self.flag(state, "open");
+                let next = self.with_bool(state, "open", open);
                 self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
-                self.random.next_f32();
+                self.toggle_sound(state, pos, open);
             }
             Some(Kind::TrapDoor) if !iron => {
-                let next = self.with_bool(state, "open", !self.flag(state, "open"));
+                let open = !self.flag(state, "open");
+                let next = self.with_bool(state, "open", open);
                 self.set_block(pos, next, update::CLIENTS, update::LIMIT);
                 if self.flag(next, "waterlogged") {
                     self.schedule_water_tick(pos);
                 }
-                self.random.next_f32();
+                self.toggle_sound(state, pos, open);
             }
             Some(Kind::FenceGate) => {
                 let next = if self.flag(state, "open") {
@@ -931,7 +1029,7 @@ impl Level<'_> {
                     self.with_bool(next, "open", true)
                 };
                 self.set_block(pos, next, update::CLIENTS | 8, update::LIMIT);
-                self.random.next_f32();
+                self.toggle_sound(state, pos, self.flag(next, "open"));
             }
             Some(Kind::NoteBlock) => {
                 let note = (self.int_prop(state, "note") + 1) % 25;
@@ -1313,5 +1411,44 @@ mod tests {
     fn attached_directions() {
         assert_eq!(connected_direction(Some("floor"), Direction::North), Direction::Up);
         assert_eq!(connected_direction(Some("wall"), Direction::East), Direction::East);
+    }
+}
+
+/// A block's middle, where its sounds play.
+fn center(pos: BlockPos) -> [f64; 3] {
+    [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]
+}
+
+/// `BlockSetType` of a door, trapdoor, button or fence gate, as its
+/// sounds tell them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockSet {
+    Wooden,
+    Cherry,
+    Bamboo,
+    Nether,
+    Iron,
+    Copper,
+    Stone,
+}
+
+impl BlockSet {
+    fn of(name: &str) -> Self {
+        let name = name.trim_start_matches("minecraft:");
+        if name.contains("copper") {
+            Self::Copper
+        } else if name.starts_with("iron_") {
+            Self::Iron
+        } else if name.starts_with("cherry_") {
+            Self::Cherry
+        } else if name.starts_with("bamboo_") {
+            Self::Bamboo
+        } else if name.starts_with("crimson_") || name.starts_with("warped_") {
+            Self::Nether
+        } else if name.starts_with("stone_") || name.starts_with("polished_blackstone_") {
+            Self::Stone
+        } else {
+            Self::Wooden
+        }
     }
 }

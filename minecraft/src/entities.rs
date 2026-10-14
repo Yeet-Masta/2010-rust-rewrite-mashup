@@ -725,6 +725,16 @@ impl Entities {
         self.server.shoot(shot);
     }
 
+    /// The player throws a wind charge (the server's).
+    pub fn throw_wind_charge(&mut self, feet: [f64; 3], eye_y: f64, rotation: (f32, f32), motion: [f64; 3]) {
+        self.server.throw_wind_charge(feet, eye_y, rotation, motion);
+    }
+
+    /// A wind blast the player set off, for the mobs and blocks about it.
+    pub fn wind_blast(&mut self, blast: minecraftoss_entities::world::WindBlast) {
+        self.server.wind_blast(blast);
+    }
+
     /// The player throws a snowball, egg, ender pearl or bottle o'
     /// enchanting (the server's).
     pub fn throw_item(&mut self, item: minecraftoss_entities::potion::ThrownItem, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3]) {
@@ -989,7 +999,7 @@ impl Entities {
                 let pitch =
                     (1.0 + (self.random.next_float() - self.random.next_float()) * 0.2) * 0.7;
                 self.sounds.push((
-                    "minecraft:entity.generic.explode".to_owned(),
+                    blast.wind.unwrap_or("minecraft:entity.generic.explode").to_owned(),
                     DVec3::from_array(blast.center),
                     4.0,
                     pitch,
@@ -1200,6 +1210,15 @@ impl Entities {
             atlas,
             forward,
             light,
+        );
+        // `WindChargeRenderer`.
+        arrow_render::append_wind_charges(
+            &mut out.models,
+            w.wind_charges().iter().filter(|e| e.alive).map(|e| {
+                (e, e.previous_position.lerp(e.position, f64::from(partial)))
+            }),
+            atlas,
+            partial,
         );
         // `ArrowRenderer`, `ThrownTridentRenderer`.
         arrow_render::append_arrows(

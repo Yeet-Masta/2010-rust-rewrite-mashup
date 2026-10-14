@@ -34,6 +34,8 @@ pub use villagers::VillagerAi;
 mod witches;
 mod ranged;
 pub use ranged::{shield_faces, PlayerShot, NO_OWNER};
+mod wind;
+pub use wind::{wind_sound, WindBlast, WindChargeEntity};
 use living::{breathe, dying_travel, fall_damage};
 pub use endermen::EndermanEntity;
 pub use golems::IronGolemEntity;
@@ -335,6 +337,9 @@ pub struct Spawned {
     pub mobs: Vec<(String, DVec3, f32, String)>,
     /// Experience to award (a bottle o' enchanting's).
     pub experience: Vec<(DVec3, i32)>,
+    /// Wind blasts for the level: the blocks they work and what the
+    /// clients see.
+    pub wind: Vec<WindBlast>,
 }
 
 #[derive(Clone)]
@@ -604,6 +609,10 @@ pub enum PlayerHitKind {
     /// push `ServerExplosion` hands the player (`hitPlayers`), and its
     /// centre, which a shield faces.
     Explosion { knockback: DVec3, center: DVec3 },
+    /// A wind blast's push, which harms nothing; a wind charge's spares
+    /// the fall from where it struck (`onExplosionHit`'s
+    /// `setIgnoreFallDamageFromCurrentImpulse`).
+    Wind { knockback: DVec3, impulse: bool },
     /// A lightning bolt (`lightning_bolt`: no knockback, no difficulty
     /// scaling).
     Lightning,
@@ -2341,6 +2350,12 @@ pub struct EntityWorld {
     /// The players blocking with a shield (`isBlocking`) and the yaw of
     /// their heads, as the caller last set them.
     player_shields: Vec<(u64, f32)>,
+    /// Wind charges in flight.
+    wind_charges: Vec<WindChargeEntity>,
+    /// Wind blasts asked for between ticks (a mace's wind burst, a wind
+    /// charged death): the blast, whether it spares falls, and the player
+    /// it leaves out.
+    pending_wind: Vec<(WindBlast, bool, Option<u64>)>,
 }
 
 impl Default for EntityWorld {
@@ -2409,6 +2424,8 @@ impl Default for EntityWorld {
             entity_events: Vec::new(),
             spawned: Spawned::default(),
             player_shields: Vec::new(),
+            wind_charges: Vec::new(),
+            pending_wind: Vec::new(),
         }
     }
 }
@@ -4308,6 +4325,8 @@ impl EntityWorld {
             entity_events: Vec::new(),
             spawned: Spawned::default(),
             player_shields: self.player_shields.clone(),
+            wind_charges: self.wind_charges.iter().filter(|e| keep(e.position)).cloned().collect(),
+            pending_wind: Vec::new(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();

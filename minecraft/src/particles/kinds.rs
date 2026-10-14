@@ -55,6 +55,9 @@ pub enum Type {
     Fishing,
     Flame,
     Glow,
+    Gust,
+    GustEmitterLarge,
+    GustEmitterSmall,
     HappyVillager,
     Heart,
     InstantEffect,
@@ -77,6 +80,7 @@ pub enum Type {
     Scrape,
     SculkSoul,
     SmallFlame,
+    SmallGust,
     Smoke,
     Sneeze,
     Snowflake,
@@ -148,6 +152,9 @@ impl Type {
             Fishing => "fishing",
             Flame => "flame",
             Glow => "glow",
+            Gust => "gust",
+            GustEmitterLarge => "gust_emitter_large",
+            GustEmitterSmall => "gust_emitter_small",
             HappyVillager => "happy_villager",
             Heart => "heart",
             InstantEffect => "instant_effect",
@@ -170,6 +177,7 @@ impl Type {
             Scrape => "scrape",
             SculkSoul => "sculk_soul",
             SmallFlame => "small_flame",
+            SmallGust => "small_gust",
             Smoke => "smoke",
             Sneeze => "sneeze",
             Snowflake => "snowflake",
@@ -283,6 +291,9 @@ pub enum Kind {
     Flash { set: Type },
     /// `HugeExplosionSeedParticle`: unseen, sheds explosions.
     ExplosionSeed,
+    /// `GustSeedParticle`: unseen, sheds three gusts every `delay` and
+    /// one ticks, scattered by `scale`.
+    GustSeed { scale: f64, delay: i32 },
     /// `SpellParticle`.
     Spell { set: Type, original_alpha: f32 },
     /// `ExplodeParticle` (poof) and `SnowflakeParticle`: sprites by age.
@@ -862,6 +873,23 @@ pub fn create(
         ExplosionEmitter => {
             let mut p = Particle::moving(Kind::ExplosionSeed, pos, DVec3::ZERO, [0.0; 4], random);
             p.lifetime = 8;
+            p.alpha = 0.0;
+            p
+        }
+        // `GustParticle`: still, full bright, through its sprites in 12 to
+        // 15 ticks; the small one at 0.15.
+        Gust | SmallGust => {
+            let mut p = Particle::at(Kind::Flash { set: kind }, pos, set.first(), random);
+            p.lifetime = 12 + random.next_int(4);
+            p.quad_size = if kind == SmallGust { 0.15 } else { 1.0 };
+            p.set_sprite_from_age(&set);
+            p
+        }
+        // `GustSeedParticle.Provider(3.0, 7, 0)` and `(1.0, 3, 2)`.
+        GustEmitterLarge | GustEmitterSmall => {
+            let (scale, lifetime, delay) = if kind == GustEmitterLarge { (3.0, 7, 0) } else { (1.0, 3, 2) };
+            let mut p = Particle::at(Kind::GustSeed { scale, delay }, pos, [0.0; 4], random);
+            p.lifetime = lifetime;
             p.alpha = 0.0;
             p
         }
@@ -1734,6 +1762,21 @@ pub fn tick(p: &mut Particle, engine: &mut Particles, world: &World) {
                 p.removed = true;
             } else {
                 p.set_sprite_from_age(engine.sprites.get(set.name()));
+            }
+        }
+        Kind::GustSeed { scale, delay } => {
+            if p.age % (delay + 1) == 0 {
+                for _ in 0..3 {
+                    let mut spread = || (engine.random.next_double() - engine.random.next_double()) * scale;
+                    let at = p.pos + DVec3::new(spread(), spread(), spread());
+                    let size = f64::from(p.age) / f64::from(p.lifetime.max(1));
+                    engine.spawn(world, &Type::Gust.into(), at, DVec3::new(size, 0.0, 0.0));
+                }
+            }
+            let age = p.age;
+            p.age += 1;
+            if age == p.lifetime {
+                p.removed = true;
             }
         }
         Kind::ExplosionSeed => {

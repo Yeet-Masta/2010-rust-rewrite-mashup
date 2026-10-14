@@ -206,15 +206,7 @@ impl ThrownPotion {
     /// `Projectile.shoot`: at the thrower's eyes less 0.1, along
     /// (`xd`, `yd`, `zd`) at `power` with the potion's own random's spread.
     pub fn shoot(contents: PotionContents, owner: u64, position: DVec3, direction: DVec3, power: f32, uncertainty: f32, random: &mut LegacyRandom) -> Self {
-        // `Vec3.normalize`: none under 1.0E-5F long.
-        let length = (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).sqrt();
-        let unit = if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(direction.x / length, direction.y / length, direction.z / length) };
-        // `random.triangle(0, 0.0172275 * uncertainty)` three times.
-        let spread = 0.0172275 * f64::from(uncertainty);
-        let mut triangle = || spread * (random.next_double() - random.next_double());
-        let (tx, ty, tz) = (triangle(), triangle(), triangle());
-        let power = f64::from(power);
-        let velocity = DVec3::new((unit.x + tx) * power, (unit.y + ty) * power, (unit.z + tz) * power);
+        let velocity = shot_velocity(direction, power, uncertainty, random);
         let horizontal = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
         let yaw = (crate::control::minecraft_atan2(velocity.x, velocity.z) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
         let pitch = (crate::control::minecraft_atan2(velocity.y, horizontal) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
@@ -330,6 +322,19 @@ impl ThrownPotion {
         self.pitch = lerp_rotation(self.pitch, pitch);
         self.yaw = lerp_rotation(self.yaw, yaw);
     }
+}
+
+/// `Projectile.getMovementToShoot`: along `direction` (none under
+/// 1.0E-5 long) with the random's spread, at `power`.
+pub fn shot_velocity(direction: DVec3, power: f32, uncertainty: f32, random: &mut LegacyRandom) -> DVec3 {
+    let length = (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z).sqrt();
+    let unit = if length < f64::from(1.0e-5_f32) { DVec3::ZERO } else { DVec3::new(direction.x / length, direction.y / length, direction.z / length) };
+    // `random.triangle(0, 0.0172275 * uncertainty)` three times.
+    let spread = 0.0172275 * f64::from(uncertainty);
+    let mut triangle = || spread * (random.next_double() - random.next_double());
+    let (tx, ty, tz) = (triangle(), triangle(), triangle());
+    let power = f64::from(power);
+    DVec3::new((unit.x + tx) * power, (unit.y + ty) * power, (unit.z + tz) * power)
 }
 
 /// `Projectile.lerpRotation`.

@@ -157,7 +157,7 @@ fn main() {
                     let from = match hit.kind {
                         PlayerHitKind::Melee { attacker, .. } => HitFrom::Position(attacker),
                         PlayerHitKind::Arrow { velocity, .. } => HitFrom::Projectile(velocity),
-                        PlayerHitKind::Explosion { .. } | PlayerHitKind::Lightning => HitFrom::Explosion,
+                        PlayerHitKind::Explosion { .. } | PlayerHitKind::Lightning | PlayerHitKind::Wind { .. } => HitFrom::Explosion,
                     };
                     let incoming = IncomingHit { damage: hit.damage, from, scales_with_difficulty: true, exhaustion: 0.1 };
                     if player.hurt_by(&incoming, difficulty, *armor, 0.0) {
