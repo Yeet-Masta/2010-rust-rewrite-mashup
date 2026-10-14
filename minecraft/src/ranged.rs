@@ -4,7 +4,8 @@
 //! `ProjectileWeaponItem.getHeldProjectile`/`draw`/`useAmmo`,
 //! `CrossbowItem.use`/`onUseTick`/`performShooting`,
 //! `TridentItem.use`/`releaseUsing`, `Player.startAutoSpinAttack`,
-//! `LivingEntity.checkAutoSpinAttack`). A use runs
+//! `LivingEntity.checkAutoSpinAttack`, `LivingEntity.getItemBlockingWith`
+//! and `applyItemBlocking` with a shield's `BlocksAttacks`). A use runs
 //! from the press until the button is let go (the bow looses then), the
 //! held item changes, or a screen opens; meanwhile the player walks at a
 //! fifth of its speed, cannot sprint, and attacks nothing.
@@ -24,6 +25,8 @@ pub enum UseKind {
     Bow,
     Crossbow,
     Trident,
+    /// `BLOCK`: a shield raised.
+    Shield,
 }
 
 impl UseKind {
@@ -32,6 +35,7 @@ impl UseKind {
             "minecraft:bow" => Some(Self::Bow),
             "minecraft:crossbow" => Some(Self::Crossbow),
             "minecraft:trident" => Some(Self::Trident),
+            "minecraft:shield" => Some(Self::Shield),
             _ => None,
         }
     }
@@ -162,6 +166,10 @@ impl Game {
     pub(super) fn start_using(&mut self, slot: usize) -> bool {
         let Some(stack) = self.slot_stack(slot).cloned() else { return false };
         let Some(kind) = UseKind::of(&stack.id) else { return false };
+        // `startUseItem`: an item cooling down does nothing.
+        if self.on_cooldown(&stack.id) {
+            return false;
+        }
         let ok = match kind {
             UseKind::Bow => self.creative || self.find_ammo().is_some(),
             UseKind::Crossbow => {
@@ -176,6 +184,8 @@ impl Game {
             // `TridentItem.use`: not one about to break, and riptide only in
             // water or rain.
             UseKind::Trident => !self.next_damage_breaks(&stack) && (self.riptide(&stack) <= 0.0 || self.wet()),
+            // `Item.use` with `BLOCKS_ATTACKS`: raised until let go.
+            UseKind::Shield => true,
         };
         if ok {
             self.using = Some(ItemUse { kind, slot, id: stack.id, ticks: 0, start_sound: false, mid_sound: false });
@@ -305,6 +315,53 @@ impl Game {
         self.player.auto_spin = self.riptide_spin.is_some();
     }
 
+    /// `getItemBlockingWith`: the slot of a shield raised for its block
+    /// delay (`block_delay_seconds`, a quarter second).
+    pub(super) fn blocking_slot(&self) -> Option<usize> {
+        self.using.as_ref().filter(|using| using.kind == UseKind::Shield && using.ticks >= 5).map(|using| using.slot)
+    }
+
+    /// `applyItemBlocking` on a mob's hit: a raised shield facing where
+    /// the hit comes from takes all of it (its one damage reduction: 90
+    /// degrees, everything), unless the hit passes shields
+    /// (`#bypasses_shield`: lightning) or is a piercing arrow. Then
+    /// `hurtBlockingItem` wears it by 1 and the damage once that is 3 or
+    /// more, `onBlocked` sounds `item.shield.block`, and an axe's blow
+    /// puts the shield down for its seconds (`BlocksAttacks.disable`).
+    /// Whether it took the hit, which then does nothing else.
+    pub(super) fn shield_blocks(&mut self, hit: &minecraftoss_entities::world::PlayerHit) -> bool {
+        use minecraftoss_entities::world::PlayerHitKind;
+        let Some(slot) = self.blocking_slot() else { return false };
+        if hit.damage <= 0.0 {
+            return false;
+        }
+        let (source, disables) = match hit.kind {
+            PlayerHitKind::Melee { attacker, weapon, .. } => (attacker, weapon.disables_blocking),
+            PlayerHitKind::Arrow { pierces: true, .. } | PlayerHitKind::Lightning => return false,
+            PlayerHitKind::Arrow { position, .. } => (position, 0.0),
+            PlayerHitKind::Explosion { center, .. } => (center, 0.0),
+        };
+        if !minecraftoss_entities::world::shield_faces(self.player.yaw as f32, self.player.pos, source) {
+            return false;
+        }
+        let at = self.player.pos;
+        if !self.creative && hit.damage >= 3.0 {
+            let wear = (1.0 + hit.damage).floor() as u32;
+            if self.entities.inventory.wear_tool(slot, wear) {
+                self.item_broke("minecraft:shield");
+            }
+        }
+        let pitch = 0.8 + self.sounds.random() * 0.4;
+        self.play("minecraft:item.shield.block", Some(at), 1.0, pitch);
+        if disables > 0.0 {
+            self.add_cooldown("minecraft:shield", (disables * 20.0) as u64);
+            self.using = None;
+            let pitch = 0.8 + self.sounds.random() * 0.4;
+            self.play("minecraft:item.shield.break", Some(at), 0.8, pitch);
+        }
+        true
+    }
+
     /// `CrossbowItem.getChargeDuration`: a second and a quarter, less quick
     /// charge's, in ticks.
     fn charge_duration(&mut self, crossbow: &ItemStack) -> i32 {
@@ -412,6 +469,7 @@ impl Game {
             // `CrossbowItem.releaseUsing` only ends the use.
             UseKind::Crossbow => {}
             UseKind::Trident => self.release_trident(using),
+            UseKind::Shield => {}
         }
     }
 
@@ -541,6 +599,7 @@ impl Game {
                 UsePose::Crossbow(time_held, self.charge_duration(&crossbow) as f32)
             }
             UseKind::Trident => UsePose::Trident(time_held),
+            UseKind::Shield => UsePose::Block,
         })
     }
 

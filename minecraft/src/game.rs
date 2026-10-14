@@ -587,7 +587,7 @@ impl Game {
             velocity: self.player.velocity,
             hurts: std::mem::take(&mut self.hurts),
             creative: self.creative,
-            shield: None,
+            shield: self.blocking_slot().map(|_| self.player.yaw as f32),
         };
         let bright = self.world.sky_light_level() > 11.0;
         self.entities.hold_pickups = self.pickups_wait();
@@ -2648,6 +2648,9 @@ impl Game {
         if self.creative || !self.alive() {
             return;
         }
+        if self.shield_blocks(&hit) {
+            return;
+        }
         // What lands with the hit: a husk's hunger (`Husk.doHurtTarget`)
         // or a tipped arrow's effect (`Arrow.doPostHurtEffects`), and what
         // a mob's weapon's enchantments add.
@@ -2666,7 +2669,7 @@ impl Game {
                 after = effect.map(|(kind, ticks)| EffectInstance::new(kind, ticks as i32, 0));
                 (HitFrom::Projectile(velocity), "arrow")
             }
-            PlayerHitKind::Explosion { knockback } => {
+            PlayerHitKind::Explosion { knockback, .. } => {
                 // `EXPLOSION_KNOCKBACK_RESISTANCE` (blast protection).
                 let resistance = self.player.equipped.attribute("minecraft:explosion_knockback_resistance", 0.0, (0.0, 1.0));
                 self.player.velocity += knockback * (1.0 - resistance);

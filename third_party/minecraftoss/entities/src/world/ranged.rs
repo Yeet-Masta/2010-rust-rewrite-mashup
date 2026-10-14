@@ -169,6 +169,19 @@ impl EntityWorld {
         self.spawn_arrow(PLAYER_TARGET + shot.player_id, arrow);
     }
 
+    /// The players blocking with a shield and the yaw of their heads.
+    pub fn set_player_shields(&mut self, shields: &[(u64, f32)]) {
+        self.player_shields = shields.to_vec();
+    }
+
+    /// `LivingEntity.applyItemBlocking`'s reach for a hit from `source`
+    /// on the player standing at `feet`: whether its shield faces it,
+    /// within 90 degrees of its head's look (`resolveBlockedDamage`).
+    pub fn shield_faces(&self, player_id: u64, feet: DVec3, source: DVec3) -> bool {
+        let Some(&(_, yaw)) = self.player_shields.iter().find(|(id, _)| *id == player_id) else { return false };
+        shield_faces(yaw, feet, source)
+    }
+
     /// What the world spawned into the level since the last call.
     pub fn take_spawned(&mut self) -> Spawned {
         std::mem::take(&mut self.spawned)
@@ -405,9 +418,13 @@ impl EntityWorld {
         let tipped = arrow_effects(arrow);
         let accepted = if let Some(player_id) = target.checked_sub(PLAYER_TARGET) {
             // `Player.hurtServer` turns arrows away from players who cannot
-            // be hurt (creative).
-            let accepted = players.iter().find(|p| p.id == player_id).is_some_and(|p| p.attackable);
-            if accepted {
+            // be hurt (creative), and a shield facing a non-piercing one
+            // takes it all (`hurtServer` is false), so it bounces off.
+            let feet = players.iter().find(|p| p.id == player_id).map_or(DVec3::ZERO, |p| p.position);
+            let blocked = !pierces && self.shield_faces(player_id, feet, position);
+            let attackable = players.iter().find(|p| p.id == player_id).is_some_and(|p| p.attackable);
+            let accepted = attackable && !blocked;
+            if attackable {
                 let effect = self.arrows[index].effect.or_else(|| tipped.first().map(|e| (e.effect, e.duration.max(0) as u32)));
                 self.player_hits.push(PlayerHit {
                     player_id,
@@ -532,6 +549,17 @@ impl EntityWorld {
         }
         taken
     }
+}
+
+/// `resolveBlockedDamage`'s angle: the hit's source, flat from the feet,
+/// within 90 degrees of the look along `yaw` (`calculateViewVector(0,
+/// yaw)`).
+pub fn shield_faces(yaw: f32, feet: DVec3, source: DVec3) -> bool {
+    let to = DVec3::new(source.x - feet.x, 0.0, source.z - feet.z);
+    let length = to.length();
+    let to = if length < 1.0e-4 { DVec3::ZERO } else { to / length };
+    let view = view_vector(0.0, yaw).as_dvec3();
+    to.dot(view).clamp(-1.0, 1.0).acos() <= std::f64::consts::FRAC_PI_2
 }
 
 /// An arrow without a shooter (a summoned one).

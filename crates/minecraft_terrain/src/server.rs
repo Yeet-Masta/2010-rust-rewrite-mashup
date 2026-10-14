@@ -1549,6 +1549,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // The player's fight memory: its `tickCount` moves on and
                     // the hurts the client took land in it.
                     sim.mobs.tick_player(0);
+                    sim.mobs.set_player_shields(&input.shields);
                     for &(source, kind) in &input.player_hurts {
                         sim.mobs.player_hurt(0, source, kind);
                     }

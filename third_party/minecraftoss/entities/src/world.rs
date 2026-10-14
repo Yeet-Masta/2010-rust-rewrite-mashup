@@ -33,7 +33,7 @@ mod villagers;
 pub use villagers::VillagerAi;
 mod witches;
 mod ranged;
-pub use ranged::{PlayerShot, NO_OWNER};
+pub use ranged::{shield_faces, PlayerShot, NO_OWNER};
 use living::{breathe, dying_travel, fall_damage};
 pub use endermen::EndermanEntity;
 pub use golems::IronGolemEntity;
@@ -584,6 +584,8 @@ pub struct MeleeWeapon {
     pub knockback: f32,
     pub yaw: f32,
     pub fire_seconds: f32,
+    /// `getSecondsToDisableBlocking`: an axe's five seconds.
+    pub disables_blocking: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -599,8 +601,9 @@ pub enum PlayerHitKind {
     /// piercing one passes a shield.
     Arrow { velocity: DVec3, effect: Option<(EffectKind, u32)>, position: DVec3, pierces: bool },
     /// A creeper's blast (`player_explosion`, no default knockback): the
-    /// push `ServerExplosion` hands the player (`hitPlayers`).
-    Explosion { knockback: DVec3 },
+    /// push `ServerExplosion` hands the player (`hitPlayers`), and its
+    /// centre, which a shield faces.
+    Explosion { knockback: DVec3, center: DVec3 },
     /// A lightning bolt (`lightning_bolt`: no knockback, no difficulty
     /// scaling).
     Lightning,
@@ -2335,6 +2338,9 @@ pub struct EntityWorld {
     /// What the world spawned into the level since the last
     /// `take_spawned`.
     spawned: Spawned,
+    /// The players blocking with a shield (`isBlocking`) and the yaw of
+    /// their heads, as the caller last set them.
+    player_shields: Vec<(u64, f32)>,
 }
 
 impl Default for EntityWorld {
@@ -2402,6 +2408,7 @@ impl Default for EntityWorld {
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
+            player_shields: Vec::new(),
         }
     }
 }
@@ -2699,7 +2706,7 @@ impl EntityWorld {
             let mut body = Body::new(player.position, 0.6, height);
             body.on_ground = true;
             if let Some((damage, knockback)) = impact(&body, player.eye_height) {
-                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback }, source: Some(source_id) });
+                self.player_hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Explosion { knockback, center: blast.position }, source: Some(source_id) });
             }
         }
     }
@@ -4300,6 +4307,7 @@ impl EntityWorld {
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
+            player_shields: self.player_shields.clone(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();

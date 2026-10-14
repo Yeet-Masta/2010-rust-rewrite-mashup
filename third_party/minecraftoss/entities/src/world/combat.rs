@@ -395,7 +395,9 @@ impl EntityWorld {
                 e.zombie.body.velocity.z *= 0.6;
             }
         }
-        (damage, MeleeWeapon { knockback, yaw, fire_seconds })
+        // `Weapon.disableBlockingForSeconds`: an axe's five.
+        let disables_blocking = if weapon.id.ends_with("_axe") { 5.0 } else { 0.0 };
+        (damage, MeleeWeapon { knockback, yaw, fire_seconds, disables_blocking })
     }
 
     /// A zombie's armor against a hit: `Zombie.createAttributes`' 2 with
