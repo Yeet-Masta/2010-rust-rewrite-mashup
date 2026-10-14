@@ -2109,6 +2109,21 @@ impl Game {
                 }
             }
             EntityEffect::Ignite { seconds } => self.player.survival.ignite_for_ticks((seconds * 20.0).floor() as i32),
+            // A mob's thorns striking back at the player's hit (`thorns`,
+            // through armour, scaled for a living non-player cause; the
+            // push from the mob is not given).
+            EntityEffect::Damage { damage_type, amount } if !self.creative && self.alive() => {
+                let inventory = &self.entities.inventory;
+                let (toughness, resistance) = inventory.armor_toughness();
+                let value = Some((f32::from(inventory.armor_value()), toughness as f32));
+                let me = self.player.facts(&self.world.scene, self.player.velocity);
+                let source = minecraftoss_player::enchantment::DamageFacts { damage_type, attacker: None, direct: None, is_direct: true };
+                let protection = self.player.equipped.protection(&me, &source);
+                let incoming = IncomingHit { damage: *amount, from: HitFrom::Explosion, scales_with_difficulty: true, exhaustion: 0.1 };
+                if self.player.hurt_by(&incoming, Difficulty::Normal, Armor { value, protection }, resistance) {
+                    self.play("minecraft:enchant.thorns.hit", None, 1.0, 1.0);
+                }
+            }
             EntityEffect::Exhaustion { amount } => self.player.survival.food.add_exhaustion(*amount),
             EntityEffect::Sound { event, position, volume, pitch } => self.play(event, Some(*position), *volume, *pitch),
             // Wind burst's blast where the player stands (`ServerExplosion`

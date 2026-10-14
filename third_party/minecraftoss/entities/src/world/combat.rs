@@ -260,7 +260,9 @@ impl EntityWorld {
                     if hit.applied {
                         self.knock_back(id, f64::from(0.4_f32), sin, -cos);
                         result.swept.push((id, hit.full, hit.died));
-                        let after = effects.post_attack(&[], weapon, &nearby, &source, random);
+                        let gear = self.mob_equipment(id);
+                        let gear: Vec<(Slot, &ItemStack)> = gear.iter().map(|(slot, stack)| (*slot, stack)).collect();
+                        let after = effects.post_attack(&gear, weapon, &nearby, &source, random);
                         self.apply_post_attack(id, after, &mut result.attacker_effects);
                     }
                 }
@@ -278,9 +280,16 @@ impl EntityWorld {
             });
             self.mace_knockback(attack, target);
         }
-        let after = effects.post_attack(&[], weapon, &victim, &source, random);
+        let gear = self.mob_equipment(target);
+        let gear: Vec<(Slot, &ItemStack)> = gear.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        let after = effects.post_attack(&gear, weapon, &victim, &source, random);
         self.apply_post_attack(target, after, &mut result.attacker_effects);
         result
+    }
+
+    /// A mob's equipment with its enchantments (only zombies keep theirs).
+    pub(super) fn mob_equipment(&self, id: u64) -> Vec<(Slot, ItemStack)> {
+        self.zombies.iter().find(|e| e.id == id).map_or_else(Vec::new, |e| e.zombie.equipment.clone())
     }
 
     /// `MaceItem.knockback`: the living things within 3.5 blocks of the
@@ -314,13 +323,15 @@ impl EntityWorld {
     /// on the mob its status effects and fire; what lands on the attacker
     /// (or wears the weapon) goes to `attacker`.
     pub(super) fn apply_post_attack(&mut self, victim: u64, effects: Vec<PostAttack>, attacker: &mut Vec<EntityEffect>) {
-        for PostAttack { affected, effect, .. } in effects {
-            // The enchanted item's own wear is the attacker's to take.
-            if affected != Target::Victim || matches!(effect, EntityEffect::ItemDamage { .. }) {
-                attacker.push(effect);
-                continue;
+        for PostAttack { enchanted, affected, effect, .. } in effects {
+            match (enchanted, affected, &effect) {
+                // The enchanted item's own wear: the weapon's is the
+                // attacker's to take; a mob's worn piece keeps no wear here.
+                (Target::Attacker, _, EntityEffect::ItemDamage { .. }) => attacker.push(effect),
+                (_, _, EntityEffect::ItemDamage { .. }) => {}
+                (_, Target::Victim, _) => self.apply_entity_effect(victim, &effect),
+                _ => attacker.push(effect),
             }
-            self.apply_entity_effect(victim, &effect);
         }
     }
 

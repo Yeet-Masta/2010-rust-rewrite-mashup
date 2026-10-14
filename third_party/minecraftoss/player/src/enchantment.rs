@@ -210,6 +210,9 @@ pub enum EntityEffect {
 /// slot of the enchanted item (for its own wear).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PostAttack {
+    /// Whose item is enchanted: the victim's equipment or the attacker's
+    /// weapon.
+    pub enchanted: Target,
     pub affected: Target,
     pub slot: Slot,
     pub effect: EntityEffect,
@@ -825,7 +828,7 @@ impl EnchantmentEffects {
             if let Some(target) = target {
                 let mut effects = Vec::new();
                 self.entity_effect(&entry["effect"], level, target, target.position, random, &mut effects);
-                out.extend(effects.into_iter().map(|effect| PostAttack { affected, slot, effect }));
+                out.extend(effects.into_iter().map(|effect| PostAttack { enchanted: side, affected, slot, effect }));
             }
         }
     }
@@ -1524,7 +1527,7 @@ mod tests {
         let struck = hits.iter().filter(|h| !h.is_empty()).count();
         assert!((60..120).contains(&struck), "thorns III strikes 45% of the time: {struck}");
         let first = hits.iter().find(|h| !h.is_empty()).unwrap();
-        assert!(matches!(&first[0], PostAttack { affected: Target::Attacker, slot: Slot::Chest, effect: EntityEffect::Damage { amount, .. } } if (1.0..5.0).contains(amount)));
+        assert!(matches!(&first[0], PostAttack { enchanted: Target::Victim, affected: Target::Attacker, slot: Slot::Chest, effect: EntityEffect::Damage { amount, .. } } if (1.0..5.0).contains(amount)));
         assert_eq!(first[1].effect, EntityEffect::ItemDamage { amount: 2 });
         let sword = enchanted("minecraft:iron_sword", json!({"minecraft:bane_of_arthropods": 1, "minecraft:fire_aspect": 2}));
         let spider = EntityFacts { type_id: "minecraft:spider".into(), ..EntityFacts::default() };
