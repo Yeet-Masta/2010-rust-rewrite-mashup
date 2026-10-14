@@ -755,12 +755,38 @@ impl CreatureSpawns {
     /// `Mob.populateDefaultEquipmentEnchantments`: a roll per equipped item
     /// (the main hand at 0.25, armor at 0.5, times the special multiplier)
     /// in `EquipmentSlot.VALUES` order.
-    fn roll_enchantments(level: &mut dyn SpawnLevel, tag: &Tag, difficulty: DifficultyInstance) {
+    fn roll_enchantments(&self, level: &mut dyn SpawnLevel, tag: &mut Tag, difficulty: DifficultyInstance) {
         let special = difficulty.special_multiplier();
         for (slot, chance) in [("mainhand", 0.25f32), ("feet", 0.5), ("legs", 0.5), ("chest", 0.5), ("head", 0.5)] {
             if has_equipment(tag, slot) && level.random().next_f32() < chance * special {
-                level.note_unsupported("enchanted spawn equipment");
+                self.enchant_spawned(level, tag, slot, special);
             }
+        }
+    }
+
+    /// `Mob.enchantSpawnedEquipment` with `MOB_SPAWN_EQUIPMENT`
+    /// (`EnchantmentsByCostWithDifficulty`): at a cost of 5 to 5 and 17
+    /// times the special multiplier, `selectEnchantment` from
+    /// `#on_mob_spawn_equipment`, upgrading the item's enchantments.
+    fn enchant_spawned(&self, level: &mut dyn SpawnLevel, tag: &mut Tag, slot: &str, special: f32) {
+        let Some((enchantments, source)) = spawn_enchantments(&self.registries) else { return };
+        let Some(item) = tag.get("equipment").and_then(|e| e.get(slot)).and_then(|s| s.get("id")).and_then(Tag::as_str).map(str::to_owned) else { return };
+        let span = (special * 17.0) as i32;
+        let cost = level.random().next_i32_bound(span + 1) + 5;
+        let chosen = enchantments.select(level.random(), &item, self.registries.items.enchantable(&item), cost, source);
+        if chosen.is_empty() {
+            return;
+        }
+        let Tag::Compound(map) = tag else { return };
+        let Some(Tag::Compound(slots)) = map.get_mut("equipment") else { return };
+        let Some(Tag::Compound(stack)) = slots.get_mut(slot) else { return };
+        let Tag::Compound(components) = stack.entry("components".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new())) else { return };
+        let Tag::Compound(levels) = components.entry("minecraft:enchantments".to_owned()).or_insert_with(|| Tag::Compound(BTreeMap::new())) else { return };
+        for (index, level_of) in chosen {
+            let id = enchantments.list[index].id.clone();
+            let id = if id.contains(':') { id } else { format!("minecraft:{id}") };
+            let old = levels.get(&id).and_then(Tag::as_i64).unwrap_or(0) as i32;
+            levels.insert(id, Tag::Int(old.max(level_of)));
         }
     }
 
@@ -930,7 +956,7 @@ impl CreatureSpawns {
     fn finalize_skeleton(&self, level: &mut dyn SpawnLevel, context: &SpawnContext, tag: &mut Tag, difficulty: DifficultyInstance) {
         Self::populate_armor(level, tag, difficulty);
         equip(tag, "mainhand", "minecraft:bow");
-        Self::roll_enchantments(level, tag, difficulty);
+        self.roll_enchantments(level, tag, difficulty);
         let loot = level.random().next_f32() < 0.55 * difficulty.special_multiplier();
         set(tag, "CanPickUpLoot", byte(loot));
         Self::halloween_head(level, context, tag);
@@ -989,7 +1015,7 @@ impl CreatureSpawns {
                 };
                 equip(&mut tag, "mainhand", item);
             }
-            Self::roll_enchantments(level, &tag, difficulty);
+            self.roll_enchantments(level, &mut tag, difficulty);
         }
         Self::halloween_head(level, context, &mut tag);
         // `handleAttributes`, from the zombie's own random.
@@ -1115,4 +1141,17 @@ impl CreatureSpawns {
     fn biome_name(&self, biome: BiomeId) -> String {
         self.registries.biomes.get(biome).name.as_str().to_owned()
     }
+}
+
+/// The enchantments `mob_spawn_equipment` chooses from
+/// (`#on_mob_spawn_equipment`), loaded once.
+fn spawn_enchantments(registries: &minecraftoss_core::Registries) -> Option<&'static (minecraftoss_core::enchantment::Enchantments, Vec<usize>)> {
+    static LOADED: std::sync::OnceLock<Option<(minecraftoss_core::enchantment::Enchantments, Vec<usize>)>> = std::sync::OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            let enchantments = minecraftoss_core::enchantment::Enchantments::load(&registries.datapack).ok()?;
+            let source = enchantments.source(Some(&serde_json::json!("#minecraft:on_mob_spawn_equipment")));
+            Some((enchantments, source))
+        })
+        .as_ref()
 }

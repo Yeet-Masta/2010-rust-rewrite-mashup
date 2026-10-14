@@ -562,6 +562,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // Its bow is the main hand's (a summoned skeleton has none; a
             // natural spawn's `finalizeSpawn` gave it one).
             skeleton.holds_bow = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str) == Some("minecraft:bow");
+            skeleton.bow_components = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("components")).map(tag_json);
             skeleton.armor = armor_slots(tag);
             skeleton.persistence_required = persistent;
             if let Some(health) = health {

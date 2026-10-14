@@ -3532,10 +3532,12 @@ impl EntityWorld {
             if mob_drops && chance != 0.0 && e.skeleton.holds_bow && (death.context.killed_by_player || preserve) && e.random.next_float() < chance {
                 let mut bow = ItemStack::new("minecraft:bow", 1);
                 bow.max = 1;
+                bow.components = e.skeleton.bow_components.clone();
                 if !preserve {
                     let spread = e.random.next_int(BOW_DURABILITY - 3);
                     let wear = BOW_DURABILITY - e.random.next_int(1 + spread);
-                    bow.components = Some(serde_json::json!({ "minecraft:damage": wear }));
+                    let components = bow.components.get_or_insert_with(|| serde_json::json!({}));
+                    components["minecraft:damage"] = serde_json::json!(wear);
                 }
                 death.equipment.push(bow);
                 e.skeleton.holds_bow = false;
@@ -4843,10 +4845,16 @@ impl EntityWorld {
                             burn_undead(world, &mut entity.random, &mut entity.skeleton.body, eye, burns, entity.skeleton.head_item);
                         }
                     }
-                    if let Some(arrow) = fired {
+                    if let Some(mut arrow) = fired {
                         // `getArrow`: a stray's, bogged's or parched's arrow
-                        // carries its effect.
+                        // carries its effect; an enchanted bow's power,
+                        // punch and flame ride it (`getMobArrow`).
                         let effect = self.skeletons.iter().find(|e| e.id == id).and_then(|e| e.skeleton.kind.arrow_effect());
+                        if let Some(components) = self.skeletons.iter().find(|e| e.id == id).and_then(|e| e.skeleton.bow_components.clone()) {
+                            let mut bow = ItemStack::new("minecraft:bow", 1);
+                            bow.components = Some(components);
+                            self.arm_mob_arrow(&mut arrow, bow);
+                        }
                         let arrow_id = self.spawn_arrow(id, arrow);
                         if let Some(entity) = self.arrows.iter_mut().find(|e| e.id == arrow_id) {
                             entity.effect = effect;

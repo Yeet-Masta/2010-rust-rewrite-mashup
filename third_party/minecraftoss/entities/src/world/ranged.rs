@@ -198,6 +198,22 @@ impl EntityWorld {
         self.spawn_arrow(NO_OWNER, arrow)
     }
 
+    /// A mob's arrow from an enchanted bow (`ProjectileUtil.getMobArrow`):
+    /// the bow is its weapon, whose enchantments act on its hits, and its
+    /// spawned effects (flame's fire) take hold.
+    pub(super) fn arm_mob_arrow(&mut self, arrow: &mut Arrow, bow: ItemStack) {
+        let effects = self.enchantment_effects();
+        let facts = EntityFacts { type_id: arrow.kind.type_id().to_owned(), position: arrow.position, width: 0.5, height: 0.5, movement: arrow.velocity, ..EntityFacts::default() };
+        let mut random = std::mem::take(&mut self.level_random);
+        for effect in effects.projectile_spawned(&bow, &facts, &mut random) {
+            if let EntityEffect::Ignite { seconds } = effect {
+                arrow.fire_ticks = arrow.fire_ticks.max((seconds * 20.0).floor() as i32);
+            }
+        }
+        self.level_random = random;
+        arrow.weapon = Some(bow);
+    }
+
     /// What the world spawned into the level since the last call.
     pub fn take_spawned(&mut self) -> Spawned {
         std::mem::take(&mut self.spawned)

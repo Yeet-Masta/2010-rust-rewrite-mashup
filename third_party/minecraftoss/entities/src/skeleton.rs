@@ -88,6 +88,9 @@ pub struct Skeleton {
     pub head_item: Option<bool>,
     /// Its bow in the main hand (`populateDefaultEquipmentSlots`).
     pub holds_bow: bool,
+    /// That bow's components: the enchantments its spawn gave it
+    /// (`populateDefaultEquipmentEnchantments`), which its arrows carry.
+    pub bow_components: Option<serde_json::Value>,
     /// The head, chest, legs and feet slots' item IDs.
     pub armor: [Option<String>; 4],
     /// The main hand's drop chance (`Mob.dropChances`); above 1 the bow
@@ -106,6 +109,7 @@ impl Skeleton {
             persistence_required: false,
             head_item: None,
             holds_bow: true,
+            bow_components: None,
             armor: Default::default(),
             bow_drop_chance: 0.085,
         }
