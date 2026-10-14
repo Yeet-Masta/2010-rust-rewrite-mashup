@@ -4455,6 +4455,7 @@ impl EntityWorld {
         self.arrows.retain(|e| !remove(e.arrow.position));
         self.potions.retain(|e| !remove(e.potion.position));
         self.clouds.retain(|c| !remove(c.position));
+        self.wind_charges.retain(|c| !remove(c.position));
         self.villagers.retain(|e| !remove(e.villager.body.position));
         self.cows.retain(|e| !remove(e.cow.body.position));
         self.sheep.retain(|e| !remove(e.body.position));

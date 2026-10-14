@@ -360,7 +360,7 @@ impl ServerSim {
     /// dormant.
     fn add_saved_entity(&mut self, tag: minecraftoss_core::nbt::Tag) {
         self.mobs.set_day_time(self.level.overworld_clock());
-        if crate::server_mobs::load_level_entity(&mut self.level, &tag) {
+        if crate::server_mobs::load_level_entity(&mut self.level, &tag) || crate::server_mobs::load_cloud(&mut self.mobs, &tag) {
             return;
         }
         match crate::server_mobs::spawn_saved(&mut self.mobs, &tag) {

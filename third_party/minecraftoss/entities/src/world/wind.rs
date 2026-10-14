@@ -138,6 +138,13 @@ impl EntityWorld {
         self.wind_charges.retain(|c| c.alive);
     }
 
+    /// A saved wind charge back in flight, its thrower forgotten.
+    pub fn add_wind_charge(&mut self, position: DVec3, velocity: DVec3) -> u64 {
+        self.next_id += 1;
+        self.wind_charges.push(WindChargeEntity { id: self.next_id, owner: None, position, velocity, previous_position: position, tick_count: 0, left_owner: true, alive: true });
+        self.next_id
+    }
+
     /// A wind blast to carry out with the next tick's.
     pub fn queue_wind_blast(&mut self, blast: WindBlast, impulse: bool, skip: Option<u64>) {
         self.pending_wind.push((blast, impulse, skip));

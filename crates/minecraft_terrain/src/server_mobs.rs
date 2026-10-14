@@ -732,6 +732,54 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
+        "minecraft:arrow" | "minecraft:spectral_arrow" | "minecraft:trident" => {
+            // `AbstractArrow.readAdditionalSaveData`, its shooter forgotten.
+            use minecraftoss_entities::projectile::{Arrow, ArrowKind, Pickup};
+            let arrow_kind = match kind {
+                "minecraft:spectral_arrow" => ArrowKind::Spectral,
+                "minecraft:trident" => ArrowKind::Trident,
+                _ => ArrowKind::Arrow,
+            };
+            let mut arrow = Arrow::in_flight(pos, motion_of(tag), LegacyRandom::new(seed(tag))).with_kind(arrow_kind);
+            arrow.yaw = yaw;
+            arrow.pitch = tag.get("Rotation").and_then(Tag::as_list).and_then(|r| r.get(1)).and_then(Tag::as_f64).unwrap_or(0.0) as f32;
+            arrow.in_ground = int(tag, "inGround").unwrap_or(0) != 0;
+            arrow.life = int(tag, "life").unwrap_or(0);
+            arrow.shake_time = int(tag, "shake").unwrap_or(0);
+            arrow.pickup = match int(tag, "pickup") {
+                Some(1) => Pickup::Allowed,
+                Some(2) => Pickup::CreativeOnly,
+                _ => Pickup::Disallowed,
+            };
+            arrow.base_damage = tag.get("damage").and_then(Tag::as_f64).unwrap_or(arrow.base_damage);
+            arrow.crit = int(tag, "crit").unwrap_or(0) != 0;
+            arrow.pierce_level = int(tag, "PierceLevel").unwrap_or(0).clamp(0, 127) as u8;
+            arrow.item = tag.get("item").and_then(stack_of_tag);
+            arrow.weapon = tag.get("weapon").and_then(stack_of_tag);
+            arrow.fire_ticks = fire;
+            arrow.left_owner = true;
+            arrow.dealt_damage = int(tag, "DealtDamage").unwrap_or(0) != 0;
+            // A trident is its own weapon.
+            if arrow_kind == ArrowKind::Trident && arrow.weapon.is_none() {
+                arrow.weapon = arrow.item.clone();
+            }
+            return Some(world.add_arrow(arrow));
+        }
+        "minecraft:snowball" | "minecraft:egg" | "minecraft:ender_pearl" | "minecraft:experience_bottle" => {
+            // A thrown item in flight (`ThrowableItemProjectile.Item`), its
+            // thrower forgotten.
+            let item = tag.get("Item").and_then(|item| text(item, "id")).unwrap_or(kind);
+            let item = minecraftoss_entities::potion::ThrownItem::of(item).or_else(|| minecraftoss_entities::potion::ThrownItem::of(kind))?;
+            let motion = motion_of(tag);
+            let mut thrown = minecraftoss_entities::potion::ThrownPotion::shoot(minecraftoss_player::effects::PotionContents::default(), 0, pos, motion, 1.0, 0.0, &mut LegacyRandom::new(0));
+            thrown.owner = None;
+            thrown.velocity = motion;
+            thrown.yaw = yaw;
+            thrown.item = item;
+            thrown.left_owner = true;
+            return Some(world.spawn_potion(thrown));
+        }
+        "minecraft:wind_charge" => return Some(world.add_wind_charge(pos, motion_of(tag))),
         "minecraft:splash_potion" | "minecraft:lingering_potion" => {
             // A potion in flight (`ThrowableItemProjectile.Item`), its thrower
             // forgotten.
@@ -926,6 +974,49 @@ fn effect_tag(effect: &minecraftoss_entities::effects::EffectInstance, with_id: 
 }
 
 /// Doubles as an NBT list.
+/// `Motion`, or none.
+fn motion_of(tag: &Tag) -> DVec3 {
+    tag.get("Motion").and_then(Tag::as_list).map_or(DVec3::ZERO, |m| DVec3::new(m.first().and_then(Tag::as_f64).unwrap_or(0.0), m.get(1).and_then(Tag::as_f64).unwrap_or(0.0), m.get(2).and_then(Tag::as_f64).unwrap_or(0.0)))
+}
+
+/// A saved stack (`ItemStack.CODEC`): its id, count and components.
+fn stack_of_tag(tag: &Tag) -> Option<minecraftoss_player::inventory::ItemStack> {
+    let id = text(tag, "id")?;
+    let count = int(tag, "count").unwrap_or(1).clamp(1, 99) as u8;
+    let mut stack = minecraftoss_player::inventory::ItemStack::new(id, count);
+    stack.components = tag.get("components").map(tag_json);
+    Some(stack)
+}
+
+/// A stack as saved.
+fn stack_tag(stack: &minecraftoss_player::inventory::ItemStack) -> Tag {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("id".to_owned(), Tag::String(stack.id.clone()));
+    map.insert("count".to_owned(), Tag::Int(i32::from(stack.count)));
+    if let Some(components) = &stack.components {
+        map.insert("components".to_owned(), json_tag(components));
+    }
+    Tag::Compound(map)
+}
+
+/// A saved area effect cloud back in the world
+/// (`AreaEffectCloud.readAdditionalSaveData`). Whether it was one.
+pub fn load_cloud(world: &mut EntityWorld, tag: &Tag) -> bool {
+    if text(tag, "id") != Some("minecraft:area_effect_cloud") {
+        return false;
+    }
+    let Some(pos) = position(tag) else { return true };
+    let float = |key: &str, default: f32| tag.get(key).and_then(Tag::as_f64).map_or(default, |v| v as f32);
+    let contents = tag
+        .get("potion_contents")
+        .map(|c| serde_json::json!({ "minecraft:potion_contents": tag_json(c) }))
+        .and_then(|components| minecraftoss_player::effects::PotionContents::from_components(Some(&components)))
+        .unwrap_or_default();
+    let saved = (int(tag, "Age").unwrap_or(0), int(tag, "Duration").unwrap_or(600), int(tag, "WaitTime").unwrap_or(20), float("RadiusOnUse", 0.0), float("RadiusPerTick", 0.0), float("potion_duration_scale", 1.0));
+    world.add_cloud(minecraftoss_entities::world::EffectCloud::restored(pos, float("Radius", 3.0), contents, saved));
+    true
+}
+
 fn doubles(values: [f64; 3]) -> Tag {
     Tag::List(values.into_iter().map(Tag::Double).collect())
 }
@@ -1191,17 +1282,89 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             continue;
         }
         let mut map = std::collections::BTreeMap::new();
-        let kind = if potion.lingering { "minecraft:lingering_potion" } else { "minecraft:splash_potion" };
+        let kind = match potion.item {
+            minecraftoss_entities::potion::ThrownItem::Potion if potion.lingering => "minecraft:lingering_potion",
+            minecraftoss_entities::potion::ThrownItem::Potion => "minecraft:splash_potion",
+            minecraftoss_entities::potion::ThrownItem::Egg(_) => "minecraft:egg",
+            other => other.item(),
+        };
         map.insert("id".to_owned(), Tag::String(kind.to_owned()));
         map.insert("Pos".to_owned(), doubles(potion.position.to_array()));
         map.insert("Motion".to_owned(), doubles(potion.velocity.to_array()));
         map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(potion.yaw), Tag::Float(potion.pitch)]));
         map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(potion.left_owner)));
-        let components = json_tag(&serde_json::json!({ "minecraft:potion_contents": potion.contents.to_json() }));
-        let item = [("id".to_owned(), Tag::String(kind.to_owned())), ("count".to_owned(), Tag::Int(1)), ("components".to_owned(), components)];
-        map.insert("Item".to_owned(), Tag::Compound(item.into_iter().collect()));
+        let item = if potion.item == minecraftoss_entities::potion::ThrownItem::Potion {
+            let components = json_tag(&serde_json::json!({ "minecraft:potion_contents": potion.contents.to_json() }));
+            Tag::Compound([("id".to_owned(), Tag::String(kind.to_owned())), ("count".to_owned(), Tag::Int(1)), ("components".to_owned(), components)].into_iter().collect())
+        } else {
+            Tag::Compound([("id".to_owned(), Tag::String(potion.item.item().to_owned())), ("count".to_owned(), Tag::Int(1))].into_iter().collect())
+        };
+        map.insert("Item".to_owned(), item);
         map.insert("UUID".to_owned(), fresh_uuid(p.id, potion.position));
         out.push((p.id, Tag::Compound(map)));
+    }
+    // Arrows and tridents (`AbstractArrow.addAdditionalSaveData`).
+    for e in world.arrows() {
+        let arrow = &e.arrow;
+        if !keep(arrow.position) || !arrow.alive {
+            continue;
+        }
+        use minecraftoss_entities::projectile::{ArrowKind, Pickup};
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String(arrow.kind.type_id().to_owned()));
+        map.insert("Pos".to_owned(), doubles(arrow.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(arrow.velocity.to_array()));
+        map.insert("Rotation".to_owned(), Tag::List(vec![Tag::Float(arrow.yaw), Tag::Float(arrow.pitch)]));
+        map.insert("inGround".to_owned(), Tag::Byte(i8::from(arrow.in_ground)));
+        map.insert("life".to_owned(), Tag::Short(arrow.life.clamp(0, i32::from(i16::MAX)) as i16));
+        map.insert("shake".to_owned(), Tag::Byte(arrow.shake_time.clamp(0, 127) as i8));
+        let pickup = match arrow.pickup {
+            Pickup::Disallowed => 0,
+            Pickup::Allowed => 1,
+            Pickup::CreativeOnly => 2,
+        };
+        map.insert("pickup".to_owned(), Tag::Byte(pickup));
+        map.insert("damage".to_owned(), Tag::Double(arrow.base_damage));
+        map.insert("crit".to_owned(), Tag::Byte(i8::from(arrow.crit)));
+        map.insert("PierceLevel".to_owned(), Tag::Byte(arrow.pierce_level as i8));
+        map.insert("item".to_owned(), stack_tag(&arrow.pickup_item()));
+        if let Some(weapon) = &arrow.weapon {
+            map.insert("weapon".to_owned(), stack_tag(weapon));
+        }
+        map.insert("Fire".to_owned(), Tag::Short(arrow.fire_ticks.clamp(-32768, 32767) as i16));
+        map.insert("LeftOwner".to_owned(), Tag::Byte(i8::from(arrow.left_owner)));
+        if arrow.kind == ArrowKind::Trident {
+            map.insert("DealtDamage".to_owned(), Tag::Byte(i8::from(arrow.dealt_damage)));
+        }
+        map.insert("UUID".to_owned(), fresh_uuid(e.id, arrow.position));
+        out.push((e.id, Tag::Compound(map)));
+    }
+    // Wind charges (`AbstractHurtingProjectile`, no pull).
+    for charge in world.wind_charges().iter().filter(|c| c.alive && keep(c.position)) {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String("minecraft:wind_charge".to_owned()));
+        map.insert("Pos".to_owned(), doubles(charge.position.to_array()));
+        map.insert("Motion".to_owned(), doubles(charge.velocity.to_array()));
+        map.insert("acceleration_power".to_owned(), Tag::Double(0.0));
+        map.insert("UUID".to_owned(), fresh_uuid(charge.id, charge.position));
+        out.push((charge.id, Tag::Compound(map)));
+    }
+    // Lingering potions' clouds (`AreaEffectCloud.addAdditionalSaveData`).
+    for cloud in world.clouds().iter().filter(|c| c.alive && keep(c.position)) {
+        let (age, duration, wait_time, radius_on_use, radius_per_tick, duration_scale) = cloud.saved();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("id".to_owned(), Tag::String("minecraft:area_effect_cloud".to_owned()));
+        map.insert("Pos".to_owned(), doubles(cloud.position.to_array()));
+        map.insert("Radius".to_owned(), Tag::Float(cloud.radius));
+        map.insert("Age".to_owned(), Tag::Int(age));
+        map.insert("Duration".to_owned(), Tag::Int(duration));
+        map.insert("WaitTime".to_owned(), Tag::Int(wait_time));
+        map.insert("RadiusOnUse".to_owned(), Tag::Float(radius_on_use));
+        map.insert("RadiusPerTick".to_owned(), Tag::Float(radius_per_tick));
+        map.insert("potion_duration_scale".to_owned(), Tag::Float(duration_scale));
+        map.insert("potion_contents".to_owned(), json_tag(&cloud.contents.to_json()));
+        map.insert("UUID".to_owned(), fresh_uuid(0, cloud.position));
+        out.push((0, Tag::Compound(map)));
     }
     out
 }

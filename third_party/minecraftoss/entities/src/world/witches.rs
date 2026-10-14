@@ -79,6 +79,18 @@ impl EffectCloud {
     pub fn color(&self) -> u32 {
         self.contents.color()
     }
+
+    /// What `AreaEffectCloud.addAdditionalSaveData` keeps: its age
+    /// (`Age`), `Duration`, `WaitTime`, `RadiusOnUse`, `RadiusPerTick` and
+    /// `potion_duration_scale`.
+    pub fn saved(&self) -> (i32, i32, i32, f32, f32, f32) {
+        (self.tick_count, self.duration, self.wait_time, self.radius_on_use, self.radius_per_tick, self.duration_scale)
+    }
+
+    /// A cloud as `readAdditionalSaveData` restores it.
+    pub fn restored(position: DVec3, radius: f32, contents: minecraftoss_player::effects::PotionContents, (tick_count, duration, wait_time, radius_on_use, radius_per_tick, duration_scale): (i32, i32, i32, f32, f32, f32)) -> Self {
+        Self { position, radius, radius_per_tick, radius_on_use, duration, wait_time, tick_count, waiting: tick_count < wait_time, contents, duration_scale, victims: Vec::new(), alive: true }
+    }
 }
 
 /// Where a splash potion broke (`AbstractThrownPotion.onHit`'s level
@@ -628,6 +640,11 @@ impl EntityWorld {
     /// The area effect clouds.
     pub fn clouds(&self) -> &[EffectCloud] {
         &self.clouds
+    }
+
+    /// A saved cloud back in the world.
+    pub fn add_cloud(&mut self, cloud: EffectCloud) {
+        self.clouds.push(cloud);
     }
 
     /// `AreaEffectCloud.serverTick` for every cloud.

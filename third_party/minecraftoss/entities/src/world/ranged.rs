@@ -182,6 +182,22 @@ impl EntityWorld {
         shield_faces(yaw, feet, source)
     }
 
+    /// A saved arrow or trident back in the world, its shooter forgotten;
+    /// a trident's loyalty comes from its item again
+    /// (`ThrownTrident.readAdditionalSaveData`).
+    pub fn add_arrow(&mut self, mut arrow: Arrow) -> u64 {
+        if arrow.kind == ArrowKind::Trident {
+            if let Some(item) = arrow.item.clone() {
+                let effects = self.enchantment_effects();
+                let facts = EntityFacts { type_id: ArrowKind::Trident.type_id().to_owned(), position: arrow.position, width: 0.5, height: 0.5, ..EntityFacts::default() };
+                let mut random = std::mem::take(&mut self.level_random);
+                arrow.loyalty = effects.trident_return_acceleration(&item, &facts, &mut random).clamp(0, 127) as u8;
+                self.level_random = random;
+            }
+        }
+        self.spawn_arrow(NO_OWNER, arrow)
+    }
+
     /// What the world spawned into the level since the last call.
     pub fn take_spawned(&mut self) -> Spawned {
         std::mem::take(&mut self.spawned)
