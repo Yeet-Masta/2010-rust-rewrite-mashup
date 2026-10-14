@@ -725,6 +725,12 @@ impl Entities {
         self.server.shoot(shot);
     }
 
+    /// The player throws a snowball, egg, ender pearl or bottle o'
+    /// enchanting (the server's).
+    pub fn throw_item(&mut self, item: minecraftoss_entities::potion::ThrownItem, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3]) {
+        self.server.throw_item(item, eye, rotation, motion);
+    }
+
     /// The player throws a trident (the server's).
     pub fn throw_trident(&mut self, shot: minecraftoss_entities::world::PlayerShot) {
         self.server.throw_trident(shot);

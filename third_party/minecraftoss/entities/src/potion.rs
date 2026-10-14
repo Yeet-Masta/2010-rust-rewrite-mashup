@@ -127,7 +127,56 @@ pub struct PotionHit {
     pub entity: Option<u64>,
 }
 
-/// A thrown splash potion (`ThrownSplashPotion`).
+/// What a thrown item projectile is (`ThrowableItemProjectile`): a
+/// potion (`AbstractThrownPotion`), a snowball, an egg (of its colour), an
+/// ender pearl or a bottle o' enchanting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThrownItem {
+    #[default]
+    Potion,
+    Snowball,
+    Egg(&'static str),
+    EnderPearl,
+    ExperienceBottle,
+}
+
+impl ThrownItem {
+    /// The item a player throws as it, if one is.
+    pub fn of(item: &str) -> Option<Self> {
+        Some(match item {
+            "minecraft:snowball" => Self::Snowball,
+            "minecraft:egg" => Self::Egg("minecraft:egg"),
+            "minecraft:blue_egg" => Self::Egg("minecraft:blue_egg"),
+            "minecraft:brown_egg" => Self::Egg("minecraft:brown_egg"),
+            "minecraft:ender_pearl" => Self::EnderPearl,
+            "minecraft:experience_bottle" => Self::ExperienceBottle,
+            _ => return None,
+        })
+    }
+
+    /// Its item, as drawn in flight and broken into crumbs.
+    pub fn item(self) -> &'static str {
+        match self {
+            Self::Potion => "minecraft:splash_potion",
+            Self::Snowball => "minecraft:snowball",
+            Self::Egg(item) => item,
+            Self::EnderPearl => "minecraft:ender_pearl",
+            Self::ExperienceBottle => "minecraft:experience_bottle",
+        }
+    }
+
+    /// `getDefaultGravity`: a potion's 0.05, a bottle o' enchanting's
+    /// 0.07, the rest `ThrowableProjectile`'s 0.03.
+    pub fn gravity(self) -> f64 {
+        match self {
+            Self::Potion => GRAVITY,
+            Self::ExperienceBottle => 0.07,
+            _ => 0.03,
+        }
+    }
+}
+
+/// A thrown splash potion (`ThrownSplashPotion`), or another thrown item.
 #[derive(Clone, Debug)]
 pub struct ThrownPotion {
     pub position: DVec3,
@@ -136,6 +185,8 @@ pub struct ThrownPotion {
     pub contents: PotionContents,
     /// A lingering potion (`ThrownLingeringPotion`), which leaves a cloud.
     pub lingering: bool,
+    /// What was thrown.
+    pub item: ThrownItem,
     /// Who threw it (`getOwner`).
     pub owner: Option<u64>,
     /// `tickCount`, raised before each tick.
@@ -167,7 +218,7 @@ impl ThrownPotion {
         let horizontal = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
         let yaw = (crate::control::minecraft_atan2(velocity.x, velocity.z) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
         let pitch = (crate::control::minecraft_atan2(velocity.y, horizontal) * minecraftoss_player::mth::RAD_TO_DEG) as f32;
-        Self { position, velocity, contents, lingering: false, owner: Some(owner), tick_count: 0, left_owner: false, in_water: false, yaw, pitch, alive: true, first_tick: true }
+        Self { position, velocity, contents, lingering: false, item: ThrownItem::Potion, owner: Some(owner), tick_count: 0, left_owner: false, in_water: false, yaw, pitch, alive: true, first_tick: true }
     }
 
     /// `PotionContents.getColor`.
@@ -199,7 +250,7 @@ impl ThrownPotion {
     pub fn tick(&mut self, world: &impl World, targets: &[PotionTarget], owner_box: Option<(DVec3, DVec3)>) -> Option<PotionHit> {
         self.tick_count += 1;
         // `applyGravity`, then `applyInertia` (water from its last tick).
-        self.velocity.y -= GRAVITY;
+        self.velocity.y -= self.item.gravity();
         let inertia = f64::from(if self.in_water { 0.8_f32 } else { 0.99_f32 });
         self.velocity = DVec3::new(self.velocity.x * inertia, self.velocity.y * inertia, self.velocity.z * inertia);
         let from = self.position;

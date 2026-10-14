@@ -331,6 +331,10 @@ pub struct SkeletonEntity {
 pub struct Spawned {
     pub items: Vec<(DVec3, ItemStack)>,
     pub lightning: Vec<DVec3>,
+    /// Mobs to summon: type, feet, yaw and their SNBT (an egg's chicks).
+    pub mobs: Vec<(String, DVec3, f32, String)>,
+    /// Experience to award (a bottle o' enchanting's).
+    pub experience: Vec<(DVec3, i32)>,
 }
 
 #[derive(Clone)]

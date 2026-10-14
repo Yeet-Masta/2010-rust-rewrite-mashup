@@ -12,7 +12,7 @@ use super::emissions::{base_tick_fluid, play_movement, MovementSounds};
 use super::*;
 use crate::effects::{can_be_affected, heal, instant_work, EffectInstance, EffectWork, MobEffect, MobEffects};
 use crate::monster_ai::{MonsterKind, PlayerVitals};
-use crate::potion::{splash_scale, splashed_effect, PotionHit, PotionTarget, ThrownPotion};
+use crate::potion::{splash_scale, splashed_effect, PotionHit, PotionTarget, ThrownItem, ThrownPotion};
 use crate::witch::{self, Throw, Witch};
 
 /// A witch steps with its block's sound; it is a `Monster`.
@@ -89,6 +89,11 @@ pub struct PotionBreak {
     pub position: DVec3,
     pub color: u32,
     pub instant: bool,
+    /// A snowball, egg or ender pearl, which breaks into its own crumbs
+    /// (entity event 3) or portal motes instead.
+    pub thrown: Option<crate::potion::ThrownItem>,
+    /// Where an ender pearl's thrower lands (`oldPosition`).
+    pub teleport: Option<DVec3>,
 }
 
 /// A potion breaking near a player, for the player's side: the lasting
@@ -437,6 +442,76 @@ impl EntityWorld {
         self.spawn_potion(potion);
     }
 
+    /// `SnowballItem.use`, `EggItem.use`, `EnderpearlItem.use` and
+    /// `ExperienceBottleItem.use`: from the eyes less 0.1, along the look
+    /// at 1.5 (a bottle o' enchanting 20 degrees above it at 0.7) with an
+    /// uncertainty of 1, carrying the thrower's motion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn throw_item(&mut self, player_id: u64, item: ThrownItem, eye: DVec3, x_rot: f32, y_rot: f32, motion: DVec3) {
+        use minecraftoss_player::mth::{cos, sin};
+        let rad = |degrees: f32| f64::from(degrees * (std::f32::consts::PI / 180.0));
+        let (offset, power) = if item == ThrownItem::ExperienceBottle { (-20.0, 0.7) } else { (0.0, 1.5) };
+        let (x, y) = (rad(x_rot), rad(y_rot));
+        let direction = DVec3::new(f64::from(-sin(y) * cos(x)), f64::from(-sin(rad(x_rot + offset))), f64::from(cos(y) * cos(x)));
+        let start = DVec3::new(eye.x, eye.y - f64::from(0.1_f32), eye.z);
+        let seed = self.projectile_seed_random.next_long();
+        let mut random = LegacyRandom::new(seed);
+        let mut thrown = ThrownPotion::shoot(minecraftoss_player::effects::PotionContents::default(), PLAYER_TARGET + player_id, start, direction, power, 1.0, &mut random);
+        thrown.velocity += motion;
+        thrown.item = item;
+        self.spawn_potion(thrown);
+    }
+
+    /// What a thrown snowball, egg, ender pearl or bottle o' enchanting
+    /// does where it strikes: a mob hit is hurt for nothing (`thrown`, a
+    /// knock back; a snowball's 3 on a blaze), then
+    /// - `ThrownEgg.onHit`: one in eight lays a chick, one in 32 of those
+    ///   four, of the egg's colour;
+    /// - `ThrownEnderpearl.onHit`: the thrower lands where the pearl was a
+    ///   tick ago, with `entity.player.teleport`;
+    /// - `ThrownExperienceBottle.onHit`: the potion break in its blue and
+    ///   3 to 11 experience.
+    fn thrown_item_hit(&mut self, thrown: &ThrownPotion, hit: PotionHit, previous: DVec3) {
+        let owner = thrown.owner;
+        let player = owner.and_then(|o| o.checked_sub(PLAYER_TARGET));
+        if let (Some(target), Some(player)) = (hit.entity, player) {
+            if target < PLAYER_TARGET {
+                let attack = super::combat::PlayerAttack { player_id: player, position: thrown.position, ..super::combat::PlayerAttack::default() };
+                let _ = self.hurt_by_player(target, 0.0, &attack, "minecraft:thrown", Some(thrown.velocity), &mut crate::health::damage_after_armor);
+            }
+        }
+        let mut teleport = None;
+        match thrown.item {
+            ThrownItem::Egg(item) => {
+                if self.level_random.next_int(8) == 0 {
+                    let count = if self.level_random.next_int(32) == 0 { 4 } else { 1 };
+                    let variant = match item {
+                        "minecraft:blue_egg" => "minecraft:cold",
+                        "minecraft:brown_egg" => "minecraft:warm",
+                        _ => "minecraft:temperate",
+                    };
+                    for _ in 0..count {
+                        self.spawned.mobs.push(("minecraft:chicken".to_owned(), thrown.position, thrown.yaw, format!("{{Age:-24000,variant:\"{variant}\"}}")));
+                    }
+                }
+            }
+            ThrownItem::EnderPearl => {
+                if player.is_some() {
+                    teleport = Some(previous);
+                    self.sounds.push(MobSound { event: "entity.player.teleport".to_owned(), position: previous, volume: 1.0, pitch: 1.0, category: "players_volume" });
+                }
+            }
+            ThrownItem::ExperienceBottle => {
+                let amount = 3 + self.level_random.next_int(5) as i32 + self.level_random.next_int(5) as i32;
+                self.spawned.experience.push((thrown.position, amount));
+                self.potion_breaks.push(PotionBreak { position: thrown.position, color: 0x385dc6, instant: false, thrown: None, teleport: None });
+                return;
+            }
+            ThrownItem::Snowball | ThrownItem::Potion => {}
+        }
+        self.potion_breaks.push(PotionBreak { position: thrown.position, color: 0, instant: false, thrown: Some(thrown.item), teleport });
+    }
+
     /// One potion's tick; a break splashes its effect.
     pub(super) fn tick_potion(&mut self, id: u64, world: &mut impl World, players: &[PlayerCandidate]) {
         let Some(owner) = self.potions.iter().find(|p| p.id == id).map(|p| p.potion.owner) else { return };
@@ -453,9 +528,14 @@ impl EntityWorld {
         };
         let Some(entity) = self.potions.iter_mut().find(|p| p.id == id) else { return };
         entity.previous_position = entity.potion.position;
+        let previous = entity.previous_position;
         if let Some(hit) = entity.potion.tick(&*world, &targets, owner_box) {
             let potion = entity.potion.clone();
-            self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.color(), instant: potion.instant() });
+            if potion.item != ThrownItem::Potion {
+                self.thrown_item_hit(&potion, hit, previous);
+                return;
+            }
+            self.potion_breaks.push(PotionBreak { position: potion.position, color: potion.color(), instant: potion.instant(), thrown: None, teleport: None });
             if potion.lingering {
                 self.linger(&potion, hit, players);
             } else {

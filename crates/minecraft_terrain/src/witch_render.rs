@@ -183,6 +183,25 @@ pub fn append_potions<'a>(mesh: &mut ChunkMesh, potions: impl IntoIterator<Item 
         let position = at.as_vec3();
         let cell = (at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
         let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
+        // A snowball, egg, ender pearl or bottle o' enchanting: its own
+        // sprite, facing the camera.
+        let item = entity.potion.item;
+        if item != minecraftoss_entities::potion::ThrownItem::Potion {
+            let Ok(sprite) = ResourceId::parse(&item.item().replacen(':', ":item/", 1)) else { continue };
+            if !atlas.contains(&sprite) {
+                continue;
+            }
+            let [u0, v0, u1, v1] = atlas.region(&sprite);
+            let center = position + up * 0.125;
+            let start = mesh.vertices.len() as u32;
+            for (corner, uv) in [(Vec2::new(-0.25, -0.25), [u0, v1]), (Vec2::new(0.25, -0.25), [u1, v1]), (Vec2::new(0.25, 0.25), [u1, v0]), (Vec2::new(-0.25, 0.25), [u0, v0])] {
+                let point = center + right * corner.x + up * corner.y;
+                mesh.vertices.push(Vertex { position: point.to_array(), uv, color: [1.0; 4], sky_light: sky, block_light: block });
+            }
+            mesh.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            mesh.faces += 1;
+            continue;
+        }
         let rgb = entity.potion.color();
         let tint = [((rgb >> 16) & 255) as f32 / 255.0, ((rgb >> 8) & 255) as f32 / 255.0, (rgb & 255) as f32 / 255.0, 1.0];
         let bottle = if entity.potion.lingering && atlas.contains(&lingering) { &lingering } else { &splash };

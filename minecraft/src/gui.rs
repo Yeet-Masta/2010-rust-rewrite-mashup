@@ -172,6 +172,9 @@ pub struct Gui {
     pub height: f32,
     /// The mouse in GUI pixels.
     pub mouse: (f32, f32),
+    /// The items cooling down and how much of it is left, 1 to 0
+    /// (`ItemCooldowns.getCooldownPercent`), as the game last set them.
+    pub cooldowns: Vec<(String, f32)>,
 }
 
 /// The sprites, by name: their pack path under `textures/` and nine-slice
@@ -686,6 +689,7 @@ impl Gui {
             width: 320.0,
             height: 240.0,
             mouse: (0.0, 0.0),
+            cooldowns: Vec::new(),
         })
     }
 
@@ -1060,6 +1064,14 @@ impl Gui {
         let count = count.or_else(|| (stack.count != 1).then_some((own.as_str(), WHITE)));
         if let Some((count, colour)) = count {
             self.item_count(ui, count, x, y, colour);
+        }
+        // `renderItemCooldown`: a white veil over what is left of it.
+        if let Some(&(_, left)) = self.cooldowns.iter().find(|(id, _)| *id == stack.id)
+            && left > 0.0
+        {
+            let top = y + (16.0 * (1.0 - left)).floor();
+            let height = (16.0 * left).ceil();
+            self.fill(ui, x, top, 16.0, height, [1.0, 1.0, 1.0, 0.5]);
         }
     }
 

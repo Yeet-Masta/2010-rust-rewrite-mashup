@@ -419,6 +419,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     // Thrown splash potions: the bottle over its tinted contents.
     textures.insert(ResourceId::parse("minecraft:item/splash_potion")?, ());
     textures.insert(ResourceId::parse("minecraft:item/potion_overlay")?, ());
+    // And the other thrown items (`ThrownItemRenderer`).
+    for item in ["snowball", "egg", "blue_egg", "brown_egg", "ender_pearl", "experience_bottle"] {
+        textures.insert(ResourceId::parse(&format!("minecraft:item/{item}"))?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/zombie/husk")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie/husk_baby")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/zombie_villager/zombie_villager")?, ());

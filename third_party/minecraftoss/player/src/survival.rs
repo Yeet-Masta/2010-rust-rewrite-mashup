@@ -130,14 +130,14 @@ pub struct Armor {
 }
 
 /// The equipment's enchantment protection against the damage types the
-/// player's own ticks deal (fall, fire, drowning, effects), as the caller
-/// last worked it out.
+/// player's own ticks deal (fall, fire, drowning, effects) and ender
+/// pearls', as the caller last worked it out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Protection(pub Vec<(&'static str, f32)>);
 
 impl Protection {
     /// The damage types worked out.
-    pub const TYPES: [&'static str; 8] = ["minecraft:fall", "minecraft:in_fire", "minecraft:on_fire", "minecraft:lava", "minecraft:drown", "minecraft:magic", "minecraft:indirect_magic", "minecraft:wither"];
+    pub const TYPES: [&'static str; 9] = ["minecraft:fall", "minecraft:in_fire", "minecraft:on_fire", "minecraft:lava", "minecraft:drown", "minecraft:magic", "minecraft:indirect_magic", "minecraft:wither", "minecraft:ender_pearl"];
 
     pub fn against(&self, damage_type: &str) -> f32 {
         self.0.iter().find(|(id, _)| *id == damage_type).map_or(0.0, |&(_, protection)| protection)

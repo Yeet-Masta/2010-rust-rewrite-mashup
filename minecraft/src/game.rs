@@ -153,6 +153,9 @@ pub struct Game {
     using: Option<ranged::ItemUse>,
     /// A riptide's spin (`autoSpinAttackTicks`).
     riptide_spin: Option<ranged::SpinAttack>,
+    /// `ItemCooldowns`: each item cooling down, the tick it began and the
+    /// tick it ends.
+    cooldowns: Vec<(String, u64, u64)>,
     walk: Walk,
     fov: f32,
     previous_fov: f32,
@@ -325,6 +328,7 @@ impl Game {
             eating: None,
             using: None,
             riptide_spin: None,
+            cooldowns: Vec::new(),
             walk: Walk::default(),
             fov: 1.0,
             previous_fov: 1.0,
@@ -890,6 +894,10 @@ impl Game {
     /// and a hundred motes in the potion's colour flung out in a ring.
     fn potion_broke(&mut self, broke: minecraftoss_entities::world::PotionBreak) {
         use crate::particles::{Options, Type};
+        if let Some(item) = broke.thrown {
+            self.thrown_broke(&broke, item);
+            return;
+        }
         let block = broke.position.floor();
         let at = DVec3::new(block.x + 0.5, block.y, block.z + 0.5);
         let shard = Options::Item("minecraft:splash_potion".to_owned());
@@ -1882,6 +1890,14 @@ impl Game {
             self.throw_potion(stack);
             return;
         }
+        // `startUseItem`: an item cooling down does nothing.
+        if self.on_cooldown(&stack.id) {
+            return;
+        }
+        if let Some(item) = minecraftoss_entities::potion::ThrownItem::of(&stack.id) {
+            self.throw_item(item);
+            return;
+        }
         if self.start_using(self.entities.selected) {
             return;
         }
@@ -1891,6 +1907,116 @@ impl Game {
             return;
         }
         self.start_using(ranged::OFFHAND);
+    }
+
+    /// `SnowballItem.use`, `EggItem.use`, `EnderpearlItem.use` and
+    /// `ExperienceBottleItem.use`: the throw's sound, the item in flight
+    /// (the server's), one spent, an ender pearl's second of cooldown
+    /// (`use_cooldown`), and the arm swings.
+    fn throw_item(&mut self, item: minecraftoss_entities::potion::ThrownItem) {
+        use minecraftoss_entities::potion::ThrownItem;
+        let sound = match item {
+            ThrownItem::Snowball => "minecraft:entity.snowball.throw",
+            ThrownItem::Egg(_) => "minecraft:entity.egg.throw",
+            ThrownItem::EnderPearl => "minecraft:entity.ender_pearl.throw",
+            ThrownItem::ExperienceBottle => "minecraft:entity.experience_bottle.throw",
+            ThrownItem::Potion => return,
+        };
+        let pitch = 0.4 / (self.sounds.random() * 0.4 + 0.8);
+        self.play(sound, Some(self.player.pos), 0.5, pitch);
+        let motion = self.player.pos - self.previous;
+        let motion = if self.player.on_ground { DVec3::new(motion.x, 0.0, motion.z) } else { motion };
+        let rotation = (self.player.pitch as f32, self.player.yaw as f32);
+        self.entities.throw_item(item, self.player.eye().to_array(), rotation, motion.to_array());
+        if item == ThrownItem::EnderPearl {
+            self.add_cooldown("minecraft:ender_pearl", 20);
+        }
+        if !self.creative {
+            let selected = self.entities.selected;
+            if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                held.count -= 1;
+                if held.count == 0 {
+                    self.entities.inventory.slots[selected] = None;
+                }
+            }
+        }
+        self.start_swing();
+    }
+
+    /// `ItemCooldowns.addCooldown`: `ticks` from now.
+    fn add_cooldown(&mut self, item: &str, ticks: u64) {
+        let now = self.player.tick;
+        self.cooldowns.retain(|(id, _, end)| id != item && *end > now);
+        self.cooldowns.push((item.to_owned(), now, now + ticks));
+    }
+
+    /// `ItemCooldowns.isOnCooldown`.
+    fn on_cooldown(&self, item: &str) -> bool {
+        self.cooldowns.iter().any(|(id, _, end)| id == item && *end > self.player.tick)
+    }
+
+    /// `ItemCooldowns.getCooldownPercent` for each item cooling down,
+    /// `partial` through the tick.
+    fn cooldown_percents(&self, partial: f32) -> Vec<(String, f32)> {
+        let now = self.player.tick as f32 + partial;
+        self.cooldowns
+            .iter()
+            .filter(|(_, _, end)| *end as f32 > now)
+            .map(|(id, start, end)| (id.clone(), ((*end as f32 - now) / (*end - *start) as f32).clamp(0.0, 1.0)))
+            .collect()
+    }
+
+    /// Entity event 3 of a thrown snowball or egg (its item's crumbs) and
+    /// an ender pearl's 32 portal motes (`ThrownEnderpearl.onHit`); the
+    /// pearl's thrower lands where it was with 5 damage (`ender_pearl`)
+    /// and its fall forgotten.
+    fn thrown_broke(&mut self, broke: &minecraftoss_entities::world::PotionBreak, item: minecraftoss_entities::potion::ThrownItem) {
+        use crate::particles::{Options, Type};
+        use minecraftoss_entities::potion::ThrownItem;
+        let at = broke.position;
+        let crumbs = Options::Item(item.item().to_owned());
+        match item {
+            ThrownItem::Snowball => {
+                for _ in 0..8 {
+                    self.particles.spawn(&self.world, &crumbs, at, DVec3::ZERO);
+                }
+            }
+            ThrownItem::Egg(_) => {
+                for _ in 0..8 {
+                    let random = &mut self.particles.random;
+                    let motion = DVec3::new(
+                        (f64::from(random.next_float()) - 0.5) * 0.08,
+                        (f64::from(random.next_float()) - 0.5) * 0.08,
+                        (f64::from(random.next_float()) - 0.5) * 0.08,
+                    );
+                    self.particles.spawn(&self.world, &crumbs, at, motion);
+                }
+            }
+            ThrownItem::EnderPearl => {
+                for _ in 0..32 {
+                    let random = &mut self.particles.random;
+                    let pos = DVec3::new(at.x, at.y + random.next_double() * 2.0, at.z);
+                    let motion = DVec3::new(random.next_gaussian(), 0.0, random.next_gaussian());
+                    self.particles.spawn(&self.world, &Type::Portal.into(), pos, motion);
+                }
+            }
+            ThrownItem::Potion | ThrownItem::ExperienceBottle => {}
+        }
+        if let Some(to) = broke.teleport
+            && self.alive()
+        {
+            self.player.pos = to;
+            self.player.velocity = DVec3::ZERO;
+            self.player.fall_distance = 0.0;
+            if !self.creative {
+                let health = self.player.survival.health;
+                self.player.survival.hurt_bypassing_armor_as(5.0, "minecraft:ender_pearl");
+                if self.player.survival.health < health {
+                    self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
+                    self.player.hurt_time = 10;
+                }
+            }
+        }
     }
 
     /// `ThrowablePotionItem.use`: the throw's sound, the potion in flight
@@ -3068,6 +3194,7 @@ impl Game {
                 debug,
                 overlay,
             };
+            gui.cooldowns = self.cooldown_percents(partial);
             gui.hud(&mut ui, packs, &hud);
         }
         if let Some((rect, size)) = gui.player_box(self.screen, self.creative_inventory_tab())
