@@ -722,11 +722,17 @@ impl Game {
         self.world
             .stream
             .record_block_entities(events.block_entities);
-        if events.experience > 0 && !self.creative {
-            self.player
-                .survival
-                .give_experience_points(events.experience);
-            self.score += events.experience;
+        // `ExperienceOrb.playerTouch`: each orb first mends (`repairPlayerItems`),
+        // and what is left is experience.
+        let mut experience = 0;
+        for value in events.experience {
+            let selected = self.entities.selected;
+            let remaining = self.entities.inventory.repair_with_experience(selected, value);
+            experience += remaining.max(0) as u32;
+        }
+        if experience > 0 && !self.creative {
+            self.player.survival.give_experience_points(experience);
+            self.score += experience;
             let pitch = (self.sounds.random() - self.sounds.random()) * 0.35 + 0.9;
             self.play("minecraft:entity.experience_orb.pickup", None, 0.1, pitch);
         }

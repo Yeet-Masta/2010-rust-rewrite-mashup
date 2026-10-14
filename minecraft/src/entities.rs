@@ -67,8 +67,8 @@ pub struct Events {
     /// chunk is sent.
     pub block_entities: Vec<((i32, i32, i32), Option<minecraftoss_core::nbt::Tag>)>,
     pub hits: Vec<PlayerHit>,
-    /// Experience points of orbs the player took.
-    pub experience: u32,
+    /// The values of the experience orbs the player took, in order.
+    pub experience: Vec<i32>,
     /// A use on a mob that the mob took (the arm swings), and one it passed
     /// on (the held item is used instead).
     pub use_taken: bool,
@@ -898,11 +898,9 @@ impl Entities {
                     log!("Could not summon: {error}");
                 }
             }
-            events.experience += output
-                .orbs_taken
-                .iter()
-                .map(|&(_, _, value)| value.max(0) as u32)
-                .sum::<u32>();
+            events
+                .experience
+                .extend(output.orbs_taken.iter().map(|&(_, _, value)| value));
             for sound in &output.mob_sounds {
                 self.sounds.push((
                     sound.event.clone(),

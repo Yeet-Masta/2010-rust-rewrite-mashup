@@ -1116,9 +1116,48 @@ impl Inventory {
     /// selected hotbar slot is the main hand, then the off hand, the armor
     /// (36 feet to 39 head), the body and the saddle.
     pub fn equipment(&self, selected: usize) -> Vec<(crate::enchantment::Slot, &ItemStack)> {
-        use crate::enchantment::Slot;
-        let slots = [(selected, Slot::MainHand), (40, Slot::OffHand), (36, Slot::Feet), (37, Slot::Legs), (38, Slot::Chest), (39, Slot::Head), (41, Slot::Body), (42, Slot::Saddle)];
-        slots.into_iter().filter_map(|(index, slot)| Some((slot, self.slots.get(index)?.as_ref()?))).collect()
+        equipment_of(&self.slots, selected)
+    }
+
+    /// `ExperienceOrb.repairPlayerItems`: a random damaged item with a
+    /// `repair_with_xp` enchantment (mending) acting in its slot is mended
+    /// by the orb's `amount` (twice that in durability,
+    /// `modifyDurabilityToRepairFromXp`), and what the mending did not
+    /// need goes on to the next. Returns the experience left over.
+    pub fn repair_with_experience(&mut self, selected: usize, amount: i32) -> i32 {
+        let mut amount = amount;
+        loop {
+            let effects = self.recipes.enchantments().clone();
+            let recipes = &self.recipes;
+            let damaged = |stack: &ItemStack| recipes.durability(stack).is_some_and(|(damage, _)| damage > 0);
+            let chosen = effects.random_item_with("minecraft:repair_with_xp", &equipment_of(&self.slots, selected), damaged, &mut self.wear_random);
+            let Some(slot) = chosen else { return amount };
+            let index = Self::equipment_index(slot, selected);
+            let Some(stack) = self.slots[index].as_ref() else { return 0 };
+            let Some((damage, _)) = self.recipes.durability(stack) else { return 0 };
+            let to_repair = effects.repair_with_xp(stack, amount, &mut self.wear_random);
+            let repair = to_repair.min(damage as i32);
+            if let Some(components) = self.slots[index].as_mut().and_then(|s| s.components.as_mut()).and_then(Value::as_object_mut) {
+                let left = damage as i32 - repair;
+                if left > 0 {
+                    components.insert("minecraft:damage".into(), Value::from(left));
+                } else {
+                    // The default damage is no patch at all.
+                    components.remove("minecraft:damage");
+                }
+            }
+            if let Some(stack) = self.slots[index].as_mut().filter(|s| s.components.as_ref().is_some_and(|c| c.as_object().is_some_and(serde_json::Map::is_empty))) {
+                stack.components = None;
+            }
+            if repair <= 0 {
+                return 0;
+            }
+            let remaining = amount - repair * amount / to_repair;
+            if remaining <= 0 {
+                return 0;
+            }
+            amount = remaining;
+        }
     }
 
     /// The inventory index of an equipment slot, with `selected` the main
@@ -1168,6 +1207,14 @@ impl Inventory {
             .map(|s| s.count as u32)
             .sum()
     }
+}
+
+/// `getItemBySlot` over the inventory's slots, with `selected` the main
+/// hand.
+fn equipment_of(slots: &[Option<ItemStack>], selected: usize) -> Vec<(crate::enchantment::Slot, &ItemStack)> {
+    use crate::enchantment::Slot;
+    let order = [(selected, Slot::MainHand), (40, Slot::OffHand), (36, Slot::Feet), (37, Slot::Legs), (38, Slot::Chest), (39, Slot::Head), (41, Slot::Body), (42, Slot::Saddle)];
+    order.into_iter().filter_map(|(index, slot)| Some((slot, slots.get(index)?.as_ref()?))).collect()
 }
 
 pub(crate) fn click_stack(
@@ -1240,6 +1287,25 @@ mod tests {
             .unwrap()
             .with_item_catalog(Arc::new(ItemCatalog::from_path(&catalog).unwrap()));
         Some(Inventory::default().with_recipes(recipes))
+    }
+
+    /// Mending takes two durability a point, and passes on what is left.
+    #[test]
+    fn orbs_mend_gear_before_they_give_experience() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let mut inventory = Inventory::default().with_recipes(RecipeBook::from_jar(&jar).unwrap());
+        let mut boots = ItemStack::new("minecraft:iron_boots", 1);
+        boots.components = Some(serde_json::json!({"minecraft:max_damage": 100, "minecraft:damage": 10, "minecraft:enchantments": {"minecraft:mending": 1}}));
+        inventory.slots[36] = Some(boots);
+        assert_eq!(inventory.repair_with_experience(0, 3), 0);
+        assert_eq!(inventory.recipes.durability(inventory.slots[36].as_ref().unwrap()), Some((4, 100)));
+        assert_eq!(inventory.repair_with_experience(0, 10), 8);
+        assert_eq!(inventory.recipes.durability(inventory.slots[36].as_ref().unwrap()), Some((0, 100)));
+        assert_eq!(inventory.repair_with_experience(0, 5), 5);
     }
 
     #[test]
