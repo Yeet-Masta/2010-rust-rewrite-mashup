@@ -520,6 +520,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             zombie.head_item = head_item(tag);
             zombie.main_hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
             zombie.armor = armor_slots(tag);
+            zombie.equipment = equipment_stacks(tag);
             zombie.set_baby(int(tag, "IsBaby").unwrap_or(0) != 0);
             zombie.can_break_doors = int(tag, "CanBreakDoors").unwrap_or(0) != 0;
             zombie.persistence_required = persistent;
@@ -977,7 +978,8 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     }
     for e in world.zombies() {
         let kind = e.zombie.kind.type_id();
-        let fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        let mut fields = vec![("IsBaby", Tag::Byte(i8::from(e.zombie.baby))), ("CanBreakDoors", Tag::Byte(i8::from(e.zombie.can_break_doors)))];
+        fields.extend(equipment_tag(&e.zombie.equipment).map(|tag| ("equipment", tag)));
         add(e.id, kind, &e.zombie.body, e.yaw, e.zombie.health, e.zombie.persistence_required, fields);
     }
     for e in world.skeletons() {
@@ -1315,6 +1317,41 @@ fn attribute_value(tag: &Tag, id: &str) -> Option<f64> {
         value *= 1.0 + amount;
     }
     Some(value.clamp(0.0, 2048.0))
+}
+
+/// A mob's saved `equipment`, with each stack's components (where its
+/// enchantments are).
+fn equipment_stacks(tag: &Tag) -> Vec<(minecraftoss_player::enchantment::Slot, minecraftoss_player::inventory::ItemStack)> {
+    use minecraftoss_player::enchantment::Slot;
+    let Some(equipment) = tag.get("equipment") else { return Vec::new() };
+    Slot::ALL
+        .into_iter()
+        .filter_map(|slot| {
+            let item = equipment.get(slot.name())?;
+            let mut stack = minecraftoss_player::inventory::ItemStack::new(item.get("id")?.as_str()?, 1);
+            stack.max = 1;
+            stack.components = item.get("components").and_then(crate::stacks::components_json);
+            Some((slot, stack))
+        })
+        .collect()
+}
+
+/// A mob's equipment as saved: each stack's id, count and components.
+fn equipment_tag(equipment: &[(minecraftoss_player::enchantment::Slot, minecraftoss_player::inventory::ItemStack)]) -> Option<Tag> {
+    if equipment.is_empty() {
+        return None;
+    }
+    let slots = equipment
+        .iter()
+        .map(|(slot, stack)| {
+            let mut item: std::collections::BTreeMap<String, Tag> = [("id".to_owned(), Tag::String(stack.id.clone())), ("count".to_owned(), Tag::Int(i32::from(stack.count)))].into_iter().collect();
+            if let Some(components) = &stack.components {
+                item.insert("components".to_owned(), json_tag(components));
+            }
+            (slot.name().to_owned(), Tag::Compound(item))
+        })
+        .collect();
+    Some(Tag::Compound(slots))
 }
 
 /// The head slot's item, when there is one: whether it can be damaged

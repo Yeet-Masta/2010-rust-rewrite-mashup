@@ -79,6 +79,9 @@ pub struct Zombie {
     pub main_hand: Option<String>,
     /// The head, chest, legs and feet slots' item IDs.
     pub armor: [Option<String>; 4],
+    /// The equipment as saved, with its components: its enchantments act
+    /// on its hits and the hits it takes.
+    pub equipment: Vec<(minecraftoss_player::enchantment::Slot, minecraftoss_player::inventory::ItemStack)>,
 }
 
 impl Zombie {
@@ -98,6 +101,7 @@ impl Zombie {
             villager: None,
             main_hand: None,
             armor: Default::default(),
+            equipment: Vec::new(),
         }
     }
 

@@ -559,13 +559,25 @@ pub struct PlayerHit {
     pub source: Option<u64>,
 }
 
+/// What a mob's weapon's enchantments add to its melee hit
+/// (`Mob.doHurtTarget`): extra knockback along the attacker's facing
+/// (`getKnockback`, `causeExtraKnockback`) and seconds of fire (fire
+/// aspect's `ignite`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MeleeWeapon {
+    pub knockback: f32,
+    pub yaw: f32,
+    pub fire_seconds: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum PlayerHitKind {
     /// A melee attack (`mob_attack`) from the attacker's position; a husk's
     /// bite, if it lands, starves for this many ticks (`Husk.doHurtTarget`),
     /// and an iron golem's throws the player up by `lift` less what
-    /// knockback resistance takes (`IronGolem.doHurtTarget`).
-    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32 },
+    /// knockback resistance takes (`IronGolem.doHurtTarget`); what the
+    /// attacker's weapon's enchantments add.
+    Melee { attacker: DVec3, hunger_ticks: i32, lift: f32, weapon: MeleeWeapon },
     /// An arrow (`arrow`) along its velocity.
     /// An arrow in flight at `velocity`; a tipped one's effect lands with
     /// the hit (`Arrow.doPostHurtEffects`).
@@ -4745,7 +4757,8 @@ impl EntityWorld {
                                 let (clock, inhabited, moon) = world.difficulty_inputs((p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32));
                                 140 * regional_difficulty(difficulty, clock, inhabited, moon) as i32
                             });
-                        self.player_hits.push(PlayerHit { player_id, damage: 3.0, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0 }, source: Some(id) });
+                        let (damage, weapon) = self.zombie_weapon_hit(id, 3.0);
+                        self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks, lift: 0.0, weapon }, source: Some(id) });
                     }
                     if let Some((victim_id, attacker_position)) = pending_attack {
                         if let Some(victim) = self.villager_mut(victim_id) {
@@ -5019,7 +5032,7 @@ impl EntityWorld {
                     let entity = self.spider_mut(id).unwrap();
                     entity.spider.body.climbing = entity.spider.body.horizontal_collision;
                     if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
-                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                        self.player_hits.push(PlayerHit { player_id, damage: crate::spider::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, weapon: MeleeWeapon::default() }, source: Some(id) });
                     }
                     // A bite on a mob (an iron golem, or whatever hurt it).
                     if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
@@ -6664,6 +6677,33 @@ mod tests {
             _: Option<minecraftoss_player::Block>,
         ) {
         }
+    }
+
+    /// A zombie's saved sword brings its sharpness, knockback and fire to
+    /// its hit; its saved protected chestplate takes its share of a
+    /// player's.
+    #[test]
+    fn a_zombies_enchanted_gear_acts() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        use minecraftoss_player::enchantment::Slot;
+        let mut world = EntityWorld::default();
+        world.set_recipe_book(Arc::new(RecipeBook::from_jar(&jar).unwrap()));
+        let mut zombie = Zombie::new(DVec3::new(0.0, 1.0, 0.0));
+        let mut sword = ItemStack::new("minecraft:iron_sword", 1);
+        sword.components = Some(serde_json::json!({"minecraft:enchantments": {"minecraft:sharpness": 5, "minecraft:knockback": 2, "minecraft:fire_aspect": 2}}));
+        let mut chest = ItemStack::new("minecraft:iron_chestplate", 1);
+        chest.components = Some(serde_json::json!({"minecraft:enchantments": {"minecraft:protection": 4}}));
+        zombie.equipment = vec![(Slot::MainHand, sword), (Slot::Chest, chest)];
+        let id = world.spawn_zombie(zombie, true);
+        let (damage, weapon) = world.zombie_weapon_hit(id, 3.0);
+        assert_eq!(damage, 6.0);
+        assert_eq!((weapon.knockback, weapon.fire_seconds), (1.0, 8.0));
+        let (_, _, protection) = world.zombie_armor(id, "minecraft:player_attack");
+        assert_eq!(protection, 4.0);
     }
 
     /// A skeleton's arrow kills a creeper: the death names the skeleton

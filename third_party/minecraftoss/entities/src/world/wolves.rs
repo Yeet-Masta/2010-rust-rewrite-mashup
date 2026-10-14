@@ -546,7 +546,7 @@ impl EntityWorld {
                     self.mob_hits_mob(id, victim, wolf::ATTACK_DAMAGE, from, 0.0);
                 }
                 Target::Player(player_id) => {
-                    self.player_hits.push(PlayerHit { player_id, damage: wolf::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.0 }, source: Some(id) });
+                    self.player_hits.push(PlayerHit { player_id, damage: wolf::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.0, weapon: Default::default() }, source: Some(id) });
                 }
             }
         }

@@ -372,7 +372,7 @@ impl EntityWorld {
                     self.mob_hits_mob(id, victim, damage, from, f64::from(0.4_f32));
                 }
                 crate::monster_ai::Target::Player(player_id) => {
-                    self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.4 }, source: Some(id) });
+                    self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift: 0.4, weapon: Default::default() }, source: Some(id) });
                 }
                 crate::monster_ai::Target::Villager(victim) => {
                     self.mob_hits_mob(id, victim, damage, from, f64::from(0.4_f32));

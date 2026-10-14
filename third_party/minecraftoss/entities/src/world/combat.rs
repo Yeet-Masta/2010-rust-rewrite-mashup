@@ -348,6 +348,69 @@ impl EntityWorld {
         }
     }
 
+    /// `Mob.doHurtTarget` on a player with the zombie's held weapon:
+    /// `ATTACK_DAMAGE` with the main hand's modifiers, the weapon's
+    /// `modifyDamage`, its `getKnockback` (the zombie slows to 60% when it
+    /// pushes) and its post-attack fire. The damage and what the weapon
+    /// adds.
+    pub(super) fn zombie_weapon_hit(&mut self, id: u64, base: f32) -> (f32, MeleeWeapon) {
+        let Some(e) = self.zombies.iter().find(|e| e.id == id) else { return (base, MeleeWeapon::default()) };
+        let Some(weapon) = e.zombie.equipment.iter().find(|(slot, _)| *slot == Slot::MainHand).map(|(_, stack)| stack.clone()) else { return (base, MeleeWeapon::default()) };
+        let yaw = e.yaw;
+        let effects = self.enchantment_effects();
+        let Some(mut attacker) = self.mob_facts(id) else { return (base, MeleeWeapon::default()) };
+        attacker.main_hand = Some(weapon.clone());
+        let player = EntityFacts { type_id: "minecraft:player".to_owned(), ..EntityFacts::default() };
+        let modifiers = self.recipes.as_ref().map_or_else(Vec::new, |recipes| recipes.item_modifiers(&weapon));
+        let damage = attribute_value(f64::from(base), modifiers.iter().filter(|m| m.in_main_hand() && m.attribute == "minecraft:attack_damage"), (0.0, 2048.0)) as f32;
+        let source = DamageFacts { damage_type: "minecraft:mob_attack", attacker: Some(&attacker), direct: Some(&attacker), is_direct: true };
+        let mut random = std::mem::take(&mut self.level_random);
+        let damage = effects.damage(&weapon, &player, &source, damage, &mut random);
+        let knockback = effects.knockback(&weapon, &player, &source, 0.0, &mut random) / 2.0;
+        let fire_seconds = effects
+            .post_attack(&[], Some(&weapon), &player, &source, &mut random)
+            .into_iter()
+            .filter_map(|after| match after.effect {
+                EntityEffect::Ignite { seconds } if after.affected == Target::Victim => Some(seconds),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
+        self.level_random = random;
+        if knockback > 0.0 {
+            if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
+                e.zombie.body.velocity.x *= 0.6;
+                e.zombie.body.velocity.z *= 0.6;
+            }
+        }
+        (damage, MeleeWeapon { knockback, yaw, fire_seconds })
+    }
+
+    /// A zombie's armor against a hit: `Zombie.createAttributes`' 2 with
+    /// its worn pieces' points and toughness, and their enchantments'
+    /// protection (`getDamageProtection`) against the damage type.
+    pub(super) fn zombie_armor(&self, id: u64, damage_type: &str) -> (f32, f32, f32) {
+        let Some(e) = self.zombies.iter().find(|e| e.id == id) else { return (2.0, 0.0, 0.0) };
+        let (mut armor, mut toughness) = (2.0, 0.0);
+        if let Some(recipes) = self.recipes.as_ref() {
+            for (slot, stack) in &e.zombie.equipment {
+                if matches!(slot, Slot::Head | Slot::Chest | Slot::Legs | Slot::Feet) {
+                    armor += recipes.armor_points(stack, slot.name());
+                    toughness += recipes.armor_toughness(stack, slot.name()).0;
+                }
+            }
+        }
+        let equipment: Vec<(Slot, &ItemStack)> = e.zombie.equipment.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        let protection = if equipment.is_empty() {
+            0.0
+        } else {
+            let Some(victim) = self.mob_facts(id) else { return (armor as f32, toughness as f32, 0.0) };
+            let source = DamageFacts { damage_type, attacker: None, direct: None, is_direct: true };
+            // Protection draws nothing.
+            self.enchantment_effects().damage_protection(&equipment, &victim, &source, &mut LegacyRandom::new(0))
+        };
+        (armor as f32, toughness as f32, protection)
+    }
+
     /// `hurtServer` on a mob by an effect of the player's enchantments
     /// (thorns' `damage_entity`): the player at `position` is its source,
     /// so it knocks back, angers and credits a kill like a hit. Whether it
@@ -464,11 +527,13 @@ impl EntityWorld {
     fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack, armor: &mut dyn FnMut(f32, f32, f32) -> f32) -> Option<DamageResult> {
         let source = DamageSourceKind::PlayerAttack;
         let player = attack.player_id;
+        let (zombie_armor, zombie_toughness, zombie_protection) = self.zombie_armor(id, "minecraft:player_attack");
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
-            // `Zombie.createAttributes`: 2 armor.
-            let hit = e.hurt(armor(amount, 2.0, 0.0));
+            // `Zombie.createAttributes`: 2 armor, and what it wears.
+            let after_armor = armor(amount, zombie_armor, zombie_toughness);
+            let hit = e.hurt(minecraftoss_player::enchantment::damage_after_magic_absorb(after_armor, zombie_protection));
             if hit.applied {
                 if let Some(ai) = e.ai.as_deref_mut() {
                     // `setLastHurtByMob`, for `HurtByTargetGoal`.

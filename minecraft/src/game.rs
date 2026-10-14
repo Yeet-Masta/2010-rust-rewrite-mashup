@@ -2111,6 +2111,25 @@ impl Game {
             EntityEffect::Ignite { seconds } => self.player.survival.ignite_for_ticks((seconds * 20.0).floor() as i32),
             EntityEffect::Exhaustion { amount } => self.player.survival.food.add_exhaustion(*amount),
             EntityEffect::Sound { event, position, volume, pitch } => self.play(event, Some(*position), *volume, *pitch),
+            // Wind burst's blast where the player stands (`ServerExplosion`
+            // with no damage): straight up from its centre by the knockback
+            // multiplier, less `EXPLOSION_KNOCKBACK_RESISTANCE`, and the
+            // impulse spares the fall (`currentImpulseImpactPos`). The gust
+            // particles are not drawn, nor are mobs nearby pushed.
+            EntityEffect::Explode { position, radius, knockback_multiplier, definition, .. } => {
+                let distance = self.player.pos.distance(*position) / f64::from(radius * 2.0);
+                if *radius >= 1.0e-5 && distance <= 1.0 && !(self.creative && self.player.flying) {
+                    let resistance = self.player.equipped.attribute("minecraft:explosion_knockback_resistance", 0.0, (0.0, 1.0));
+                    let direction = (self.player.eye() - *position).normalize_or_zero();
+                    let power = (1.0 - distance) * f64::from(knockback_multiplier.unwrap_or(1.0)) * (1.0 - resistance);
+                    self.player.velocity += direction * power;
+                    self.player.fall_distance = 0.0;
+                }
+                if let Some(sound) = definition["sound"].as_str().or_else(|| definition["sound"]["sound_id"].as_str()) {
+                    let pitch = (1.0 + (self.sounds.random() - self.sounds.random()) * 0.2) * 0.7;
+                    self.play(sound, Some(*position), 4.0, pitch);
+                }
+            }
             _ => {}
         }
     }
@@ -2440,14 +2459,17 @@ impl Game {
             return;
         }
         // What lands with the hit: a husk's hunger (`Husk.doHurtTarget`)
-        // or a tipped arrow's effect (`Arrow.doPostHurtEffects`).
+        // or a tipped arrow's effect (`Arrow.doPostHurtEffects`), and what
+        // a mob's weapon's enchantments add.
         let mut after = None;
+        let mut melee_weapon = None;
         let (from, kind) = match hit.kind {
-            PlayerHitKind::Melee { attacker, lift, hunger_ticks } => {
+            PlayerHitKind::Melee { attacker, lift, hunger_ticks, weapon } => {
                 self.player.velocity.y += f64::from(lift);
                 if hunger_ticks > 0 {
                     after = Some(EffectInstance::new(MobEffect::Hunger, hunger_ticks, 0));
                 }
+                melee_weapon = Some(weapon);
                 (HitFrom::Position(attacker), "mob_attack")
             }
             PlayerHitKind::Arrow { velocity, effect } => {
@@ -2498,6 +2520,21 @@ impl Game {
             self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
             if let Some(effect) = after {
                 self.player.survival.add_effect_instance(effect);
+            }
+            // `Mob.doHurtTarget`: the weapon's extra knockback along the
+            // mob's facing (`LivingEntity.knockback`, less the player's
+            // resistance) and its fire.
+            if let Some(weapon) = melee_weapon {
+                let power = f64::from(weapon.knockback) * (1.0 - resistance);
+                if power > 0.0 {
+                    let (sin, cos) = minecraftoss_player::minecraft_sin_cos(f64::from(weapon.yaw));
+                    let v = self.player.velocity;
+                    let y = if self.player.on_ground { (v.y / 2.0 + power).min(0.4) } else { v.y };
+                    self.player.velocity = DVec3::new(v.x / 2.0 - sin * power, y, v.z / 2.0 + cos * power);
+                }
+                if weapon.fire_seconds > 0.0 {
+                    self.player.survival.ignite_for_ticks((weapon.fire_seconds * 20.0).floor() as i32);
+                }
             }
             // `Player.hurtArmor` (`doHurtEquipment`): each worn piece
             // loses a point for each four of damage, at least one.
