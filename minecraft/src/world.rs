@@ -83,6 +83,7 @@ impl World {
         save: Option<&Path>,
     ) -> Result<Self, String> {
         let paths = DataPaths::under(root);
+        install_outlines();
         let registries = Arc::new(Registries::load(&paths)?);
         let packs = PackStack::open(vec![root.join(crate::setup::RESOURCE_PACK)])
             .map_err(|e| e.to_string())?;
@@ -155,6 +156,12 @@ impl World {
     }
 
     /// The block's collision boxes in block-local units.
+    /// The block's outline shape (`getShape`), from the shipped table.
+    pub fn outline_shape(&self, pos: BlockPos) -> Option<&'static minecraft_terrain::outline::Shape> {
+        let state = self.scene.state_at(pos)?;
+        minecraft_terrain::outline::outlines()?.shape(state.0 as u32)
+    }
+
     pub fn collision_boxes(&self, pos: BlockPos) -> Vec<[f64; 6]> {
         self.scene.state_at(pos).map_or_else(Vec::new, |state| {
             self.registries.blocks.collision_boxes(state)
@@ -396,4 +403,17 @@ fn crack_strip(packs: &PackStack) -> anyhow::Result<image::RgbaImage> {
         }
     }
     Ok(strip)
+}
+
+/// The outline shapes and model offsets the game ships, for the terrain
+/// crate (`minecraft_terrain::outline`).
+fn install_outlines() {
+    use std::io::Read;
+    const TABLE: &[u8] = include_bytes!("../data/block-outline-26.3.json.gz");
+    let mut json = Vec::new();
+    if flate2::read::GzDecoder::new(TABLE).read_to_end(&mut json).is_ok()
+        && let Err(error) = minecraft_terrain::outline::install(&json)
+    {
+        log!("The block outline table did not load: {error}");
+    }
 }

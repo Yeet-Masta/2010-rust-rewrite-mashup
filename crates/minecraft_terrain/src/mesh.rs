@@ -1120,6 +1120,27 @@ pub fn moving_block_parts(view: &crate::server::MovingBlockView, partial: f32) -
     }
 }
 
+/// A block's model faces where it stands, with its random offset: each
+/// quad's corners in the world, for the crack drawn over them
+/// (`renderBreakingTexture`).
+pub fn block_faces(packs: &PackStack, block: &Block, pos: BlockPos) -> Vec<[Vec3; 4]> {
+    let Ok(variants) = resolve_block_variants(packs, block) else { return Vec::new() };
+    if variants.is_empty() {
+        return Vec::new();
+    }
+    let model = &variants[variant_index(&variants, pos)].0;
+    let origin = Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32) + crate::outline::model_offset(&block.id.path, pos);
+    let mut faces = Vec::new();
+    for element in &model.elements {
+        for face in &element.faces {
+            if let Ok(corners) = element_corners(element, &face.direction) {
+                faces.push(corners.map(|c| origin + Vec3::new(c[0], c[1], c[2])));
+            }
+        }
+    }
+    faces
+}
+
 /// Blocks pistons are moving (`submitMovingBlock`): each block state's
 /// model at its cell moved by its offset, every face drawn with the
 /// terrain's directional shade, tinted for the biome of its light cell and
@@ -1974,6 +1995,9 @@ pub(crate) fn append_block<'m, S: Scene>(
     }
     let variants = variants()?;
     let model = &variants[variant_index(variants, (x, y, z))].0;
+    // `ModelBlockRenderer.tesselateBlock`: the model moved by the block's
+    // offset (`BlockState.getOffset`).
+    let offset = crate::outline::model_offset(&block.id.path, (x, y, z));
     let mut biome = None;
     for element in &model.elements {
         for face in &element.faces {
@@ -2018,9 +2042,9 @@ pub(crate) fn append_block<'m, S: Scene>(
                 };
                 mesh.vertices.push(Vertex {
                     position: [
-                        x as f32 + corner[0],
-                        y as f32 + corner[1],
-                        z as f32 + corner[2],
+                        x as f32 + corner[0] + offset.x,
+                        y as f32 + corner[1] + offset.y,
+                        z as f32 + corner[2] + offset.z,
                     ],
                     uv,
                     color: [

@@ -111,6 +111,11 @@ pub fn shape(world: &World, pos: BlockPos, block: &Block) -> Vec<[f64; 6]> {
     ) {
         return Vec::new();
     }
+    // Vanilla's own outline, moved by the block's offset.
+    if let Some(shape) = world.outline_shape(pos) {
+        let o = minecraft_terrain::outline::model_offset(path, pos).as_dvec3();
+        return shape.boxes.iter().map(|b| [b[0] + o.x, b[1] + o.y, b[2] + o.z, b[3] + o.x, b[4] + o.y, b[5] + o.z]).collect();
+    }
     let boxes = world.collision_boxes(pos);
     if !boxes.is_empty() {
         return boxes;

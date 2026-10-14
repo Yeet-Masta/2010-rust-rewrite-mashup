@@ -708,7 +708,7 @@ impl Game {
                 std::mem::take(&mut meshes.translucent),
                 std::mem::take(&mut meshes.shadows),
             ],
-            cracks: self.mining.crack_mesh(),
+            cracks: self.crack_mesh(),
             weather: self.weather.mesh(&self.world, eye, self.ticks as i64, partial),
             lightning: crate::weather::Weather::bolt_mesh(self.entities.lightning()),
             outline,
@@ -3288,6 +3288,43 @@ impl Game {
         (vertices, indices)
     }
 
+    /// `renderBreakingTexture`: the block being mined drawn again over its
+    /// own model's faces with its destroy stage, each face's texture laid
+    /// on by where it lies in the block (`SheetedDecalTextureGenerator`),
+    /// a hair out along its normal: position then uv in the strip of ten.
+    fn crack_mesh(&self) -> (Vec<[f32; 5]>, Vec<u32>) {
+        let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+        let Some((pos, stage)) = self.mining.stage() else {
+            return (vertices, indices);
+        };
+        let Some(block) = self.world.block(pos) else {
+            return (vertices, indices);
+        };
+        let faces = minecraft_terrain::mesh::block_faces(&self.world.packs, block, pos);
+        if faces.is_empty() {
+            return self.mining.crack_mesh();
+        }
+        let origin = Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32);
+        for corners in faces {
+            let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
+            let start = vertices.len() as u32;
+            for corner in corners {
+                let local = (corner - origin).clamp(Vec3::ZERO, Vec3::ONE);
+                let (u, v) = if normal.y.abs() >= normal.x.abs() && normal.y.abs() >= normal.z.abs() {
+                    (local.x, local.z)
+                } else if normal.z.abs() >= normal.x.abs() {
+                    (local.x, 1.0 - local.y)
+                } else {
+                    (local.z, 1.0 - local.y)
+                };
+                let at = corner + normal * 0.002;
+                vertices.push([at.x, at.y, at.z, (stage as f32 + u) / 10.0, v]);
+            }
+            indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+        }
+        (vertices, indices)
+    }
+
     /// The outline of the targeted block's shape, as line segments.
     fn outline(&self) -> Vec<[f32; 3]> {
         let Some(hit) = crate::target::target(
@@ -3298,11 +3335,23 @@ impl Game {
         ) else {
             return Vec::new();
         };
+        let (x, y, z) = (hit.pos.0 as f32, hit.pos.1 as f32, hit.pos.2 as f32);
+        // `LevelRenderer.renderHitOutline`: the outline shape's edges
+        // (`forAllEdges`), moved by the block's offset.
+        if let Some(shape) = self.world.outline_shape(hit.pos) {
+            let path = self.world.block(hit.pos).map_or("", |b| b.id.path.as_str());
+            let o = minecraft_terrain::outline::model_offset(path, hit.pos);
+            let mut lines = Vec::with_capacity(shape.edges.len() * 2);
+            for e in &shape.edges {
+                lines.push([x + e[0] + o.x, y + e[1] + o.y, z + e[2] + o.z]);
+                lines.push([x + e[3] + o.x, y + e[4] + o.y, z + e[5] + o.z]);
+            }
+            return lines;
+        }
         let mut boxes = self.world.collision_boxes(hit.pos);
         if boxes.is_empty() {
             boxes.push([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
         }
-        let (x, y, z) = (hit.pos.0 as f32, hit.pos.1 as f32, hit.pos.2 as f32);
         let mut lines = Vec::new();
         for b in boxes {
             let g = 0.002;

@@ -14,6 +14,7 @@ pub(crate) mod interface;
 pub mod lighting;
 pub mod mesh;
 pub mod model;
+pub mod outline;
 pub mod pack;
 pub mod scene;
 pub mod sections;
