@@ -269,6 +269,70 @@ impl Level<'_> {
         }
     }
 
+    /// `FrostedIceBlock.onPlace`: its first tick in three to six seconds.
+    pub(super) fn frosted_ice_on_place(&mut self, state: BlockStateId, pos: BlockPos) {
+        let delay = 60 + self.random.next_i32_bound(61);
+        self.schedule_block_tick(pos, state, delay);
+    }
+
+    /// `FrostedIceBlock.fewerNeigboursThan`: fewer than `limit` of the six
+    /// neighbours are frosted ice.
+    pub(super) fn frosted_ice_fewer_neighbours(&self, pos: BlockPos, limit: usize) -> bool {
+        Direction::ALL.iter().filter(|&&d| self.name(self.block(pos.relative(d, 1))) == "minecraft:frosted_ice").count() < limit
+    }
+
+    /// `FrostedIceBlock.tick`: a third of the time, or with fewer than four
+    /// frosted neighbours, ice lit brighter than its age allows ages a step
+    /// (melting at its last), and then each frosted neighbour does too or
+    /// ticks soon; otherwise it ticks again in one to two seconds.
+    pub(super) fn frosted_ice_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        if self.random.next_i32_bound(3) == 0 || self.frosted_ice_fewer_neighbours(pos, 4) {
+            let age: i32 = self.registries().blocks.property(state, "age").and_then(|a| a.parse().ok()).unwrap_or(0);
+            let dampening = i32::from(self.registries().blocks.state(state).light_dampening);
+            let brightness = if self.dimension.as_deref() == Some("minecraft:the_end") { self.block_light(pos) } else { self.max_local_raw_brightness(pos) };
+            if brightness > 11 - age - dampening && self.frosted_ice_slightly_melt(state, pos) {
+                for direction in Direction::ALL {
+                    let next = pos.relative(direction, 1);
+                    let neighbour = self.block(next);
+                    if self.name(neighbour) == "minecraft:frosted_ice" && !self.frosted_ice_slightly_melt(neighbour, next) {
+                        let delay = 20 + self.random.next_i32_bound(21);
+                        self.schedule_block_tick(next, neighbour, delay);
+                    }
+                }
+                return;
+            }
+        }
+        let delay = 20 + self.random.next_i32_bound(21);
+        self.schedule_block_tick(pos, state, delay);
+    }
+
+    /// `slightlyMelt`: a step older, or melted at age 3 (true).
+    fn frosted_ice_slightly_melt(&mut self, state: BlockStateId, pos: BlockPos) -> bool {
+        let age: i32 = self.registries().blocks.property(state, "age").and_then(|a| a.parse().ok()).unwrap_or(0);
+        if age < 3 {
+            let older = self.registries().blocks.with_property(state, "age", &(age + 1).to_string()).unwrap_or(state);
+            self.set_block(pos, older, update::CLIENTS, update::LIMIT);
+            false
+        } else {
+            self.ice_melt(pos);
+            true
+        }
+    }
+
+    /// `IceBlock.melt`: gone where water evaporates, else water, which the
+    /// neighbour update sets flowing.
+    pub(super) fn ice_melt(&mut self, pos: BlockPos) {
+        if self.dimension.as_deref() == Some("minecraft:the_nether") {
+            let air = self.state_named("minecraft:air");
+            self.set_block(pos, air, update::ALL, update::LIMIT);
+            return;
+        }
+        let water = self.state_named("minecraft:water");
+        self.set_block_and_update(pos, water);
+        let block = self.block_id(water);
+        self.neighbor_changed(water, pos, block);
+    }
+
     /// `WetSpongeBlock.onPlace`: where water evaporates, it dries at once.
     pub(super) fn wet_sponge_on_place(&mut self, pos: BlockPos) {
         if self.dimension.as_deref() == Some("minecraft:the_nether") {

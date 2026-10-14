@@ -373,7 +373,7 @@ fn check_bite(case: &mut Case, tick: i64, data: &Value, observed: &serde_json::M
         let (_, player) = case.probe.as_mut().unwrap();
         let PlayerHitKind::Melee { attacker, hunger_ticks, .. } = hit.kind else { panic!("husk_bite tick {tick}: only bites") };
         let incoming = IncomingHit { damage: hit.damage, from: HitFrom::Position(attacker), scales_with_difficulty: true, exhaustion: 0.1 };
-        if player.hurt_by(&incoming, Difficulty::Normal, Armor { value: Some((0.0, 0.0)) }, 0.0) {
+        if player.hurt_by(&incoming, Difficulty::Normal, Armor { value: Some((0.0, 0.0)), protection: 0.0 }, 0.0) {
             tally.bites += 1;
             tally.hunger.push(hunger_ticks as u32);
             if hunger_ticks > 0 {

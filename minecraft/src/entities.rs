@@ -585,6 +585,11 @@ impl Entities {
         true
     }
 
+    /// The player's enchantments hurt a mob (thorns striking back).
+    pub fn hurt_mob(&mut self, id: u64, amount: f32, position: DVec3) {
+        self.server.hurt_mob(id, amount, position.to_array());
+    }
+
     /// The held item used on the mob the player looks at (shears on a
     /// sheep, a bucket on a cow, wheat to breed); whether there was one.
     pub fn interact(&mut self, eye: DVec3, look: DVec3, reach: f64, creative: bool) -> bool {

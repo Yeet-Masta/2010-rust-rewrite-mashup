@@ -805,6 +805,8 @@ impl<'a> Level<'a> {
             }
         } else if self.name(state) == "minecraft:wet_sponge" {
             self.wet_sponge_on_place(pos);
+        } else if self.name(state) == "minecraft:frosted_ice" {
+            self.frosted_ice_on_place(state, pos);
         } else if self.is_a(state, "CoralPlantBlock") || self.is_a(state, "CoralFanBlock") || self.is_a(state, "CoralWallFanBlock") {
             // `onPlace`: `tryScheduleDieTick` with the level random.
             let lib = self.lib;
@@ -835,6 +837,12 @@ impl<'a> Level<'a> {
             self.tnt_block_changed(pos);
         } else if self.name(state) == "minecraft:sponge" {
             self.sponge_try_absorb(pos);
+        } else if self.name(state) == "minecraft:frosted_ice" {
+            // `FrostedIceBlock.neighborChanged`: frosted ice beside it went,
+            // leaving fewer than two.
+            if self.registries().blocks.block(source).name.as_str() == "minecraft:frosted_ice" && self.frosted_ice_fewer_neighbours(pos, 2) {
+                self.ice_melt(pos);
+            }
         }
     }
 
@@ -983,6 +991,8 @@ impl<'a> Level<'a> {
             self.coral_tick(state, pos);
         } else if self.is_a(state, "FarmlandBlock") || self.is_a(state, "PathBlock") {
             self.covered_ground_tick(state, pos);
+        } else if self.name(state) == "minecraft:frosted_ice" {
+            self.frosted_ice_tick(state, pos);
         } else if self.is_a(state, "ComposterBlock") {
             // `ComposterBlock.tick`: a composter at 7 is ready (8); its
             // sound is the client's.

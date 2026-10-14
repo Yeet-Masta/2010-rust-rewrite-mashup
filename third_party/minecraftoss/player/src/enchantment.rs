@@ -24,6 +24,7 @@ use crate::rng::LegacyRandom;
 use glam::DVec3;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// The draws effects and conditions make (`RandomSource`).
 pub trait Draws {
@@ -1308,6 +1309,118 @@ fn expand(raw: &HashMap<String, Vec<String>>, registry: &str, key: &str, out: &m
                 out.insert(id_of(value));
             }
         }
+    }
+}
+
+/// An entity's equipment as its enchantments see it: the items by slot,
+/// the attribute modifiers they give (`forEachModifier` as the equipment
+/// changes) and those their location effects have on, and the entity
+/// effects their ticks and location changes made, for the owner to carry
+/// out.
+#[derive(Clone, Debug, Default)]
+pub struct Equipped {
+    effects: Arc<EnchantmentEffects>,
+    items: Vec<(Slot, ItemStack)>,
+    modifiers: Vec<AttributeModifier>,
+    location: LocationEffects,
+    transient: Vec<AttributeModifier>,
+    /// Effects to carry out, with the slot of the enchanted item.
+    pub pending: Vec<(Slot, EntityEffect)>,
+    random: LegacyRandom,
+}
+
+impl Equipped {
+    /// The equipment as it now is; whether it changed
+    /// (`collectEquipmentChanges`).
+    pub fn set(&mut self, effects: &Arc<EnchantmentEffects>, items: Vec<(Slot, ItemStack)>) -> bool {
+        if !Arc::ptr_eq(&self.effects, effects) {
+            self.effects = effects.clone();
+        } else if self.items == items {
+            return false;
+        }
+        self.modifiers = items.iter().flat_map(|(slot, stack)| self.effects.attribute_modifiers(stack, *slot)).collect();
+        self.items = items;
+        true
+    }
+
+    /// The items by slot.
+    pub fn items(&self) -> Vec<(Slot, &ItemStack)> {
+        self.items.iter().map(|(slot, stack)| (*slot, stack)).collect()
+    }
+
+    pub fn effects(&self) -> &Arc<EnchantmentEffects> {
+        &self.effects
+    }
+
+    /// The enchantments' draws.
+    pub fn random(&mut self) -> &mut LegacyRandom {
+        &mut self.random
+    }
+
+    /// The modifiers on an attribute, from the items and the location
+    /// effects that are on.
+    pub fn modifiers(&self, attribute: &str) -> impl Iterator<Item = &AttributeModifier> + Clone {
+        let attribute = attribute.to_owned();
+        self.modifiers.iter().chain(&self.transient).filter(move |m| m.attribute == attribute)
+    }
+
+    /// An attribute's value from its base with these modifiers, held to its
+    /// range.
+    pub fn attribute(&self, attribute: &str, base: f64, range: (f64, f64)) -> f64 {
+        crate::item_catalog::attribute_value(base, self.modifiers(attribute), range)
+    }
+
+    /// `getDamageProtection`.
+    pub fn protection(&mut self, victim: &EntityFacts, source: &DamageFacts) -> f32 {
+        let items: Vec<(Slot, &ItemStack)> = self.items.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        self.effects.damage_protection(&items, victim, source, &mut self.random)
+    }
+
+    /// `isImmuneToDamage`.
+    pub fn immune(&mut self, victim: &EntityFacts, source: &DamageFacts) -> bool {
+        let items: Vec<(Slot, &ItemStack)> = self.items.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        self.effects.immune_to_damage(&items, victim, source, &mut self.random)
+    }
+
+    /// `doPostAttackEffects` on the wearer as the victim: its equipment's
+    /// `victim`-enchanted effects (thorns).
+    pub fn post_attack(&mut self, victim: &EntityFacts, source: &DamageFacts) -> Vec<PostAttack> {
+        let items: Vec<(Slot, &ItemStack)> = self.items.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        self.effects.post_attack(&items, None, victim, source, &mut self.random)
+    }
+
+    /// `runLocationChangedEffects`: attribute effects come on and off,
+    /// the rest go to `pending`.
+    pub fn location_changed(&mut self, entity: &EntityFacts) {
+        let items: Vec<(Slot, &ItemStack)> = self.items.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        let changes = self.effects.location_changed(&items, entity, &mut self.location, &mut self.random);
+        self.apply(changes);
+    }
+
+    /// `stopLocationBasedEffects`.
+    pub fn stop_location_effects(&mut self) {
+        let changes = self.effects.stop_location_effects(&mut self.location);
+        self.apply(changes);
+    }
+
+    fn apply(&mut self, changes: Vec<LocationChange>) {
+        for change in changes {
+            match change {
+                LocationChange::Add(modifier) => {
+                    self.transient.retain(|m| m.id != modifier.id || m.attribute != modifier.attribute);
+                    self.transient.push(modifier);
+                }
+                LocationChange::Remove(modifier) => self.transient.retain(|m| m.id != modifier.id || m.attribute != modifier.attribute),
+                LocationChange::Effect(slot, effect) => self.pending.push((slot, effect)),
+            }
+        }
+    }
+
+    /// `tickEffects`: the effects go to `pending`.
+    pub fn tick(&mut self, entity: &EntityFacts) {
+        let items: Vec<(Slot, &ItemStack)> = self.items.iter().map(|(slot, stack)| (*slot, stack)).collect();
+        let effects = self.effects.tick(&items, entity, &mut self.random);
+        self.pending.extend(effects);
     }
 }
 

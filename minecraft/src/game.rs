@@ -2112,6 +2112,52 @@ impl Game {
         }
     }
 
+    /// What the equipment's enchantments did this tick (`tickEffects` and
+    /// `runLocationChangedEffects`): soul speed's souls, sounds and wear,
+    /// frost walker's ice.
+    fn enchantment_effects(&mut self) {
+        use minecraftoss_player::enchantment::EntityEffect;
+        for (slot, effect) in std::mem::take(&mut self.player.equipped.pending) {
+            match &effect {
+                EntityEffect::Particle { particle, position, velocity } => {
+                    // The only particle the vanilla enchantments send.
+                    if particle["type"] == "minecraft:soul" {
+                        let kind = crate::particles::Type::Soul.into();
+                        crate::emitters::send(&mut self.particles, &self.world, &kind, *position, 0, *velocity, 1.0);
+                    }
+                }
+                EntityEffect::ReplaceDisk { position, offset, radius, height, predicate, block, .. } => {
+                    self.replace_disk(*position, *offset, *radius, *height, predicate.as_ref(), block);
+                }
+                _ => self.enchantment_effect_on_player(&effect, slot),
+            }
+        }
+    }
+
+    /// `ReplaceDisk.apply` (frost walker): each block of the disk the
+    /// predicate accepts becomes the state, in the client's scene and the
+    /// server's level.
+    fn replace_disk(&mut self, position: DVec3, offset: [i32; 3], radius: i32, height: i32, predicate: Option<&serde_json::Value>, block: &serde_json::Value) {
+        let Some(id) = block["id"].as_str().or_else(|| block["state"]["Name"].as_str()) else { return };
+        let mut state = Block::new(id);
+        for (key, value) in block["properties"].as_object().into_iter().flatten() {
+            if let Some(value) = value.as_str() {
+                state = state.with(key, value);
+            }
+        }
+        let effects = self.entities.inventory.recipes.enchantments().clone();
+        let scene = &self.world.scene;
+        let at = |pos| minecraftoss_player::World::block(scene, pos);
+        let changed: Vec<BlockPos> = minecraftoss_player::enchantment::disk(position, offset, radius, height)
+            .into_iter()
+            .filter(|&pos| predicate.is_none_or(|p| effects.block_predicate(p, pos, &at)))
+            .collect();
+        for pos in changed {
+            self.world.set_blocks(&[(pos, Some(state.clone()))]);
+            self.entities.edited(&self.world.scene, pos, true);
+        }
+    }
+
     /// `LivingEntity.breakItem`: the snap, and crumbs of the item.
     fn item_broke(&mut self, item: &str) {
         let eye = self.player.eye();
@@ -2231,7 +2277,15 @@ impl Game {
         // the player stands, and the level random's draw for fire blocks.
         let inventory = &self.entities.inventory;
         let toughness = inventory.armor_toughness().0 as f32;
-        self.player.armor = Armor { value: Some((f32::from(inventory.armor_value()), toughness)) };
+        self.player.armor = Armor { value: Some((f32::from(inventory.armor_value()), toughness)), protection: 0.0 };
+        // What the enchantments of the equipment see.
+        let equipment = inventory
+            .equipment(self.entities.selected)
+            .into_iter()
+            .map(|(slot, stack)| (slot, stack.clone()))
+            .collect();
+        let effects = inventory.recipes.enchantments().clone();
+        self.player.set_equipment(&self.world.scene, &effects, equipment);
         self.player.in_rain = self.raining_on_player();
         self.player.fire_spread = 1 + i32::from(self.sounds.random() < 0.5);
         if self.creative {
@@ -2247,6 +2301,7 @@ impl Game {
             );
         }
         self.player.tick_attack_strength(held.as_ref());
+        self.enchantment_effects();
         let motion = self.player.pos - before;
         if self.player.extinguished {
             let pitch = 1.6 + (self.sounds.random() - self.sounds.random()) * 0.4;
@@ -2397,7 +2452,9 @@ impl Game {
                 (HitFrom::Projectile(velocity), "arrow")
             }
             PlayerHitKind::Explosion { knockback } => {
-                self.player.velocity += knockback;
+                // `EXPLOSION_KNOCKBACK_RESISTANCE` (blast protection).
+                let resistance = self.player.equipped.attribute("minecraft:explosion_knockback_resistance", 0.0, (0.0, 1.0));
+                self.player.velocity += knockback * (1.0 - resistance);
                 (HitFrom::Explosion, "player_explosion")
             }
             // `lightning_bolt`: `#no_knockback`, like a blast's own push;
@@ -2409,9 +2466,19 @@ impl Game {
         };
         let inventory = &self.entities.inventory;
         let (toughness, resistance) = inventory.armor_toughness();
-        let armor = Armor {
-            value: Some((f32::from(inventory.armor_value()), toughness as f32)),
+        let value = Some((f32::from(inventory.armor_value()), toughness as f32));
+        // `getDamageProtection` against the hit, from the mob that dealt it.
+        let damage_type = format!("minecraft:{kind}");
+        let me = self.player.facts(&self.world.scene, self.player.velocity);
+        let attacker = minecraftoss_player::enchantment::EntityFacts::default();
+        let source = minecraftoss_player::enchantment::DamageFacts {
+            damage_type: &damage_type,
+            attacker: hit.source.map(|_| &attacker),
+            direct: hit.source.map(|_| &attacker),
+            is_direct: !matches!(hit.kind, PlayerHitKind::Arrow { .. }),
         };
+        let protection = self.player.equipped.protection(&me, &source);
+        let armor = Armor { value, protection };
         let incoming = IncomingHit {
             damage: hit.damage,
             from,
@@ -2428,6 +2495,34 @@ impl Game {
             self.play("minecraft:entity.player.hurt", None, 1.0, 1.0);
             if let Some(effect) = after {
                 self.player.survival.add_effect_instance(effect);
+            }
+            // `Player.hurtArmor` (`doHurtEquipment`): each worn piece
+            // loses a point for each four of damage, at least one.
+            let wear = (hit.damage / 4.0).max(1.0) as u32;
+            for index in 36..40 {
+                let id = self.entities.inventory.slots[index].as_ref().map(|s| s.id.clone());
+                if let Some(id) = id
+                    && id != "minecraft:elytra"
+                    && self.entities.inventory.wear_tool(index, wear)
+                {
+                    self.item_broke(&id);
+                }
+            }
+            // The worn enchantments' post-attack effects (thorns striking
+            // back at the attacker, and wearing their piece).
+            for after in self.player.equipped.post_attack(&me, &source) {
+                use minecraftoss_player::enchantment::{EntityEffect, Target};
+                match (after.affected, &after.effect) {
+                    (Target::Attacker | Target::DamagingEntity, EntityEffect::Damage { amount, .. }) => {
+                        if let Some(id) = hit.source {
+                            self.entities.hurt_mob(id, *amount, self.player.pos);
+                            let at = self.entities.mob_bounds(id).map(|(feet, _, _)| feet);
+                            self.play("minecraft:enchant.thorns.hit", at, 1.0, 1.0);
+                        }
+                    }
+                    (_, EntityEffect::ItemDamage { .. }) | (Target::Victim, _) => self.enchantment_effect_on_player(&after.effect, after.slot),
+                    _ => {}
+                }
             }
         }
     }

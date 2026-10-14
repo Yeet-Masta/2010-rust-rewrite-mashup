@@ -120,10 +120,28 @@ impl FoodData {
 }
 
 /// The armor a hit meets: the `ARMOR` attribute's value and
-/// `ARMOR_TOUGHNESS`, or none for damage that bypasses armor.
+/// `ARMOR_TOUGHNESS`, or none for damage that bypasses armor; and the
+/// equipment's enchantment protection against the hit
+/// (`EnchantmentHelper.getDamageProtection`, none for `#bypasses_enchantments`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Armor {
     pub value: Option<(f32, f32)>,
+    pub protection: f32,
+}
+
+/// The equipment's enchantment protection against the damage types the
+/// player's own ticks deal (fall, fire, drowning, effects), as the caller
+/// last worked it out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Protection(pub Vec<(&'static str, f32)>);
+
+impl Protection {
+    /// The damage types worked out.
+    pub const TYPES: [&'static str; 8] = ["minecraft:fall", "minecraft:in_fire", "minecraft:on_fire", "minecraft:lava", "minecraft:drown", "minecraft:magic", "minecraft:indirect_magic", "minecraft:wither"];
+
+    pub fn against(&self, damage_type: &str) -> f32 {
+        self.0.iter().find(|(id, _)| *id == damage_type).map_or(0.0, |&(_, protection)| protection)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -153,6 +171,11 @@ pub struct SurvivalStatus {
     pub effects: ActiveEffects,
     /// `tickCount`, which an infinite effect's intervals count.
     age: i32,
+    /// The enchantment protection the player's own damage meets.
+    pub protection: Protection,
+    /// `BURNING_TIME`: what a fire's time is scaled by as it lights the
+    /// player (`LivingEntity.igniteForTicks`).
+    pub burning_time: f64,
 }
 
 impl Default for SurvivalStatus {
@@ -175,6 +198,8 @@ impl Default for SurvivalStatus {
             last_hurt: 0.0,
             effects: ActiveEffects::default(),
             age: 0,
+            protection: Protection::default(),
+            burning_time: 1.0,
         }
     }
 }
@@ -203,7 +228,9 @@ impl SurvivalStatus {
             amount
         };
         if amount > 0.0 {
-            self.damage(amount);
+            // Fall damage meets feather falling and protection.
+            let protection = self.protection.against("minecraft:fall");
+            self.damage_internal(amount, false, protection);
         }
     }
 
@@ -298,11 +325,18 @@ impl SurvivalStatus {
     /// magic, wither and fire do) and costs no food: the cooldown,
     /// resistance and absorption still apply.
     pub fn hurt_bypassing_armor(&mut self, amount: f32) {
-        self.hurt(amount, Armor::default(), 0.0);
+        self.hurt_bypassing_armor_as(amount, "minecraft:magic");
+    }
+
+    /// [`hurt_bypassing_armor`](Self::hurt_bypassing_armor) as a damage
+    /// type, whose enchantment protection applies.
+    pub fn hurt_bypassing_armor_as(&mut self, amount: f32, damage_type: &str) {
+        let protection = self.protection.against(damage_type);
+        self.hurt(amount, Armor { value: None, protection }, 0.0);
     }
 
     pub fn damage(&mut self, amount: f32) {
-        self.damage_internal(amount, false);
+        self.damage_internal(amount, false, 0.0);
     }
 
     /// `LivingEntity.hurtServer`'s damage cooldown around
@@ -345,6 +379,8 @@ impl SurvivalStatus {
         }
         if damage <= 0.0 {
             damage = 0.0;
+        } else if armor.protection > 0.0 {
+            damage = crate::enchantment::damage_after_magic_absorb(damage, armor.protection);
         }
         let original = damage;
         damage = (damage - self.absorption).max(0.0);
@@ -356,7 +392,7 @@ impl SurvivalStatus {
         }
     }
 
-    fn damage_internal(&mut self, amount: f32, bypass_effects: bool) {
+    fn damage_internal(&mut self, amount: f32, bypass_effects: bool, protection: f32) {
         if self.health <= 0.0 {
             return;
         }
@@ -376,6 +412,11 @@ impl SurvivalStatus {
         if let Some(effect) = self.effect(EffectKind::Resistance).filter(|_| !bypass_effects) {
             let absorb = 25 - (effect.amplifier + 1) * 5;
             remaining = (remaining * absorb as f32 / 25.0).max(0.0);
+        }
+        // `getDamageAfterMagicAbsorb`'s enchantment protection, which
+        // `#bypasses_effects` skips with the rest.
+        if !bypass_effects && remaining > 0.0 && protection > 0.0 {
+            remaining = crate::enchantment::damage_after_magic_absorb(remaining, protection);
         }
         let absorbed = remaining.min(self.absorption);
         self.absorption -= absorbed;
@@ -435,7 +476,7 @@ impl SurvivalStatus {
         match kind {
             EffectKind::Regeneration if self.health < self.max_health => self.heal(1.0),
             EffectKind::Poison if self.health > 1.0 && !invulnerable => self.hurt_bypassing_armor(1.0),
-            EffectKind::Wither if !invulnerable => self.hurt_bypassing_armor(1.0),
+            EffectKind::Wither if !invulnerable => self.hurt_bypassing_armor_as(1.0, "minecraft:wither"),
             EffectKind::Hunger => self.food.add_exhaustion(0.005 * (amplifier + 1) as f32),
             // `FoodData.eat(amplifier + 1, 1.0)`: saturation by modifier.
             EffectKind::Saturation => {
@@ -478,7 +519,8 @@ impl SurvivalStatus {
         self.burned = false;
         if self.fire_ticks > 0 {
             if self.fire_ticks % 20 == 0 && !in_lava {
-                self.hurt_by_fire(1.0, Armor::default(), 0.0, invulnerable);
+                let protection = self.protection.against("minecraft:on_fire");
+                self.hurt_by_fire(1.0, Armor { value: None, protection }, 0.0, invulnerable);
             }
             self.fire_ticks -= 1;
         }
@@ -494,8 +536,10 @@ impl SurvivalStatus {
         }
     }
 
-    /// `igniteForTicks`: burning at least this long.
+    /// `igniteForTicks`: burning at least this long, scaled by
+    /// `BURNING_TIME` and rounded up.
     pub fn ignite_for_ticks(&mut self, ticks: i32) {
+        let ticks = (f64::from(ticks) * self.burning_time).ceil() as i32;
         if self.fire_ticks < ticks {
             self.fire_ticks = ticks;
         }
@@ -547,12 +591,22 @@ impl SurvivalStatus {
     /// four air per tick, as breathing under water does unless the
     /// nautilus's breath alone holds it (`shouldEffectsRefillAirsupply`).
     pub fn tick_air(&mut self, eye_submerged: bool, invulnerable: bool) -> bool {
+        self.tick_air_with(eye_submerged, invulnerable, || false)
+    }
+
+    /// [`tick_air`](Self::tick_air) with `decreaseAirSupply`'s draw on
+    /// `OXYGEN_BONUS` (respiration): `keep` says whether this tick's breath
+    /// is spared. Drowning meets the equipment's protection.
+    pub fn tick_air_with(&mut self, eye_submerged: bool, invulnerable: bool, keep: impl FnOnce() -> bool) -> bool {
         let can_drown = !invulnerable && !self.effects.water_breathing();
         if eye_submerged && can_drown {
-            self.air -= 1;
+            if !keep() {
+                self.air -= 1;
+            }
             if self.air <= -20 {
                 self.air = 0;
-                self.damage(2.0);
+                let protection = self.protection.against("minecraft:drown");
+                self.damage_internal(2.0, false, protection);
                 return true;
             }
         } else if self.air < self.max_air && (!eye_submerged || self.effects.refill_air()) {
@@ -593,7 +647,7 @@ impl SurvivalStatus {
         if starvation_hit {
             // The default starve damage type bypasses armor and effects, but
             // still enters LivingEntity's hurt cooldown and absorption path.
-            self.damage_internal(1.0, true);
+            self.damage_internal(1.0, true, 0.0);
         }
     }
 

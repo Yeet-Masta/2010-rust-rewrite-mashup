@@ -429,7 +429,7 @@ fn main() {
                     let PlayerHitKind::Melee { attacker, .. } = hit.kind else { panic!("{scenario} tick {tick}: only bites") };
                     let probe = probes.values_mut().find(|p| p.candidate.id == hit.player_id).unwrap();
                     let incoming = IncomingHit { damage: hit.damage, from: HitFrom::Position(attacker), scales_with_difficulty: true, exhaustion: 0.1 };
-                    if probe.player.hurt_by(&incoming, Difficulty::Normal, Armor { value: Some((0.0, 0.0)) }, 0.0) {
+                    if probe.player.hurt_by(&incoming, Difficulty::Normal, Armor { value: Some((0.0, 0.0)), protection: 0.0 }, 0.0) {
                         // The biter is what it remembers hurt it.
                         world.player_hurt(hit.player_id, hit.source, "minecraft:mob_attack");
                         bites += 1;

@@ -973,6 +973,9 @@ pub enum Command {
     LootTables { jar: std::path::PathBuf, seed: u64 },
     /// `summon minecraft:experience_orb`.
     SummonOrb { position: [f64; 3], value: i32 },
+    /// The player's enchantments hurt a mob (thorns), the player standing
+    /// at `position`.
+    HurtMob { id: u64, amount: f32, position: [f64; 3] },
     /// `/summon` for a mob, with the command's NBT and the new mob's own
     /// random yaw.
     Summon { kind: String, position: [f64; 3], nbt: Option<minecraftoss_core::nbt::Tag>, y_rot: f32 },
@@ -1313,6 +1316,11 @@ impl ServerHandle {
         self.send(Command::SummonOrb { position, value });
     }
 
+    /// The player's enchantments hurt the mob `id` (thorns striking back).
+    pub fn hurt_mob(&mut self, id: u64, amount: f32, position: [f64; 3]) {
+        self.send(Command::HurtMob { id, amount, position });
+    }
+
     /// The player throws a splash or lingering potion; where it breaks
     /// arrives in an output (`potion_breaks`, `player_splashes`).
     pub fn throw_potion(&mut self, contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3]) {
@@ -1444,6 +1452,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::RecipeBook(recipes) => sim.set_recipe_book(recipes),
                 Command::LootTables { jar, seed } => sim.load_loot(&jar, seed),
                 Command::SummonOrb { position, value } => sim.summon_orb(position, value),
+                Command::HurtMob { id, amount, position } => {
+                    sim.mobs.hurt_by_player_effect(id, amount, 0, glam::DVec3::from_array(position));
+                }
                 Command::ThrowPotion { contents, lingering, eye, rotation, motion } => {
                     sim.mobs.throw_potion(0, contents, lingering, glam::DVec3::from_array(eye), rotation.0, rotation.1, glam::DVec3::from_array(motion));
                 }

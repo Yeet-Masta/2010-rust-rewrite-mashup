@@ -95,6 +95,7 @@ fn main() {
                 let action = definition["actions"].as_array().unwrap().iter().find(|a| a["type"] == "player_probe").unwrap();
                 let armor = Armor {
                     value: Some((action["armor"].as_f64().unwrap_or(0.0) as f32, action["armor_toughness"].as_f64().unwrap_or(0.0) as f32)),
+                    protection: 0.0,
                 };
                 let candidate = PlayerCandidate {
                     id: 1,

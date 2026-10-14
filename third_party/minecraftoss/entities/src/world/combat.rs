@@ -348,6 +348,15 @@ impl EntityWorld {
         }
     }
 
+    /// `hurtServer` on a mob by an effect of the player's enchantments
+    /// (thorns' `damage_entity`): the player at `position` is its source,
+    /// so it knocks back, angers and credits a kill like a hit. Whether it
+    /// took.
+    pub fn hurt_by_player_effect(&mut self, id: u64, amount: f32, player_id: u64, position: DVec3) -> bool {
+        let attack = PlayerAttack { player_id, position, ..PlayerAttack::default() };
+        self.hurt_by_player(id, amount, &attack, &mut damage_after_armor).is_some_and(|hit| hit.applied)
+    }
+
     /// A living mob's feet, width and height, by ID.
     pub fn mob_bounds(&self, id: u64) -> Option<(DVec3, f32, f32)> {
         self.mob_body(id).map(|(body, _)| (body.position, body.width, body.height))

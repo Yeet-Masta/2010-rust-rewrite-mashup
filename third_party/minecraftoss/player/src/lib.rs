@@ -1049,7 +1049,7 @@ fn back_off_from_edge(world: &impl World, bbox: Box3, delta: DVec3) -> DVec3 {
     }
     DVec3::new(x, delta.y, z)
 }
-fn modified_ground_input(input: Input, crouching: bool) -> (f64, f64) {
+fn modified_ground_input(input: Input, crouching: bool, sneak: f32) -> (f64, f64) {
     let mut x = input.strafe.clamp(-1.0, 1.0) as f32;
     let mut z = input.forward.clamp(-1.0, 1.0) as f32;
     let raw_length = (x * x + z * z).sqrt();
@@ -1060,8 +1060,8 @@ fn modified_ground_input(input: Input, crouching: bool) -> (f64, f64) {
         z *= 0.98_f32;
     }
     if crouching {
-        x *= 0.3_f32;
-        z *= 0.3_f32;
+        x *= sneak;
+        z *= sneak;
     }
     let length = (x * x + z * z).sqrt();
     if length > 0.0 {
@@ -1165,6 +1165,15 @@ pub struct Player {
     /// The level random's draw for a fire block's touch (1 or 2), as the
     /// caller last set it.
     pub fire_spread: i32,
+    /// What the player wears and holds as its enchantments see it, as the
+    /// caller last set it ([`enchantment::Equipped::set`]); the effects its
+    /// ticks and moves made wait in its `pending` for the caller.
+    pub equipped: enchantment::Equipped,
+    /// The block position as the location effects last saw it
+    /// (`LivingEntity.lastPos`).
+    last_block: Option<Pos>,
+    /// The game mode's name, for the enchantments' conditions.
+    pub game_mode: &'static str,
 }
 impl Player {
     pub fn new(pos: DVec3) -> Self {
@@ -1209,9 +1218,13 @@ impl Player {
             in_rain: false,
             extinguished: false,
             fire_spread: 1,
+            equipped: enchantment::Equipped::default(),
+            last_block: None,
+            game_mode: "creative",
         }
     }
     pub fn set_game_mode(&mut self, mode: GameMode) {
+        self.game_mode = mode.name();
         self.mayfly = mode.may_fly();
         self.spectator = mode == GameMode::Spectator;
         if self.spectator {
@@ -1242,6 +1255,56 @@ impl Player {
             yaw.cos() * pitch.cos(),
         )
     }
+    /// The player as the enchantments' conditions see it, with
+    /// `movement` its last tick's motion.
+    pub fn facts(&self, world: &impl World, movement: DVec3) -> enchantment::EntityFacts {
+        let below = (self.pos.x.floor() as i32, (self.pos.y - 0.500001).floor() as i32, self.pos.z.floor() as i32);
+        enchantment::EntityFacts {
+            type_id: "minecraft:player".to_owned(),
+            position: self.pos,
+            width: 0.6,
+            height: self.bbox().max.y as f32 - self.bbox().min.y as f32,
+            movement,
+            fall_distance: f64::from(self.fall_distance),
+            tick_count: self.tick as i32,
+            on_ground: self.on_ground,
+            on_fire: self.survival.on_fire(),
+            crouching: self.crouching,
+            sprinting: self.sprinting,
+            swimming: self.swimming,
+            flying: self.flying,
+            in_water: self.in_water,
+            block_below: world.block(below).map(|b| b.id),
+            player: Some(enchantment::PlayerFacts { game_mode: self.game_mode.to_owned(), food_level: i32::from(self.survival.food.level) }),
+            ..enchantment::EntityFacts::default()
+        }
+    }
+
+    /// The equipment as it now is (`collectEquipmentChanges`): a change
+    /// runs the location effects for it.
+    pub fn set_equipment(&mut self, world: &impl World, effects: &std::sync::Arc<enchantment::EnchantmentEffects>, items: Vec<(enchantment::Slot, inventory::ItemStack)>) {
+        if self.equipped.set(effects, items) && !self.spectator {
+            let facts = self.facts(world, self.velocity);
+            self.equipped.location_changed(&facts);
+        }
+        // `BURNING_TIME` (fire protection's less).
+        self.survival.burning_time = self.equipped.attribute("minecraft:burning_time", 1.0, (0.0, 1024.0));
+    }
+
+    /// `getDamageProtection` against a source with no attacker, for the
+    /// damage types the player's own ticks deal.
+    fn refresh_protection(&mut self, world: &impl World) {
+        let facts = self.facts(world, DVec3::ZERO);
+        let protection = survival::Protection::TYPES
+            .iter()
+            .map(|&damage_type| {
+                let source = enchantment::DamageFacts { damage_type, attacker: None, direct: None, is_direct: true };
+                (damage_type, self.equipped.protection(&facts, &source))
+            })
+            .collect();
+        self.survival.protection = survival::Protection(protection);
+    }
+
     fn bbox(&self) -> Box3 {
         let h = if self.swimming {
             0.6
@@ -1301,6 +1364,12 @@ impl Player {
     }
     pub fn tick(&mut self, world: &impl World, input: Input) {
         self.tick += 1;
+        // `LivingEntity.baseTick`: `EnchantmentHelper.tickEffects` (soul
+        // speed's souls and sounds).
+        if !self.spectator {
+            let facts = self.facts(world, self.velocity);
+            self.equipped.tick(&facts);
+        }
         // `LivingEntity.baseTick`.
         if self.hurt_time > 0 {
             self.hurt_time -= 1;
@@ -1391,11 +1460,23 @@ impl Player {
                 self.velocity.z += cos * 0.2;
             }
         }
-        let (x, z) = modified_ground_input(input, self.crouching);
+        // `SNEAKING_SPEED` (0.3; swift sneak's more).
+        let sneak = self.equipped.attribute("minecraft:sneaking_speed", f64::from(0.3_f32), (0.0, 1.0)) as f32;
+        let (x, z) = modified_ground_input(input, self.crouching, sneak);
         let friction = ground_friction(world, self.pos);
         let speed = self.movement_speed();
+        // `travelInWater`'s `WATER_MOVEMENT_EFFICIENCY` (depth strider),
+        // halved off the ground: the speed and drag move toward the land's.
+        let mut water_walker = self.equipped.attribute("minecraft:water_movement_efficiency", 0.0, (0.0, 1.0)) as f32;
+        if !was_on_ground {
+            water_walker *= 0.5;
+        }
         let acceleration = if self.in_water {
-            0.02
+            if water_walker > 0.0 {
+                f64::from(0.02_f32 + (speed - 0.02_f32) * water_walker)
+            } else {
+                0.02
+            }
         } else if was_on_ground {
             if friction > 0.6_f32 as f64 {
                 let f = friction as f32;
@@ -1494,6 +1575,15 @@ impl Player {
         if actual.y != requested.y {
             self.velocity.y = 0.0;
         }
+        // `Entity.move`'s `getBlockSpeedFactor`: soul sand and honey slow
+        // the player, unless `MOVEMENT_EFFICIENCY` (soul speed) lifts it.
+        if !self.spectator {
+            let efficiency = self.equipped.attribute("minecraft:movement_efficiency", 0.0, (0.0, 1.0)) as f32;
+            let factor = block_speed_factor(world, self.pos);
+            let factor = f64::from(factor + efficiency * (1.0 - factor));
+            self.velocity.x *= factor;
+            self.velocity.z *= factor;
+        }
         // 26.3 travelInAir applies gravity after Entity.move has clipped the
         // requested displacement, including a grounded tick; levitation
         // eases the speed toward 0.05 up a level instead.
@@ -1509,6 +1599,8 @@ impl Player {
             // `travelInWater`: dolphin's grace keeps the speed.
             if self.survival.has_effect(survival::EffectKind::DolphinsGrace) {
                 0.96_f32 as f64
+            } else if water_walker > 0.0 {
+                f64::from(0.8_f32 + (0.54600006_f32 - 0.8_f32) * water_walker)
             } else {
                 0.8
             }
@@ -1532,15 +1624,36 @@ impl Player {
                 self.flying = false;
             }
         }
+        // `onChangedBlock` on a new block position, and on landing from a
+        // fall (`checkFallDamage`): the location effects (soul speed, frost
+        // walker).
+        let block = (self.pos.x.floor() as i32, self.pos.y.floor() as i32, self.pos.z.floor() as i32);
+        let landed = self.on_ground && !was_on_ground && self.fall_distance > 0.0;
+        if !self.spectator && (self.last_block != Some(block) || landed) {
+            self.last_block = Some(block);
+            let facts = self.facts(world, actual);
+            self.equipped.location_changed(&facts);
+        }
     }
     /// `getSpeed`: the movement speed attribute (`AttributeInstance`,
     /// base 0.1) with its `ADD_MULTIPLIED_TOTAL` modifiers, sprinting's 30%
     /// and slowness's -15% a level (applied in that order here; vanilla's
     /// order is its modifier map's).
     pub fn movement_speed(&self) -> f32 {
-        let sprint = [(f64::from(0.3_f32), effects::Operation::AddMultipliedTotal)];
-        let own: &[_] = if self.sprinting { &sprint } else { &[] };
-        let value = self.survival.effects.attribute(effects::Attribute::MovementSpeed, f64::from(0.1_f32), own);
+        let mut own = Vec::new();
+        if self.sprinting {
+            own.push((f64::from(0.3_f32), effects::Operation::AddMultipliedTotal));
+        }
+        // The enchantments' modifiers (soul speed's, while it is on).
+        for modifier in self.equipped.modifiers("minecraft:movement_speed") {
+            match modifier.operation {
+                item_catalog::ModifierOperation::AddValue => own.push((modifier.amount, effects::Operation::AddValue)),
+                item_catalog::ModifierOperation::AddMultipliedTotal => own.push((modifier.amount, effects::Operation::AddMultipliedTotal)),
+                // On the base alone, as an addition of its share.
+                item_catalog::ModifierOperation::AddMultipliedBase => own.push((modifier.amount * f64::from(0.1_f32), effects::Operation::AddValue)),
+            }
+        }
+        let value = self.survival.effects.attribute(effects::Attribute::MovementSpeed, f64::from(0.1_f32), &own);
         value.clamp(0.0, 1024.0) as f32
     }
 
@@ -1651,6 +1764,7 @@ impl Player {
     ) {
         self.mayfly = false;
         self.flying = false;
+        self.refresh_protection(world);
         self.survival.tick_effects();
         let feet = (
             self.pos.x.floor() as i32,
@@ -1666,7 +1780,11 @@ impl Player {
         let submerged = world
             .block(eye_block)
             .is_some_and(|block| block.id == "minecraft:water");
-        self.survival.tick_air(submerged, false);
+        // `decreaseAirSupply`: `OXYGEN_BONUS` (respiration) spares a breath
+        // when a draw reaches past its share.
+        let oxygen = self.equipped.attribute("minecraft:oxygen_bonus", 0.0, (0.0, 1024.0));
+        let random = self.equipped.random();
+        self.survival.tick_air_with(submerged, false, || oxygen > 0.0 && random.next_double() >= 1.0 / (oxygen + 1.0));
         let before = self.pos;
         let jumped = input.jump && self.on_ground && !self.flying && !self.in_water;
         self.tick(world, input);
@@ -1749,9 +1867,11 @@ impl Player {
         // then water.
         if let Some(damage) = fire {
             self.survival.fire_ignite(self.fire_spread);
-            self.survival.hurt_by_fire(damage, self.armor, 0.1, false);
+            let armor = survival::Armor { protection: self.survival.protection.against("minecraft:in_fire"), ..self.armor };
+            self.survival.hurt_by_fire(damage, armor, 0.1, false);
         }
-        if lava && self.survival.touch_lava_with(self.armor, false) {
+        let lava_armor = survival::Armor { protection: self.survival.protection.against("minecraft:lava"), ..self.armor };
+        if lava && self.survival.touch_lava_with(lava_armor, false) {
             self.survival.burned = true;
         }
         if water || self.in_rain {
@@ -2084,6 +2204,24 @@ impl Player {
         Some(pos)
     }
 }
+/// `Entity.getBlockSpeedFactor`: the block at the feet's speed factor
+/// (soul sand and honey 0.4), or, when that is 1 outside water, the one
+/// the movement stands on.
+fn block_speed_factor(world: &impl World, pos: DVec3) -> f32 {
+    let factor = |at: Pos| match world.block(at).as_ref().map(|b| b.id.as_str()) {
+        Some("minecraft:soul_sand" | "minecraft:honey_block") => 0.4,
+        _ => 1.0,
+    };
+    let feet = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
+    let here = factor(feet);
+    let fluid = world.block(feet).is_some_and(|b| b.id == "minecraft:water" || b.id == "minecraft:bubble_column");
+    if here == 1.0 && !fluid {
+        factor((feet.0, (pos.y - 0.500001).floor() as i32, feet.2))
+    } else {
+        here
+    }
+}
+
 fn ground_friction(world: &impl World, pos: DVec3) -> f64 {
     let under = (
         pos.x.floor() as i32,
@@ -2661,6 +2799,30 @@ mod tests {
         }
         assert_eq!(p.survival.health, 18.0);
     }
+    /// Feather falling IV (12) and protection I (1) on the boots take 13 of 25
+    /// parts off an eleven-block fall's 8 damage.
+    #[test]
+    fn feather_falling_softens_a_fall() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = std::path::Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let book = crafting::RecipeBook::from_jar(&jar).unwrap();
+        let mut boots = inventory::ItemStack::new("minecraft:iron_boots", 1);
+        boots.components = Some(serde_json::json!({"minecraft:enchantments": {"minecraft:feather_falling": 4, "minecraft:protection": 1}}));
+        let w = floor();
+        let mut p = Player::new(DVec3::new(0.5, 12.0, 0.5));
+        p.equipped.set(book.enchantments(), vec![(enchantment::Slot::Feet, boots)]);
+        for _ in 0..40 {
+            p.tick_survival(&w, Input::default());
+            if p.on_ground {
+                break;
+            }
+        }
+        assert!(p.on_ground);
+        assert!((p.survival.health - (20.0 - 8.0 * 0.48)).abs() < 1e-4, "{}", p.survival.health);
+    }
     #[test]
     fn eleven_block_fall_matches_pinned_vanilla_health() {
         let w = floor();
@@ -2743,6 +2905,7 @@ mod tests {
                 ..Default::default()
             },
             false,
+            0.3,
         );
         let (left, diagonal_forward) = modified_ground_input(
             Input {
@@ -2751,6 +2914,7 @@ mod tests {
                 ..Default::default()
             },
             false,
+            0.3,
         );
         assert_eq!(forward, 0.98_f32 as f64);
         assert!(((left * left + diagonal_forward * diagonal_forward).sqrt() - 1.0).abs() < 1e-6);
