@@ -355,7 +355,9 @@ impl EntityWorld {
                 let event = event.strip_prefix("minecraft:").unwrap_or(event).to_owned();
                 self.sounds.push(MobSound { event, position: *position, volume: *volume, pitch: *pitch, category: "hostile_volume" });
             }
-            _ => {}
+            other => {
+                self.apply_level_effect(other);
+            }
         }
     }
 

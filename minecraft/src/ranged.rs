@@ -2,7 +2,9 @@
 //! `LivingEntity.startUsingItem`/`updatingUsingItem`/`releaseUsingItem`,
 //! `BowItem.use`/`releaseUsing`/`getPowerForTime`, `Player.getProjectile`,
 //! `ProjectileWeaponItem.getHeldProjectile`/`draw`/`useAmmo`,
-//! `CrossbowItem.use`/`onUseTick`/`performShooting`). A use runs
+//! `CrossbowItem.use`/`onUseTick`/`performShooting`,
+//! `TridentItem.use`/`releaseUsing`, `Player.startAutoSpinAttack`,
+//! `LivingEntity.checkAutoSpinAttack`). A use runs
 //! from the press until the button is let go (the bow looses then), the
 //! held item changes, or a screen opens; meanwhile the player walks at a
 //! fifth of its speed, cannot sprint, and attacks nothing.
@@ -21,6 +23,7 @@ pub const OFFHAND: usize = 40;
 pub enum UseKind {
     Bow,
     Crossbow,
+    Trident,
 }
 
 impl UseKind {
@@ -28,6 +31,7 @@ impl UseKind {
         match id {
             "minecraft:bow" => Some(Self::Bow),
             "minecraft:crossbow" => Some(Self::Crossbow),
+            "minecraft:trident" => Some(Self::Trident),
             _ => None,
         }
     }
@@ -46,6 +50,16 @@ pub struct ItemUse {
     /// `CrossbowItem.startSoundPlayed` and `midLoadSoundPlayed`.
     start_sound: bool,
     mid_sound: bool,
+}
+
+/// A riptide's spin (`startAutoSpinAttack`): the ticks left, the damage
+/// it strikes with, and the trident in its hand's slot.
+#[derive(Clone, Debug)]
+pub struct SpinAttack {
+    ticks: i32,
+    damage: f32,
+    item: ItemStack,
+    slot: usize,
 }
 
 /// Where a projectile comes from (`Player.getProjectile`): an inventory
@@ -159,11 +173,136 @@ impl Game {
                 }
                 self.find_ammo().is_some()
             }
+            // `TridentItem.use`: not one about to break, and riptide only in
+            // water or rain.
+            UseKind::Trident => !self.next_damage_breaks(&stack) && (self.riptide(&stack) <= 0.0 || self.wet()),
         };
         if ok {
             self.using = Some(ItemUse { kind, slot, id: stack.id, ticks: 0, start_sound: false, mid_sound: false });
         }
         ok
+    }
+
+    /// `ItemStack.nextDamageWillBreak`.
+    fn next_damage_breaks(&self, stack: &ItemStack) -> bool {
+        self.entities.inventory.recipes.durability(stack).is_some_and(|(damage, max)| damage + 1 >= max)
+    }
+
+    /// `EnchantmentHelper.getTridentSpinAttackStrength`.
+    fn riptide(&mut self, trident: &ItemStack) -> f32 {
+        let effects = self.entities.inventory.recipes.enchantments().clone();
+        effects.trident_spin_attack_strength(trident, self.player.equipped.random())
+    }
+
+    /// `isInWaterOrRain`.
+    fn wet(&self) -> bool {
+        self.player.in_water || self.player.in_rain
+    }
+
+    /// `TridentItem.releaseUsing`: held half a second or more, the trident
+    /// is thrown (2.5, spread 1) with its sound, worn a point first, or
+    /// with riptide in water or rain carries the player off along the look
+    /// at its strength, spinning for a second (lifted 1.2 off the ground).
+    fn release_trident(&mut self, using: &ItemUse) {
+        if using.ticks < 10 {
+            return;
+        }
+        let Some(trident) = self.slot_stack(using.slot).cloned() else { return };
+        let strength = self.riptide(&trident);
+        if (strength > 0.0 && !self.wet()) || self.next_damage_breaks(&trident) {
+            return;
+        }
+        // `pickHighestLevel(TRIDENT_SOUND)`: riptide's by its level.
+        let effects = self.entities.inventory.recipes.enchantments();
+        let sound = effects
+            .highest_level(&trident, "minecraft:trident_sound")
+            .and_then(|(list, level)| {
+                let list = list.as_array()?;
+                list.get((level.max(1) as usize - 1).min(list.len().checked_sub(1)?))?.as_str().map(str::to_owned)
+            })
+            .unwrap_or_else(|| "minecraft:item.trident.throw".to_owned());
+        // `hurtWithoutBreaking`.
+        if !self.creative {
+            self.entities.inventory.wear_tool(using.slot, 1);
+        }
+        if strength <= 0.0 {
+            // `consumeAndReturn`: a creative player keeps it.
+            let Some(mut thrown) = self.slot_stack(using.slot).cloned() else { return };
+            thrown.count = 1;
+            if !self.creative
+                && let Some(stack) = self.entities.inventory.slots[using.slot].as_mut()
+            {
+                stack.count -= 1;
+                if stack.count == 0 {
+                    self.entities.inventory.slots[using.slot] = None;
+                }
+            }
+            self.entities.throw_trident(PlayerShot {
+                player_id: 0,
+                eye: self.player.eye(),
+                x_rot: self.player.pitch as f32,
+                y_rot: self.player.yaw as f32,
+                motion: self.player.pos - self.previous,
+                on_ground: self.player.on_ground,
+                weapon: thrown.clone(),
+                projectiles: vec![thrown],
+                power: 2.5,
+                uncertainty: 1.0,
+                crit: false,
+                crossbow: false,
+                game_mode: if self.creative { "creative" } else { "survival" },
+            });
+            self.play(&sound, Some(self.player.eye()), 1.0, 1.0);
+            return;
+        }
+        use minecraftoss_player::mth::{cos, sin};
+        let rad = std::f32::consts::PI / 180.0;
+        let (y_rot, x_rot) = (f64::from(self.player.yaw as f32 * rad), f64::from(self.player.pitch as f32 * rad));
+        let (mut xd, mut yd, mut zd) = (-sin(y_rot) * cos(x_rot), -sin(x_rot), cos(y_rot) * cos(x_rot));
+        let dist = (xd * xd + yd * yd + zd * zd).sqrt();
+        xd *= strength / dist;
+        yd *= strength / dist;
+        zd *= strength / dist;
+        self.player.velocity += glam::DVec3::new(f64::from(xd), f64::from(yd), f64::from(zd));
+        self.riptide_spin = Some(SpinAttack { ticks: 20, damage: 8.0, item: trident, slot: using.slot });
+        self.player.auto_spin = true;
+        if self.player.on_ground {
+            self.player.move_clipped(&self.world.scene, glam::DVec3::new(0.0, f64::from(1.199_999_9_f32), 0.0));
+        }
+        self.play(&sound, Some(self.player.pos), 1.0, 1.0);
+    }
+
+    /// `LivingEntity.aiStep`'s spin: a tick less, then
+    /// `checkAutoSpinAttack` over the box swept since `before`: the first
+    /// mob in it is struck (`doAutoAttackOnTouch`, the trident's 8 in
+    /// place of the attack damage) and the spin ends with the player
+    /// thrown back a fifth; running into a wall ends it too.
+    pub(super) fn tick_spin(&mut self, before: glam::DVec3) {
+        let Some(mut spin) = self.riptide_spin.take() else { return };
+        spin.ticks -= 1;
+        let now = self.player.pos;
+        let half = glam::DVec3::new(0.3, 0.0, 0.3);
+        // The spin's pose is 0.6 high.
+        let height = glam::DVec3::new(0.0, 0.6, 0.0);
+        let min = before.min(now) - half;
+        let max = before.max(now) + half + height;
+        if let Some(hit) = self.entities.mob_in_box(min, max) {
+            let attack = self.melee_attack(Some(&spin.item), Some(f64::from(spin.damage)));
+            self.entities.attack_mob(hit, attack);
+            self.player.attack_strength_ticker = 0;
+            self.player.survival.food.add_exhaustion(0.1);
+            if !self.creative && self.slot_stack(spin.slot).is_some_and(|s| s.id == spin.item.id) && self.entities.inventory.wear_tool(spin.slot, 1) {
+                self.item_broke(&spin.item.id);
+            }
+            spin.ticks = 0;
+            self.player.velocity *= -0.2;
+        } else if self.player.horizontal_collision {
+            spin.ticks = 0;
+        }
+        if spin.ticks > 0 {
+            self.riptide_spin = Some(spin);
+        }
+        self.player.auto_spin = self.riptide_spin.is_some();
     }
 
     /// `CrossbowItem.getChargeDuration`: a second and a quarter, less quick
@@ -272,6 +411,7 @@ impl Game {
             UseKind::Bow => self.release_bow(using),
             // `CrossbowItem.releaseUsing` only ends the use.
             UseKind::Crossbow => {}
+            UseKind::Trident => self.release_trident(using),
         }
     }
 
@@ -400,6 +540,7 @@ impl Game {
                 let crossbow = self.slot_stack(slot).cloned()?;
                 UsePose::Crossbow(time_held, self.charge_duration(&crossbow) as f32)
             }
+            UseKind::Trident => UsePose::Trident(time_held),
         })
     }
 
@@ -409,6 +550,10 @@ impl Game {
     pub(super) fn ranged_hand_pose(&mut self, slot: usize, swing: f32, equip: f32, left: bool, partial: f32) -> Option<glam::Mat4> {
         if let Some(pose) = self.use_pose(slot, partial) {
             return Some(crate::hand::use_pose(pose, equip, left));
+        }
+        // `isAutoSpinAttack`: both hands held out before the player.
+        if self.riptide_spin.is_some() {
+            return Some(crate::hand::spin_pose(equip, left));
         }
         let loaded = slot != OFFHAND && self.slot_stack(slot).is_some_and(|s| s.id == "minecraft:crossbow" && !charged(s).is_empty());
         loaded.then(|| crate::hand::charged_crossbow_pose(swing, equip, left))
@@ -425,10 +570,10 @@ impl Game {
         if !bow_like(selected) && !bow_like(OFFHAND) {
             return (true, true);
         }
-        // Bows and crossbows are all `using` holds; eating is the main
-        // hand's.
+        // Eating is the main hand's.
         match (self.using.as_ref(), self.eating.as_ref()) {
-            (Some(using), _) => (using.slot != OFFHAND, using.slot == OFFHAND),
+            (Some(using), _) if matches!(using.kind, UseKind::Bow | UseKind::Crossbow) => (using.slot != OFFHAND, using.slot == OFFHAND),
+            (Some(using), _) => (true, !(using.slot != OFFHAND && loaded(OFFHAND))),
             (None, Some(eating)) => (true, !(eating.slot != OFFHAND && loaded(OFFHAND))),
             (None, None) => (true, !loaded(selected)),
         }

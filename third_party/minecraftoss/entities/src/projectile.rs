@@ -96,6 +96,12 @@ pub struct Arrow {
     /// `soundEvent`: what it plays as it strikes (a crossbow's bolt its
     /// own, then `entity.arrow.hit` once it has landed).
     pub sound: &'static str,
+    /// A trident's `dealtDamage` (it struck, or has lain in the ground),
+    /// its loyalty (`ID_LOYALTY`) and the ticks it has flown back
+    /// (`clientSideReturnTridentTickCount`).
+    pub dealt_damage: bool,
+    pub loyalty: u8,
+    pub return_ticks: i32,
     /// `piercingIgnoreEntityIds`.
     pierced: Vec<u64>,
     impact_state: Option<Block>,
@@ -181,6 +187,9 @@ impl Arrow {
             yaw: 0.0,
             pitch: 0.0,
             sound: ArrowKind::Arrow.hit_ground_sound(),
+            dealt_damage: false,
+            loyalty: 0,
+            return_ticks: 0,
             pierced: Vec::new(),
             impact_state: None,
             random,

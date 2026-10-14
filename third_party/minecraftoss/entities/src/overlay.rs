@@ -59,6 +59,12 @@ impl World for Overlay<'_> {
     fn rain_at(&self, pos: Pos) -> bool {
         self.base.rain_at(pos)
     }
+    fn raining(&self) -> bool {
+        self.base.raining()
+    }
+    fn thundering(&self) -> bool {
+        self.base.thundering()
+    }
     fn min_y(&self) -> i32 {
         self.base.min_y()
     }

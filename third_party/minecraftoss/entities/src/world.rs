@@ -325,6 +325,14 @@ pub struct SkeletonEntity {
     pub ai: Option<Box<MonsterAi>>,
 }
 
+/// What the entity world puts in the level: items dropped
+/// (`spawnAtLocation`) and lightning summoned (`SummonEntityEffect`).
+#[derive(Clone, Debug, Default)]
+pub struct Spawned {
+    pub items: Vec<(DVec3, ItemStack)>,
+    pub lightning: Vec<DVec3>,
+}
+
 #[derive(Clone)]
 pub struct ArrowEntity {
     pub id: u64,
@@ -2320,6 +2328,9 @@ pub struct EntityWorld {
     /// `broadcastEntityEvent` since last taken: entity, event (12 hearts,
     /// 13 anger, 14 happiness).
     entity_events: Vec<(u64, u8)>,
+    /// What the world spawned into the level since the last
+    /// `take_spawned`.
+    spawned: Spawned,
 }
 
 impl Default for EntityWorld {
@@ -2386,6 +2397,7 @@ impl Default for EntityWorld {
             player_main_hands: HashMap::new(),
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
+            spawned: Spawned::default(),
         }
     }
 }
@@ -4283,6 +4295,7 @@ impl EntityWorld {
             player_main_hands: self.player_main_hands.clone(),
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
+            spawned: Spawned::default(),
         };
         let kept: HashSet<u64> = copy.positions().map(|(id, _)| id).collect();
         copy.order = self.order.iter().copied().filter(|key| kept.contains(&key.id())).collect();
@@ -6350,9 +6363,10 @@ impl EntityWorld {
         nearest
     }
 
-    /// The nearest living mob AABB across species, with spawn order for ties.
-    pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(MobHit, f64)> {
-        let mut nearest = None;
+    /// The living mobs that may be hit, in the world's order, with their
+    /// bodies.
+    fn living_hits(&self) -> Vec<(MobHit, &Body)> {
+        let mut out = Vec::new();
         for key in &self.order {
             let (hit, body) = match *key {
                 EntityKey::Bat(id) => {
@@ -6499,6 +6513,15 @@ impl EntityWorld {
                     (MobHit::Chicken(id), &entity.chicken.body)
                 }
             };
+            out.push((hit, body));
+        }
+        out
+    }
+
+    /// The nearest living mob AABB across species, with spawn order for ties.
+    pub fn mob_on_ray(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(MobHit, f64)> {
+        let mut nearest = None;
+        for (hit, body) in self.living_hits() {
             let half = f64::from(body.width) / 2.0;
             let min = body.position + DVec3::new(-half, 0.0, -half);
             let max = body.position + DVec3::new(half, f64::from(body.height), half);
@@ -6509,6 +6532,16 @@ impl EntityWorld {
             }
         }
         nearest
+    }
+
+    /// The first living mob whose box meets the box `min`..`max`
+    /// (`Level.getEntities`, for `LivingEntity.checkAutoSpinAttack`).
+    pub fn mob_in_box(&self, min: DVec3, max: DVec3) -> Option<MobHit> {
+        self.living_hits().into_iter().find_map(|(hit, body)| {
+            let half = f64::from(body.width) / 2.0;
+            let (lo, hi) = (body.position - DVec3::new(half, 0.0, half), body.position + DVec3::new(half, f64::from(body.height), half));
+            (lo.x < max.x && hi.x > min.x && lo.y < max.y && hi.y > min.y && lo.z < max.z && hi.z > min.z).then_some(hit)
+        })
     }
 }
 

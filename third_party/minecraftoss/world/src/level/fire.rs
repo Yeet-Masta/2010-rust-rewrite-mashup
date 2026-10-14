@@ -61,8 +61,13 @@ impl Level<'_> {
     }
 
     /// `Level.isRaining`.
-    pub(super) fn is_raining(&self) -> bool {
+    pub fn is_raining(&self) -> bool {
         self.sky.as_ref().is_some_and(|s| s.weather.rain_level > 0.2)
+    }
+
+    /// `Level.isThundering`: the thunder, scaled by the rain, past 0.9.
+    pub fn is_thundering(&self) -> bool {
+        self.sky.as_ref().is_some_and(|s| s.weather.thunder() > 0.9)
     }
 
     /// `Level.isRainingAt`: raining, open to the sky, at or above the

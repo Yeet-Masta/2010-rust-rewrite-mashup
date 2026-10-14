@@ -316,6 +316,14 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().is_raining_at(minecraftoss_core::BlockPos::new(x, y, z))
     }
 
+    fn raining(&self) -> bool {
+        self.level.borrow().is_raining()
+    }
+
+    fn thundering(&self) -> bool {
+        self.level.borrow().is_thundering()
+    }
+
     fn light_path_cost(&self, (x, y, z): (i32, i32, i32)) -> f32 {
         let mut level = self.level.borrow_mut();
         let brightness = level.max_local_raw_brightness(minecraftoss_core::BlockPos::new(x, y, z));

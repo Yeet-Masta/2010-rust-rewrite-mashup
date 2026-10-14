@@ -142,6 +142,13 @@ pub struct EntityFacts {
     pub player: Option<PlayerFacts>,
     /// What it holds, for `minecraft:equipment`.
     pub main_hand: Option<ItemStack>,
+    /// The block at its position and whether that sees the sky
+    /// (`LocationPredicate`'s `block` and `can_see_sky`).
+    pub block_at: Option<String>,
+    pub sees_sky: bool,
+    /// Its level's `isRaining` and `isThundering` (`weather_check`).
+    pub raining: bool,
+    pub thundering: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1126,6 +1133,12 @@ impl EnchantmentEffects {
             "minecraft:damage_source_properties" => cx.damage.is_some_and(|source| self.damage_matches(&condition["predicate"], source)),
             "minecraft:match_tool" => cx.tool.is_some_and(|tool| self.item_matches(&condition["predicate"], tool)),
             "minecraft:enchantment_active_check" => cx.active == condition["active"].as_bool(),
+            // `WeatherCheck`, and `LocationCheck` at the entity's place
+            // (its offset unread): the level as the entity sees it.
+            "minecraft:weather_check" => cx.this.is_some_and(|this| {
+                condition["raining"].as_bool().is_none_or(|r| r == this.raining) && condition["thundering"].as_bool().is_none_or(|t| t == this.thundering)
+            }),
+            "minecraft:location_check" => cx.this.is_some_and(|this| self.location_matches(&condition["predicate"], this.block_at.as_deref(), Some(this.sees_sky))),
             _ => false,
         }
     }
@@ -1165,7 +1178,8 @@ impl EnchantmentEffects {
                 let check_sqr = |key: &str, sqr: f64| value.get(key).is_none_or(|b| bounds_sqr(b, sqr));
                 check("x", v.x) && check("y", v.y) && check("z", v.z) && check_sqr("speed", v.length_squared()) && check_sqr("horizontal_speed", v.x * v.x + v.z * v.z) && check("vertical_speed", v.y.abs()) && check("fall_distance", entity.fall_distance)
             }
-            "minecraft:movement_affected_by" | "movement_affected_by" => self.location_matches(value, entity.block_below.as_deref()),
+            "minecraft:movement_affected_by" | "movement_affected_by" => self.location_matches(value, entity.block_below.as_deref(), None),
+            "minecraft:location" | "location" => self.location_matches(value, entity.block_at.as_deref(), Some(entity.sees_sky)),
             "minecraft:periodic_tick" | "periodic_tick" => value.as_i64().is_some_and(|period| period != 0 && i64::from(entity.tick_count) % period == 0),
             // Only "has a vehicle" is known of what is ridden.
             "minecraft:vehicle" | "vehicle" => entity.passenger && value.as_object().is_some_and(Map::is_empty),
@@ -1179,10 +1193,11 @@ impl EnchantmentEffects {
     }
 
     /// `LocationPredicate` on a block: only its block part is known.
-    fn location_matches(&self, predicate: &Value, block: Option<&str>) -> bool {
+    fn location_matches(&self, predicate: &Value, block: Option<&str>, sees_sky: Option<bool>) -> bool {
         let Some(parts) = predicate.as_object() else { return true };
         parts.iter().all(|(key, value)| match key.as_str() {
             "block" => block.is_some_and(|block| value.get("blocks").is_none_or(|set| self.in_holder_set("block", set, block)) && value.get("state").is_none()),
+            "can_see_sky" => sees_sky.is_some_and(|sees| value.as_bool() == Some(sees)),
             _ => false,
         })
     }

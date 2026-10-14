@@ -10,6 +10,10 @@
 //! tipped one leaves its potion's effects at an eighth of their time; a
 //! piercing one passes through as many as its level and one. A landed
 //! arrow is picked up by the player who touches it when it may be.
+//! A thrown trident (`TridentItem.releaseUsing`, `ThrownTrident`) strikes
+//! once for 8 and its enchantments, bounces off, and a loyal one flies
+//! back to its thrower; channeling calls lightning down on what it hits
+//! in a thunderstorm, and on a lightning rod it lands on.
 use super::*;
 use crate::projectile::{ArrowKind, Pickup};
 use minecraftoss_player::enchantment::{DamageFacts, EntityEffect, EntityFacts, PlayerFacts, Slot};
@@ -140,6 +144,139 @@ impl EntityWorld {
         self.level_random = random;
     }
 
+    /// `TridentItem.releaseUsing`'s throw: the trident from the eyes less
+    /// 0.1 (`spawnProjectileFromRotation` at 2.5, spread 1), the player's
+    /// to take back (a creative player's only to it), striking for 8, with
+    /// the loyalty its enchantments give it (`getLoyaltyFromItem`).
+    pub fn throw_trident(&mut self, shot: &PlayerShot) {
+        let Some(item) = shot.projectiles.first() else { return };
+        let seed = self.projectile_seed_random.next_long();
+        let mut arrow_random = LegacyRandom::new(seed);
+        let start = DVec3::new(shot.eye.x, shot.eye.y - f64::from(0.1_f32), shot.eye.z);
+        let mut arrow = Arrow::shoot_from_rotation(start, shot.x_rot, shot.y_rot, 0.0, 2.5, 1.0, &mut arrow_random, shot.motion, shot.on_ground).with_kind(ArrowKind::Trident);
+        arrow.base_damage = 8.0;
+        arrow.pickup = if shot.game_mode == "creative" { Pickup::CreativeOnly } else { Pickup::Allowed };
+        let mut item = item.clone();
+        item.count = 1;
+        let effects = self.enchantment_effects();
+        let facts = EntityFacts { type_id: ArrowKind::Trident.type_id().to_owned(), position: arrow.position, width: 0.5, height: 0.5, movement: arrow.velocity, ..EntityFacts::default() };
+        let mut random = std::mem::take(&mut self.level_random);
+        arrow.loyalty = effects.trident_return_acceleration(&item, &facts, &mut random).clamp(0, 127) as u8;
+        self.level_random = random;
+        arrow.item = Some(item.clone());
+        // `getWeaponItem`: the trident is its own weapon.
+        arrow.weapon = Some(item);
+        self.spawn_arrow(PLAYER_TARGET + shot.player_id, arrow);
+    }
+
+    /// What the world spawned into the level since the last call.
+    pub fn take_spawned(&mut self) -> Spawned {
+        std::mem::take(&mut self.spawned)
+    }
+
+    /// `ThrownTrident.tick` before the arrow's own: lodged more than four
+    /// ticks, a trident has dealt its damage; a loyal one that has flies
+    /// back to its owner's eyes through everything, the faster the more
+    /// loyal, with `item.trident.return` as it turns, or drops (if it may
+    /// be picked up) and is gone once its owner is dead or spectating. A
+    /// mob takes it back within its width and one. Whether it is still
+    /// there.
+    fn tick_trident(&mut self, index: usize, players: &[PlayerCandidate]) -> bool {
+        let owner_id = self.arrows[index].owner_id;
+        let arrow = &mut self.arrows[index].arrow;
+        if arrow.kind != ArrowKind::Trident {
+            return true;
+        }
+        if arrow.in_ground_time > 4 {
+            arrow.dealt_damage = true;
+        }
+        if arrow.loyalty == 0 || !(arrow.dealt_damage || arrow.no_physics) {
+            return true;
+        }
+        // `getOwner` and `isAcceptibleReturnOwner`, with its eyes.
+        let owner = if owner_id == NO_OWNER {
+            None
+        } else if let Some(player) = owner_id.checked_sub(PLAYER_TARGET) {
+            players.iter().find(|p| p.id == player).map(|p| (p.alive && !p.spectator, p.position + DVec3::new(0.0, f64::from(p.eye_height), 0.0), None))
+        } else {
+            self.mob_body(owner_id).map(|(body, health)| (health > 0.0, body.position + DVec3::new(0.0, f64::from(body.height) * 0.85, 0.0), Some(body.width)))
+        };
+        let Some((acceptable, eye, mob_width)) = owner else { return true };
+        let arrow = &mut self.arrows[index].arrow;
+        if !acceptable {
+            if arrow.pickup == Pickup::Allowed {
+                self.spawned.items.push((arrow.position + DVec3::new(0.0, f64::from(0.1_f32), 0.0), arrow.pickup_item()));
+            }
+            arrow.alive = false;
+            return false;
+        }
+        if mob_width.is_some_and(|width| arrow.position.distance(eye) < f64::from(width) + 1.0) {
+            arrow.alive = false;
+            return false;
+        }
+        arrow.no_physics = true;
+        let to = eye - arrow.position;
+        let loyalty = f64::from(arrow.loyalty);
+        arrow.position.y += to.y * 0.015 * loyalty;
+        arrow.velocity = arrow.velocity * 0.95 + to.normalize_or_zero() * (0.05 * loyalty);
+        if arrow.return_ticks == 0 {
+            self.sounds.push(MobSound { event: "item.trident.return".to_owned(), position: arrow.position, volume: 10.0, pitch: 1.0, category: "friendly_volume" });
+        }
+        arrow.return_ticks += 1;
+        true
+    }
+
+    /// `AbstractArrow.onHitBlock`'s `hitBlockEnchantmentEffects`: the
+    /// weapon's `hit_block` effects where the arrow struck `pos`, at the
+    /// hit point kept within the block (channeling on a lightning rod).
+    fn arrow_hit_block(&mut self, index: usize, pos: (i32, i32, i32), world: &impl World) {
+        let arrow = &self.arrows[index].arrow;
+        let Some(weapon) = arrow.weapon.clone() else { return };
+        let inset = |v: f64, at: i32| v.clamp(f64::from(at) + 1.0e-5, f64::from(at) + 1.0 - 1.0e-5);
+        let at = DVec3::new(inset(arrow.position.x, pos.0), inset(arrow.position.y, pos.1), inset(arrow.position.z, pos.2));
+        let facts = EntityFacts {
+            type_id: arrow.kind.type_id().to_owned(),
+            position: at,
+            width: 0.5,
+            height: 0.5,
+            movement: arrow.velocity,
+            block_at: world.block(pos).map(|b| b.id.clone()),
+            sees_sky: world.can_see_sky(pos),
+            raining: world.raining(),
+            thundering: world.thundering(),
+            ..EntityFacts::default()
+        };
+        let effects = self.enchantment_effects();
+        let mut random = std::mem::take(&mut self.level_random);
+        let happened = effects.hit_block(&weapon, &facts, at, &mut random);
+        self.level_random = random;
+        for effect in happened {
+            self.apply_level_effect(&effect);
+        }
+    }
+
+    /// An enchantment effect that acts on the level rather than on a mob:
+    /// a summoned lightning bolt (`SummonEntityEffect`, the only entity
+    /// they summon) and a sound. Whether it was one.
+    pub(super) fn apply_level_effect(&mut self, effect: &EntityEffect) -> bool {
+        match effect {
+            EntityEffect::Other { kind, definition, position } if kind == "minecraft:summon_entity" => {
+                let types = &definition["entity"];
+                let lightning = types.as_str() == Some("minecraft:lightning_bolt") || types.as_array().is_some_and(|list| list.iter().any(|t| t == "minecraft:lightning_bolt"));
+                if lightning {
+                    self.spawned.lightning.push(*position);
+                }
+                true
+            }
+            EntityEffect::Sound { event, position, volume, pitch } => {
+                let event = event.strip_prefix("minecraft:").unwrap_or(event).to_owned();
+                self.sounds.push(MobSound { event, position: *position, volume: *volume, pitch: *pitch, category: "friendly_volume" });
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The living things an arrow may strike: every living mob and
     /// pickable player, its shooter only once it has flown clear.
     pub(super) fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate], left_owner: bool) -> Vec<ArrowTarget> {
@@ -168,6 +305,9 @@ impl EntityWorld {
     /// it strikes in turn (`stepMoveAndHit`), and the block that stops it.
     pub(super) fn tick_arrow(&mut self, id: u64, world: &impl World, players: &[PlayerCandidate]) {
         let Some(index) = self.arrows.iter().position(|e| e.id == id) else { return };
+        if !self.tick_trident(index, players) {
+            return;
+        }
         let owner_id = self.arrows[index].owner_id;
         let owner_box = if owner_id >= PLAYER_TARGET {
             players.iter().find(|p| p.id == owner_id - PLAYER_TARGET && p.alive).map(|p| player_box(p.position))
@@ -176,11 +316,22 @@ impl EntityWorld {
         };
         let entity = &mut self.arrows[index];
         entity.previous_position = entity.arrow.position;
-        if let Some(mut flight) = entity.arrow.begin_tick(&*world, owner_box, false) {
+        let trident = entity.arrow.kind == ArrowKind::Trident;
+        // `ThrownTrident.tickDespawn`: a loyal trident one may take stays.
+        let keeps = trident && entity.arrow.pickup == Pickup::Allowed && entity.arrow.loyalty > 0;
+        if let Some(mut flight) = entity.arrow.begin_tick(&*world, owner_box, keeps) {
             loop {
+                // `ThrownTrident.findHitEntities`: one target, none once it
+                // has dealt its damage.
+                if trident && self.arrows[index].arrow.dealt_damage {
+                    break;
+                }
                 let left = self.arrows[index].arrow.left_owner;
                 let targets = self.arrow_targets(owner_id, players, left);
-                let hits = self.arrows[index].arrow.entity_hits(&mut flight, &targets);
+                let mut hits = self.arrows[index].arrow.entity_hits(&mut flight, &targets);
+                if trident {
+                    hits.truncate(1);
+                }
                 if hits.is_empty() {
                     break;
                 }
@@ -188,13 +339,15 @@ impl EntityWorld {
                     if !self.arrows[index].arrow.alive {
                         break;
                     }
-                    self.strike(index, hit, players);
+                    self.strike(index, hit, players, world);
                 }
                 if flight.stopped() || !self.arrows[index].arrow.alive {
                     break;
                 }
             }
-            self.arrows[index].arrow.finish_tick(&*world, flight);
+            if let Some(pos) = self.arrows[index].arrow.finish_tick(&*world, flight) {
+                self.arrow_hit_block(index, pos, world);
+            }
         }
         // Its hit sound, from the arrow (`SoundSource.NEUTRAL`).
         if let Some((event, position, pitch)) = self.arrows[index].arrow.take_hit_sound() {
@@ -206,7 +359,7 @@ impl EntityWorld {
     /// weapon's `modifyDamage` on the base, the piercing count, a critical
     /// bonus), then the hurt; a hit that takes knocks back with punch and
     /// leaves a tipped or spectral arrow's effects.
-    fn strike(&mut self, index: usize, hit: ArrowImpact, players: &[PlayerCandidate]) {
+    fn strike(&mut self, index: usize, hit: ArrowImpact, players: &[PlayerCandidate], world: &impl World) {
         let owner_id = self.arrows[index].owner_id;
         let target = hit.target_id;
         let arrow = &self.arrows[index].arrow;
@@ -218,13 +371,18 @@ impl EntityWorld {
             Some(_) => EntityFacts { type_id: "minecraft:player".to_owned(), ..EntityFacts::default() },
             None => self.mob_facts(owner_id).unwrap_or_default(),
         };
-        let victim = match target.checked_sub(PLAYER_TARGET) {
+        let mut victim = match target.checked_sub(PLAYER_TARGET) {
             Some(player) => {
                 let feet = players.iter().find(|p| p.id == player).map_or(DVec3::ZERO, |p| p.position);
                 EntityFacts { type_id: "minecraft:player".to_owned(), position: feet, width: 0.6, height: 1.8, ..EntityFacts::default() }
             }
             None => self.mob_facts(target).unwrap_or_default(),
         };
+        // Where it stands, for channeling's sky and storm.
+        let cell = (victim.position.x.floor() as i32, victim.position.y.floor() as i32, victim.position.z.floor() as i32);
+        victim.sees_sky = world.can_see_sky(cell);
+        victim.raining = world.raining();
+        victim.thundering = world.thundering();
         let damage_type = if kind == ArrowKind::Trident { "minecraft:trident" } else { "minecraft:arrow" };
         let source = DamageFacts { damage_type, attacker: Some(&owner_facts), direct: Some(&arrow_facts), is_direct: false };
         let mut random = std::mem::take(&mut self.level_random);
@@ -234,7 +392,13 @@ impl EntityWorld {
         if !arrow.pierce(target) {
             return;
         }
-        let damage = arrow.hit_damage(base);
+        // `ThrownTrident.onHitEntity`: its 8 as the enchantments leave it.
+        let damage = if kind == ArrowKind::Trident {
+            arrow.dealt_damage = true;
+            base as f32
+        } else {
+            arrow.hit_damage(base)
+        };
         let velocity = arrow.velocity;
         let position = arrow.position;
         let pierces = arrow.pierce_level > 0;
@@ -342,7 +506,16 @@ impl EntityWorld {
                 continue;
             }
             let picked = match arrow.pickup {
-                Pickup::Disallowed => false,
+                // `ThrownTrident.tryPickup`: its owner takes back a
+                // returning trident anyway.
+                Pickup::Disallowed => arrow.no_physics && owned && {
+                    let stack = arrow.pickup_item();
+                    let took = take(&stack);
+                    if took {
+                        taken.push((arrow.position, stack));
+                    }
+                    took
+                },
                 Pickup::Allowed => {
                     let stack = arrow.pickup_item();
                     let took = take(&stack);

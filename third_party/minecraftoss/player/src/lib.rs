@@ -183,6 +183,13 @@ pub trait World {
     fn rain_at(&self, _pos: Pos) -> bool {
         false
     }
+    /// `Level.isRaining` and `isThundering`, for `weather_check`.
+    fn raining(&self) -> bool {
+        false
+    }
+    fn thundering(&self) -> bool {
+        false
+    }
     /// The lowest block Y (`LevelHeightAccessor.getMinY`).
     fn min_y(&self) -> i32 {
         -64
@@ -1137,6 +1144,11 @@ pub struct Player {
     jump_trigger_time: u8,
     previous_jump_input: bool,
     pub swimming: bool,
+    /// `isAutoSpinAttack`: a riptide's spin, as the caller last set it; its
+    /// pose (`SPIN_ATTACK`) is 0.6 high with the eyes at 0.4.
+    pub auto_spin: bool,
+    /// `horizontalCollision`: the last move was stopped across.
+    pub horizontal_collision: bool,
     pub in_water: bool,
     /// Entity.checkFallDamage accumulates collision-clipped downward travel.
     pub fall_distance: f32,
@@ -1196,6 +1208,8 @@ impl Player {
             on_ground: false,
             crouching: false,
             previous_crouch_input: false,
+            auto_spin: false,
+            horizontal_collision: false,
             sprinting: false,
             flying: false,
             flying_speed: 0.05,
@@ -1236,7 +1250,7 @@ impl Player {
         self.fall_distance = 0.0;
     }
     pub fn eye_height(&self) -> f64 {
-        if self.swimming {
+        if self.swimming || self.auto_spin {
             0.4
         } else if self.crouching {
             1.27
@@ -1306,7 +1320,7 @@ impl Player {
     }
 
     fn bbox(&self) -> Box3 {
-        let h = if self.swimming {
+        let h = if self.swimming || self.auto_spin {
             0.6
         } else if self.crouching {
             1.5
@@ -1317,6 +1331,16 @@ impl Player {
             self.pos + DVec3::new(-0.3, 0.0, -0.3),
             self.pos + DVec3::new(0.3, h, 0.3),
         )
+    }
+
+    /// `Entity.move(MoverType.SELF, delta)` on its own, clipped by the
+    /// blocks (a grounded riptide's lift of 1.2).
+    pub fn move_clipped(&mut self, world: &impl World, delta: DVec3) {
+        let bbox = self.bbox();
+        let blocks = shapes_near(world, bbox, delta.length() + 0.7);
+        let actual = clip_motion(bbox, &blocks, delta);
+        self.pos += actual;
+        self.on_ground = delta.y < 0.0 && actual.y > delta.y;
     }
 
     /// Candidate validation for Consumables' random teleport. The caller
@@ -1435,7 +1459,7 @@ impl Player {
             };
         // LocalPlayer updates crouching from the previous KeyboardInput state
         // before polling this tick's keys.
-        self.crouching = self.previous_crouch_input && !self.flying && !self.swimming;
+        self.crouching = self.previous_crouch_input && !self.flying && !self.swimming && !self.auto_spin;
         self.previous_crouch_input = input.crouch;
         // isSprintingPossible rejects shallow water for a standing player.
         // An existing swim sprint may continue while the eyes leave water.
@@ -1566,6 +1590,8 @@ impl Player {
         }
         self.pos += actual;
         self.on_ground = !self.spectator && requested.y < 0.0 && actual.y > requested.y;
+        // `Mth.equal` on each horizontal axis.
+        self.horizontal_collision = (actual.x - requested.x).abs() >= 1.0e-5 || (actual.z - requested.z).abs() >= 1.0e-5;
         if (actual.x - requested.x).abs() >= 1.0e-7 {
             self.velocity.x = 0.0;
         }

@@ -725,6 +725,21 @@ impl Entities {
         self.server.shoot(shot);
     }
 
+    /// The player throws a trident (the server's).
+    pub fn throw_trident(&mut self, shot: minecraftoss_entities::world::PlayerShot) {
+        self.server.throw_trident(shot);
+    }
+
+    /// The first living mob in a box (a riptide's touch).
+    pub fn mob_in_box(&self, min: DVec3, max: DVec3) -> Option<minecraftoss_entities::world::MobHit> {
+        self.world.mob_in_box(min, max)
+    }
+
+    /// The player's hit on a mob it touched (`doAutoAttackOnTouch`).
+    pub fn attack_mob(&mut self, hit: minecraftoss_entities::world::MobHit, attack: PlayerAttack) {
+        self.server.mob_action(hit, Some(attack), &self.inventory.clone(), self.selected, false);
+    }
+
     /// The player throws a splash or lingering potion (the server's).
     pub fn throw_potion(
         &mut self,

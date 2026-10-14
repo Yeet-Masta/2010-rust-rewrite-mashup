@@ -516,6 +516,15 @@ impl ServerSim {
         // A blast's victims drop their loot before its blocks break
         // (`ServerExplosion.explode`: `hurtEntities`, then the blocks).
         self.drop_death_loot();
+        // What the mobs and projectiles put into the level: a trident left
+        // without its owner, channeling's lightning.
+        let spawned = self.mobs.take_spawned();
+        for (position, stack) in spawned.items {
+            self.level.spawn_at_location(position.to_array(), crate::stacks::to_level(&stack));
+        }
+        for position in spawned.lightning {
+            self.level.summon_lightning(position.to_array());
+        }
         self.explode_creepers();
     }
 
@@ -968,6 +977,8 @@ pub enum Command {
     ThrowPotion { contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3] },
     /// A volley the player's bow or crossbow loosed.
     Shoot(Box<minecraftoss_entities::world::PlayerShot>),
+    /// A trident the player threw: the shot's first projectile.
+    ThrowTrident(Box<minecraftoss_entities::world::PlayerShot>),
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
     RecipeBook(Arc<minecraftoss_player::crafting::RecipeBook>),
@@ -1340,6 +1351,11 @@ impl ServerHandle {
         self.send(Command::Shoot(Box::new(shot)));
     }
 
+    /// The player throws a trident.
+    pub fn throw_trident(&mut self, shot: minecraftoss_entities::world::PlayerShot) {
+        self.send(Command::ThrowTrident(Box::new(shot)));
+    }
+
     /// `/summon` for a mob; what it did arrives in an output. The new
     /// mob's yaw comes from its own random (`LivingEntity`'s constructor:
     /// `nextFloat() * (float)(Math.PI * 2)`, in degrees), seeded here from
@@ -1472,6 +1488,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     sim.mobs.throw_potion(0, contents, lingering, glam::DVec3::from_array(eye), rotation.0, rotation.1, glam::DVec3::from_array(motion));
                 }
                 Command::Shoot(shot) => sim.mobs.shoot_player(&shot),
+                Command::ThrowTrident(shot) => sim.mobs.throw_trident(&shot),
                 Command::Summon { kind, position, nbt, y_rot } => {
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }

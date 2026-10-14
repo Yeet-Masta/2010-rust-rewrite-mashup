@@ -151,6 +151,8 @@ pub struct Game {
     eating: Option<FoodUse>,
     /// The item in use that is not eaten (a bow drawn).
     using: Option<ranged::ItemUse>,
+    /// A riptide's spin (`autoSpinAttackTicks`).
+    riptide_spin: Option<ranged::SpinAttack>,
     walk: Walk,
     fov: f32,
     previous_fov: f32,
@@ -322,6 +324,7 @@ impl Game {
             equipped: None,
             eating: None,
             using: None,
+            riptide_spin: None,
             walk: Walk::default(),
             fov: 1.0,
             previous_fov: 1.0,
@@ -1596,7 +1599,10 @@ impl Game {
         inventory.recipes.enchantments().equipment_modifiers(&inventory.equipment(self.entities.selected))
     }
 
-    fn attack(&mut self, held: Option<&ItemStack>, eye: DVec3, look: DVec3) {
+    /// `Player.attack`'s side of a hit with `held`: its damage (`base` in
+    /// place of `ATTACK_DAMAGE` for a riptide's spin), its strength, and
+    /// what else the server's hit reads.
+    fn melee_attack(&self, held: Option<&ItemStack>, base: Option<f64>) -> PlayerAttack {
         let catalog = self.entities.inventory.recipes.item_catalog();
         let modifiers: Vec<_> = held
             .and_then(|stack| catalog.and_then(|c| c.get(&stack.id)))
@@ -1618,7 +1624,7 @@ impl Game {
                 .filter(|m| m.attribute == "minecraft:attack_damage"),
             (f64::MIN, f64::MAX),
         );
-        let damage = effects.attribute(Attribute::AttackDamage, damage, &[]).clamp(0.0, 2048.0);
+        let damage = base.unwrap_or_else(|| effects.attribute(Attribute::AttackDamage, damage, &[]).clamp(0.0, 2048.0));
         let speed = minecraftoss_player::item_catalog::attribute_value(
             4.0,
             modifiers
@@ -1628,7 +1634,7 @@ impl Game {
         );
         let speed = effects.attribute(Attribute::AttackSpeed, speed, &[]).clamp(0.0, 1024.0);
         let strength = self.player.attack_strength_scale(0.5, speed);
-        let attack = PlayerAttack {
+        PlayerAttack {
             player_id: 0,
             position: self.player.pos,
             yaw: self.player.yaw as f32,
@@ -1650,7 +1656,11 @@ impl Game {
             fall_flying: false,
             game_mode: if self.creative { "creative" } else { "survival" },
             food_level: i32::from(self.player.survival.food.level),
-        };
+        }
+    }
+
+    fn attack(&mut self, held: Option<&ItemStack>, eye: DVec3, look: DVec3) {
+        let attack = self.melee_attack(held, None);
         if self.entities.attack(eye, look, self.entity_reach(), attack) {
             self.player.attack_strength_ticker = 0;
             self.player.survival.food.add_exhaustion(0.1);
@@ -2375,6 +2385,7 @@ impl Game {
             );
         }
         self.player.tick_attack_strength(held.as_ref());
+        self.tick_spin(before);
         self.enchantment_effects();
         let motion = self.player.pos - before;
         if self.player.extinguished {
