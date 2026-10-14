@@ -156,6 +156,12 @@ pub struct Game {
     /// `ItemCooldowns`: each item cooling down, the tick it began and the
     /// tick it ends.
     cooldowns: Vec<(String, u64, u64)>,
+    /// `spawnExtraParticlesOnFall`: a mace's grounded smash waits for the
+    /// landing.
+    smash_landing: bool,
+    /// The mob a hit struck while its post-attack effects land on the
+    /// player (thorns push back from it).
+    thorns_from: Option<DVec3>,
     walk: Walk,
     fov: f32,
     previous_fov: f32,
@@ -329,6 +335,8 @@ impl Game {
             using: None,
             riptide_spin: None,
             cooldowns: Vec::new(),
+            smash_landing: false,
+            thorns_from: None,
             walk: Walk::default(),
             fov: 1.0,
             previous_fov: 1.0,
@@ -2285,9 +2293,53 @@ impl Game {
         if result.smash.is_some() {
             self.player.velocity.y = f64::from(0.01_f32);
             self.player.fall_distance = 0.0;
+            // `setIgnoreFallDamageFromCurrentImpulse` from where the smash
+            // came down (`calculateImpactPosition`).
+            let impact = self.player.impulse_impact.filter(|i| i.y <= self.player.pos.y).unwrap_or(self.player.pos);
+            self.player.impulse_impact = Some(impact);
+            self.player.impulse_grace = self.player.impulse_grace.max(40);
+            if let Some((feet, on_ground)) = result.victim {
+                self.smash_dust(feet);
+                // `setSpawnExtraParticlesOnFall`: a grounded mob's smash
+                // throws up dust where the player lands.
+                self.smash_landing |= on_ground;
+            }
         }
+        self.thorns_from = result.victim.map(|(feet, _)| feet);
         for effect in &result.attacker_effects {
             self.enchantment_effect_on_player(effect, minecraftoss_player::enchantment::Slot::MainHand);
+        }
+        self.thorns_from = None;
+    }
+
+    /// `ParticleUtils.spawnSmashAttackParticles` (level event 2013, 750):
+    /// the dust pillars of the block under the struck mob, a burst at its
+    /// middle and a ring three and a half out.
+    fn smash_dust(&mut self, feet: DVec3) {
+        use crate::particles::{Options, Type};
+        let pos = (feet.x.floor() as i32, (feet.y - 0.2).floor() as i32, feet.z.floor() as i32);
+        let Some(block) = self.world.block(pos).cloned() else { return };
+        let options = Options::Block(Type::DustPillar, block);
+        let center = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 1.0, f64::from(pos.2) + 0.5);
+        let count = 750.0_f32;
+        let mut i = 0.0;
+        while i < count / 3.0 {
+            let random = &mut self.particles.random;
+            let at = DVec3::new(center.x + random.next_gaussian() / 2.0, center.y, center.z + random.next_gaussian() / 2.0);
+            let speed = f64::from(0.2_f32);
+            let motion = DVec3::new(random.next_gaussian() * speed, random.next_gaussian() * speed, random.next_gaussian() * speed);
+            self.particles.spawn(&self.world, &options, at, motion);
+            i += 1.0;
+        }
+        let mut i = 0;
+        while (i as f32) < count / 1.5 {
+            let random = &mut self.particles.random;
+            let angle = f64::from(i);
+            let at = DVec3::new(center.x + 3.5 * angle.cos() + random.next_gaussian() / 2.0, center.y, center.z + 3.5 * angle.sin() + random.next_gaussian() / 2.0);
+            let speed = f64::from(0.05_f32);
+            let motion = DVec3::new(random.next_gaussian() * speed, random.next_gaussian() * speed, random.next_gaussian() * speed);
+            self.particles.spawn(&self.world, &options, at, motion);
+            i += 1;
         }
     }
 
@@ -2316,13 +2368,16 @@ impl Game {
             // through armour, scaled for a living non-player cause; the
             // push from the mob is not given).
             EntityEffect::Damage { damage_type, amount } if !self.creative && self.alive() => {
+                // `thorns` from the struck mob: the default knockback away
+                // from it.
+                let from = self.thorns_from.map_or(HitFrom::Explosion, HitFrom::Position);
                 let inventory = &self.entities.inventory;
                 let (toughness, resistance) = inventory.armor_toughness();
                 let value = Some((f32::from(inventory.armor_value()), toughness as f32));
                 let me = self.player.facts(&self.world.scene, self.player.velocity);
                 let source = minecraftoss_player::enchantment::DamageFacts { damage_type, attacker: None, direct: None, is_direct: true };
                 let protection = self.player.equipped.protection(&me, &source);
-                let incoming = IncomingHit { damage: *amount, from: HitFrom::Explosion, scales_with_difficulty: true, exhaustion: 0.1 };
+                let incoming = IncomingHit { damage: *amount, from, scales_with_difficulty: true, exhaustion: 0.1 };
                 if self.player.hurt_by(&incoming, Difficulty::Normal, Armor { value, protection }, resistance) {
                     self.play("minecraft:enchant.thorns.hit", None, 1.0, 1.0);
                 }
@@ -2608,6 +2663,19 @@ impl Game {
                 width,
                 (*pos, block),
             );
+        }
+        // `ServerPlayer.checkFallDamage` after a mace's grounded smash:
+        // the landed-on block's dust, 50 a block fallen up to 200.
+        if self.player.on_ground
+            && fall > 0.0
+            && std::mem::take(&mut self.smash_landing)
+            && let Some((pos, block)) = under.as_ref()
+        {
+            let center = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 1.0, f64::from(pos.2) + 0.5);
+            let count = (50.0 * f64::from(fall)).clamp(0.0, 200.0) as i32;
+            let options = crate::particles::Options::Block(crate::particles::Type::Block, block.clone());
+            let spread = DVec3::splat(f64::from(0.3_f32));
+            crate::emitters::send(&mut self.particles, &self.world, &options, center, count, spread, f64::from(0.15_f32));
         }
         if self.player.on_ground
             && fall > 0.0

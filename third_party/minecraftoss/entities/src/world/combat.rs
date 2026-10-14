@@ -98,6 +98,10 @@ pub struct AttackResult {
     /// The mace's smash landed (`MaceItem.hurtEnemy`): its sound, and the
     /// player's fall ends.
     pub smash: Option<&'static str>,
+    /// Where the struck mob stood and whether on the ground: the smash's
+    /// dust (level event 2013 at `getOnPos`) and the side thorns push
+    /// back from.
+    pub victim: Option<(DVec3, bool)>,
     /// What the weapon's post-attack effects do to the player who swung it
     /// (`affected: attacker`), and its own wear (`change_item_damage`), for
     /// the client to carry out.
@@ -268,6 +272,7 @@ impl EntityWorld {
                 }
             }
         }
+        result.victim = Some((victim.position, victim.on_ground));
         // `itemAttackInteraction`: the mace's `hurtEnemy`, then the weapon's
         // post-attack effects.
         if smash {
