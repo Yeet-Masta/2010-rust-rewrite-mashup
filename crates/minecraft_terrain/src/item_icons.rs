@@ -28,7 +28,13 @@ pub fn item_icon_tinted(
     }
     let id = ResourceId::parse(key)?;
     let definition = packs.item_definition(&id)?;
-    let model = definition.as_ref().and_then(|value| item_model_reference(&value["model"]));
+    // The model the stack shows in the GUI (a loaded crossbow's), else the
+    // definition's first.
+    let model = definition.as_ref().and_then(|value| {
+        crate::held_model::select(&value["model"], "gui", &crate::held_model::HeldState::default(), components)
+            .and_then(|node| node["model"].as_str())
+            .or_else(|| item_model_reference(&value["model"]))
+    });
     let mut tints = definition
         .as_ref()
         .map(|value| item_model_tints(packs, &value["model"]))

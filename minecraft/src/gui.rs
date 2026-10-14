@@ -770,6 +770,12 @@ impl Gui {
         if let Some(patterns) = patterns {
             key.push_str(&patterns.to_string());
         }
+        // A loaded crossbow shows what it holds.
+        let charge = minecraft_terrain::held_model::charge_type(stack.components.as_ref());
+        if charge != "none" {
+            key.push('#');
+            key.push_str(charge);
+        }
         if let Some(rect) = self.icons.cells.get(&key) {
             return *rect;
         }
