@@ -159,6 +159,9 @@ pub struct Game {
     /// `spawnExtraParticlesOnFall`: a mace's grounded smash waits for the
     /// landing.
     smash_landing: bool,
+    /// `LocalPlayer.waterVisionTime`: how long the eyes have been under
+    /// water, up to 600.
+    water_vision_time: i32,
     /// The mob a hit struck while its post-attack effects land on the
     /// player (thorns push back from it).
     thorns_from: Option<DVec3>,
@@ -336,6 +339,7 @@ impl Game {
             riptide_spin: None,
             cooldowns: Vec::new(),
             smash_landing: false,
+            water_vision_time: 0,
             thorns_from: None,
             walk: Walk::default(),
             fov: 1.0,
@@ -2604,6 +2608,13 @@ impl Game {
         }
         self.player.tick_attack_strength(held.as_ref());
         self.tick_spin(before);
+        // `LocalPlayer.aiStep`: the eyes get used to the water, and back.
+        if self.eyes_in_water() {
+            let speed = if self.player.spectator { 10 } else { 1 };
+            self.water_vision_time = (self.water_vision_time + speed).clamp(0, 600);
+        } else if self.water_vision_time > 0 {
+            self.water_vision_time = (self.water_vision_time - 10).clamp(0, 600);
+        }
         self.enchantment_effects();
         let motion = self.player.pos - before;
         if self.player.extinguished {
@@ -3036,7 +3047,23 @@ impl Game {
     /// blindness's fog closing in to five blocks, darkness's to fifteen as
     /// it fades in, both hiding the sky; night vision's light, and
     /// darkness's pulse.
+    /// `LocalPlayer.getWaterVision`: 0 out of water, then up to 0.6 over
+    /// five seconds and to 1 over the next 25.
+    fn water_vision(&self) -> f32 {
+        if !self.eyes_in_water() {
+            return 0.0;
+        }
+        let time = self.water_vision_time as f32;
+        if time >= 600.0 {
+            return 1.0;
+        }
+        let a = (time / 100.0).clamp(0.0, 1.0);
+        let b = if time < 100.0 { 0.0 } else { ((time - 100.0) / 500.0).clamp(0.0, 1.0) };
+        a * 0.6 + b * 0.399_999_98
+    }
+
     fn vision(&self, partial: f32) -> crate::world::Vision {
+        use minecraft_terrain::environment::CameraFluid;
         let effects = &self.player.survival.effects;
         let render_distance = self.world.view_distance as f32 * 16.0;
         let mut vision = crate::world::Vision { brightness: 0.5, ..Default::default() };
@@ -3069,6 +3096,27 @@ impl Game {
             if darkness.is_none() {
                 vision.brighten = scale;
             }
+        }
+        // `Camera.getFluidInCamera`: the fluid at the eyes picks the fog;
+        // in water, the water vision brightens it, and lights the world
+        // as night vision would for conduit power.
+        let eye = self.player.eye().floor();
+        let at_eye = self.world.block((eye.x as i32, eye.y as i32, eye.z as i32));
+        let spectator = self.player.spectator;
+        if self.eyes_in_water() {
+            let water = self.water_vision();
+            vision.fluid = CameraFluid::Water { vision: water };
+            vision.brighten = water;
+            if vision.night_vision == 0.0 && water > 0.0 && effects.has(MobEffect::ConduitPower) {
+                vision.night_vision = water;
+            }
+        } else if at_eye.is_some_and(|b| b.id.path == "lava") {
+            // Lava's and powdered snow's fog come before blindness's.
+            vision.fluid = CameraFluid::Lava { spectator, fire_resistant: effects.has(MobEffect::FireResistance) };
+            vision.fog = None;
+        } else if at_eye.is_some_and(|b| b.id.path == "powder_snow") {
+            vision.fluid = CameraFluid::PowderSnow { spectator };
+            vision.fog = None;
         }
         // `calculateDarknessScale`, at the default darkness option of 1.
         let gloom = darkness.map_or(0.0, |e| e.blend_factor(partial));

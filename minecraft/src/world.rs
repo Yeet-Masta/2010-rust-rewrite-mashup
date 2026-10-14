@@ -69,6 +69,8 @@ pub struct Vision {
     pub night_vision: f32,
     pub darkness_scale: f32,
     pub brightness: f32,
+    /// The fluid the camera is in, which picks the fog.
+    pub fluid: minecraft_terrain::environment::CameraFluid,
 }
 
 impl World {
@@ -226,6 +228,7 @@ impl World {
             render_distance: self.view_distance as u32,
             rain_level: self.rain_level,
             thunder_level: self.thunder_level,
+            fluid: self.vision.fluid,
         });
         let mut sky = sky;
         let vision = self.vision;

@@ -14,7 +14,7 @@ use minecraftoss_core::environment::{biome_weights, lerp_value, DimensionPresent
 use minecraftoss_core::Registries;
 
 /// The attributes the renderer reads, in `Used` order.
-const USED: [&str; 18] = [
+const USED: [&str; 21] = [
     "visual/fog_color",
     "visual/fog_start_distance",
     "visual/fog_end_distance",
@@ -33,6 +33,9 @@ const USED: [&str; 18] = [
     "visual/sky_light_factor",
     "visual/ambient_light_color",
     "gameplay/sky_light_level",
+    "visual/water_fog_color",
+    "visual/water_fog_start_distance",
+    "visual/water_fog_end_distance",
 ];
 
 #[derive(Clone, Copy)]
@@ -55,6 +58,9 @@ enum Used {
     SkyLightFactor,
     AmbientLightColor,
     SkyLightLevel,
+    WaterFogColor,
+    WaterFogStart,
+    WaterFogEnd,
 }
 
 /// `MoonPhase` in index order.
@@ -92,6 +98,22 @@ pub struct View {
     pub render_distance: u32,
     pub rain_level: f32,
     pub thunder_level: f32,
+    /// The fluid the camera is in, for its fog.
+    pub fluid: CameraFluid,
+}
+
+/// `FogType` at the camera, with what its fog environment reads of the
+/// player.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CameraFluid {
+    #[default]
+    None,
+    /// `WaterFogEnvironment`, with `LocalPlayer.getWaterVision`.
+    Water { vision: f32 },
+    /// `LavaFogEnvironment`.
+    Lava { spectator: bool, fire_resistant: bool },
+    /// `PowderedSnowFogEnvironment`.
+    PowderSnow { spectator: bool },
 }
 
 impl DimensionEnvironment {
@@ -205,6 +227,38 @@ impl DimensionEnvironment {
         let fog_start = self.float(Used::FogStart, t) - 160.0 * self.rain_fog;
         let fog_end = fog_end.min(96.0).max(fog_end - 256.0 * self.rain_fog);
 
+        let (mut sky_fog_end, mut cloud_fog_end) = (sky_fog_end, self.float(Used::CloudFogEnd, t));
+        let (mut fog_start, mut fog_end) = (fog_start, fog_end);
+        // `FogRenderer`: a fluid at the camera gives the fog its colour
+        // (water's darkens toward the void, lava's and snow's do not) and
+        // its distances.
+        let render_distance = view.render_distance as f32 * 16.0;
+        let fluid_fog = match view.fluid {
+            CameraFluid::None => None,
+            CameraFluid::Water { vision } => {
+                fog = self.rgb(Used::WaterFogColor, t) * (1.0 - darkness) * (1.0 - darkness);
+                let end = self.float(Used::WaterFogEnd, t) * vision.max(0.25);
+                Some((self.float(Used::WaterFogStart, t), end))
+            }
+            CameraFluid::Lava { spectator, fire_resistant } => {
+                fog = Vec3::new(0.6, 0.1, 0.0);
+                Some(if spectator {
+                    (-8.0, render_distance * 0.5)
+                } else if fire_resistant {
+                    (0.0, 5.0)
+                } else {
+                    (0.25, 1.0)
+                })
+            }
+            CameraFluid::PowderSnow { spectator } => {
+                fog = Vec3::new(0.623, 0.734, 0.785);
+                Some(if spectator { (-8.0, render_distance * 0.5) } else { (0.0, 2.0) })
+            }
+        };
+        if let Some((start, end)) = fluid_fog {
+            (fog_start, fog_end, sky_fog_end, cloud_fog_end) = (start, end, end, end);
+        }
+
         let sky_light_color = self.rgb(Used::SkyLightColor, t);
         let sky_light_factor = self.float(Used::SkyLightFactor, t);
         let ambient = self.rgb(Used::AmbientLightColor, t);
@@ -230,7 +284,7 @@ impl DimensionEnvironment {
             fog_start,
             fog_end,
             sky_fog_end,
-            cloud_fog_end: self.float(Used::CloudFogEnd, t),
+            cloud_fog_end,
             skybox: self.presentation.skybox,
         }
     }
@@ -293,7 +347,7 @@ mod tests {
         let mut env = DimensionEnvironment::load(&registries, "minecraft:overworld").unwrap();
         for ticks in (0..24_000).step_by(250) {
             env.tick(ticks, 0.0, 0.0, [0.5, 80.0, 0.5], |_, _, _| plains, true);
-            let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0 };
+            let view = View { partial_tick: 1.0, forward: Vec3::Z, camera_y: 80.0, render_distance: 16, rain_level: 0.0, thunder_level: 0.0, fluid: CameraFluid::None };
             let ours = env.sky_state(&view);
             let old = DayCycle { ticks: ticks as f64, paused: true }.sample_for_biome_at(crate::terrain::plains_sample(&registries), 16);
             assert!((ours.sky - old.sky).abs().max_element() < 1e-5, "sky at {ticks}: {:?} vs {:?}", ours.sky, old.sky);
