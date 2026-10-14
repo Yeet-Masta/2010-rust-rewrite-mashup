@@ -6,8 +6,6 @@ license = "Apache-2.0"
 publish = false
 description = "Minecraft on its own: a MinecraftOSS world, played in a window."
 
-[workspace]
-
 [dependencies]
 minecraft_terrain = { path = "../crates/minecraft_terrain" }
 minecraftoss-core = { path = "../third_party/minecraftoss/core" }
@@ -32,8 +30,3 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 unwrap_or_default = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
-
-# Line numbers in crash reports' backtraces (on Windows, from minecraft.pdb
-# next to the program).
-[profile.release]
-debug = "line-tables-only"

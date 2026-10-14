@@ -1,4 +1,4 @@
-//! Minecraft terrain for IW4L: the integrated server's chunk map, the
+//! Minecraft terrain for the game: the integrated server's chunk map, the
 //! vanilla light solver and the section mesher, from MinecraftOSS
 //! (`engine/viewer`, commit 9e4108d) with its GPU binding code left out.
 pub use minecraftoss_core::fast_hash;

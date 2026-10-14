@@ -2,7 +2,7 @@
 
 Five crates of MinecraftOSS, a Rust engine that aims to match Minecraft Java
 Edition 26.3 exactly, down to its world generation from a seed. The Minecraft
-map is built on them:
+game is built on them:
 
 | Crate | What it does |
 | --- | --- |
@@ -17,4 +17,4 @@ without the tests, benchmarks and examples that need the full MinecraftOSS
 checkout. They're built as part of this workspace through relative paths.
 
 No Minecraft code, JARs or assets are included. The game downloads Minecraft's
-data files from Mojang on first run (see `crates/assets/src/minecraft_setup.rs`).
+data files from Mojang on first run (see `minecraft/src/setup.rs`).

@@ -1,19 +1,9 @@
-# Machine-local config (games paths, etc.)
-.env
-
 # Rust
 /target/
 **/target/
-/dist/
 
-# Runtime output next to the binary / cwd.
-iw4l-artifacts
+# What the game writes where it runs: Minecraft's files, saves, logs.
 minecraft-data
 
-# Agent working memory. None of it is the product: the artifacts, the externals,
-# the agent clones and the RE tooling and its bases all stay on this machine.
-/context/
-
-# Agent worktrees, and lock files from building the engine crates on their own.
+# Agent worktrees.
 /.claude/worktrees/
-/third_party/minecraftoss/*/Cargo.lock

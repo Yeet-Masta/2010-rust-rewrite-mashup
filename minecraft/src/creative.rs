@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use minecraftoss_player::inventory::ItemStack;
 use serde_json::Value;
 
-const TABLES: &str = include_str!("../../crates/assets/data/minecraft/creative-tabs-26.3.json");
+const TABLES: &str = include_str!("../data/creative-tabs-26.3.json");
 
 /// `CreativeModeTab.Type`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

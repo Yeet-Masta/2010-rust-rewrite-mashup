@@ -31,19 +31,19 @@ pub const CLIENT_JAR: &str = "client.jar";
 const CATALOGS: [(&str, &[u8]); 4] = [
     (
         "artifacts/block-state-catalog/26.3.json",
-        include_bytes!("../../crates/assets/data/minecraft/block-state-catalog-26.3.json.gz"),
+        include_bytes!("../data/block-state-catalog-26.3.json.gz"),
     ),
     (
         "artifacts/block-entity-catalog/26.3.json",
-        include_bytes!("../../crates/assets/data/minecraft/block-entity-catalog-26.3.json.gz"),
+        include_bytes!("../data/block-entity-catalog-26.3.json.gz"),
     ),
     (
         "artifacts/entity-catalog/26.3.json",
-        include_bytes!("../../crates/assets/data/minecraft/entity-catalog-26.3.json.gz"),
+        include_bytes!("../data/entity-catalog-26.3.json.gz"),
     ),
     (
         "artifacts/item-catalog/26.3.json",
-        include_bytes!("../../crates/assets/data/minecraft/item-catalog-26.3.json.gz"),
+        include_bytes!("../data/item-catalog-26.3.json.gz"),
     ),
 ];
 
