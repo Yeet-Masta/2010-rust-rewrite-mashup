@@ -640,4 +640,39 @@ mod tests {
         assert_eq!(first.len(), fresh.len());
         assert_eq!(first[0].count, fresh[0].count);
     }
+
+    /// Looting adds up to a level's worth of flesh and lifts the rare
+    /// drop's chance to its level-based one; fire aspect smelts.
+    #[test]
+    fn looting_and_fire_aspect_reach_the_loot() {
+        let table: Value = serde_json::json!({
+            "type": "minecraft:entity", "random_sequence": "minecraft:entities/zombie",
+            "pools": [
+                {"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:rotten_flesh", "modifier": [
+                    {"type": "minecraft:set_count", "count": {"type": "minecraft:uniform", "min": 0, "max": 2}},
+                    {"type": "minecraft:enchanted_count_increase", "count": {"type": "minecraft:uniform", "min": 0.0, "max": 1.0}, "enchantment": "minecraft:looting"}
+                ]}]},
+                {"rolls": 1, "condition": {"type": "minecraft:random_chance_with_enchanted_bonus", "enchantment": "minecraft:looting", "unenchanted_chance": 0.0, "enchanted_chance": {"type": "minecraft:linear", "base": 1.0, "per_level_above_first": 0.0}},
+                 "entries": [{"type": "minecraft:item", "name": "minecraft:potato", "modifier": {"type": "minecraft:furnace_smelt", "condition": {"type": "minecraft:entity_properties", "entity": "direct_attacker", "predicate": {"minecraft:equipment": {"mainhand": {"predicates": {"minecraft:enchantments": [{"enchantments": "#minecraft:smelts_loot"}]}}}}}}}]}
+            ]
+        });
+        let mut book = EntityLootBook {
+            tables: HashMap::from([("minecraft:zombie".into(), table)]),
+            sequences: HashMap::new(),
+            world_seed: 0,
+            smelting: HashMap::from([("minecraft:potato".into(), "minecraft:baked_potato".into())]),
+            item_tags: HashMap::new(),
+            entity_tags: HashMap::new(),
+        };
+        let plain = book.roll("minecraft:zombie", EntityLootContext { has_direct_attacker: true, ..Default::default() }).unwrap();
+        assert!(plain.iter().all(|s| s.id == "minecraft:rotten_flesh" && s.count <= 2), "{plain:?}");
+        let context = EntityLootContext { looting: 3, smelts_loot: true, has_direct_attacker: true, ..Default::default() };
+        let mut most = 0;
+        for _ in 0..40 {
+            let drops = book.roll("minecraft:zombie", context).unwrap();
+            assert!(drops.iter().any(|s| s.id == "minecraft:baked_potato"), "{drops:?}");
+            most = most.max(drops.iter().filter(|s| s.id == "minecraft:rotten_flesh").map(|s| s.count).sum::<u8>());
+        }
+        assert!((3..=5).contains(&most), "{most}");
+    }
 }
