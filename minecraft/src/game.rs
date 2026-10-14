@@ -1034,8 +1034,10 @@ impl Game {
                     self.eating = None;
                 }
                 (Key::Hotbar(slot), Screen::Inventory | Screen::Crafting) => {
+                    // `ArmorSlot.mayPickup`: binding holds a worn piece.
                     if let (Some(Slot::Inventory(index)), _) =
                         gui.slot_at(self.screen == Screen::Crafting)
+                        && !self.entities.inventory.bound(index)
                     {
                         self.entities.inventory.number_swap(index, slot);
                     }
@@ -1045,6 +1047,7 @@ impl Game {
                     if let (Some(Slot::Inventory(index)), _) =
                         gui.slot_at(self.screen == Screen::Crafting)
                         && self.entities.inventory.cursor.is_none()
+                        && !self.entities.inventory.bound(index)
                     {
                         let dropped = self.entities.inventory.drop_selected(index, input.ctrl);
                         self.throw(dropped.into_iter().collect());
@@ -2627,6 +2630,7 @@ impl Game {
         // its carried stack comes back, to drop with the rest.
         self.settle_menu();
         let inventory = &mut self.entities.inventory;
+        inventory.destroy_vanishing_cursed_items();
         let mut drops = inventory.drain_on_death();
         drops.extend(inventory.settle_crafting());
         drops.extend(inventory.settle_workbench());

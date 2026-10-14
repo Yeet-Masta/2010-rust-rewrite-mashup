@@ -488,6 +488,10 @@ impl Inventory {
         if index >= self.slots.len() {
             return None;
         }
+        // `ArmorSlot.mayPickup`: binding keeps a worn piece on.
+        if self.bound(index) {
+            return None;
+        }
         if shift {
             self.quick_move(index);
             return None;
@@ -710,7 +714,7 @@ impl Inventory {
         }
     }
     pub fn quick_move(&mut self, index: usize) {
-        if index >= self.slots.len() {
+        if index >= self.slots.len() || self.bound(index) {
             return;
         }
         let Some(mut source) = self.slots[index].take() else {
@@ -1119,6 +1123,24 @@ impl Inventory {
         equipment_of(&self.slots, selected)
     }
 
+    /// `ArmorSlot.mayPickup` for a survival player: a worn piece with a
+    /// `prevent_armor_change` enchantment (the curse of binding) stays.
+    pub fn bound(&self, index: usize) -> bool {
+        armor_slot_name(index).is_some() && self.slots[index].as_ref().is_some_and(|stack| self.recipes.enchantments().has(stack, "minecraft:prevent_armor_change"))
+    }
+
+    /// `Player.destroyVanishingCursedItems`: the items with a
+    /// `prevent_equipment_drop` enchantment (the curse of vanishing) are
+    /// gone before the rest drop.
+    pub fn destroy_vanishing_cursed_items(&mut self) {
+        let effects = self.recipes.enchantments().clone();
+        for slot in &mut self.slots {
+            if slot.as_ref().is_some_and(|stack| effects.has(stack, "minecraft:prevent_equipment_drop")) {
+                *slot = None;
+            }
+        }
+    }
+
     /// `ExperienceOrb.repairPlayerItems`: a random damaged item with a
     /// `repair_with_xp` enchantment (mending) acting in its slot is mended
     /// by the orb's `amount` (twice that in durability,
@@ -1306,6 +1328,28 @@ mod tests {
         assert_eq!(inventory.repair_with_experience(0, 10), 8);
         assert_eq!(inventory.recipes.durability(inventory.slots[36].as_ref().unwrap()), Some((0, 100)));
         assert_eq!(inventory.repair_with_experience(0, 5), 5);
+    }
+
+    /// Binding keeps a worn helmet on through clicks and shift-clicks;
+    /// vanishing items are gone at death.
+    #[test]
+    fn the_curses_bind_and_vanish() {
+        let Some(root) = std::env::var_os("MINECRAFTOSS_ROOT") else { return };
+        let jar = Path::new(&root).join("client.jar");
+        if !jar.exists() {
+            return;
+        }
+        let mut inventory = Inventory::default().with_recipes(RecipeBook::from_jar(&jar).unwrap());
+        let mut helmet = ItemStack::new("minecraft:iron_helmet", 1);
+        helmet.components = Some(serde_json::json!({"minecraft:enchantments": {"minecraft:binding_curse": 1, "minecraft:vanishing_curse": 1}}));
+        inventory.slots[39] = Some(helmet);
+        inventory.slots[0] = Some(ItemStack::new("minecraft:stone", 3));
+        assert!(inventory.click(Some(39), false, false).is_none() && inventory.cursor.is_none());
+        inventory.click(Some(39), false, true);
+        assert!(inventory.slots[39].is_some(), "the helmet stays on");
+        inventory.destroy_vanishing_cursed_items();
+        assert!(inventory.slots[39].is_none());
+        assert_eq!(inventory.drain_on_death().len(), 1);
     }
 
     #[test]
