@@ -96,7 +96,7 @@ pub fn append_zombies<'a>(
         // `ItemInHandLayer`: the main hand's item in the right hand.
         if let Some(item) = &zombie.main_hand {
             let pivot = glam::Vec3::from_array(arm_pivot(0));
-            held.push(crate::mesh::HeldItem { pose: crate::cow_render::right_hand_pose(feet, pose.body_rotation(90.0), pivot, limbs[0], zombie.baby), light: pose.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None });
+            held.push(crate::mesh::HeldItem { pose: crate::cow_render::right_hand_pose(feet, pose.body_rotation(90.0), pivot, limbs[0], zombie.baby), light: pose.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None, state: Default::default() });
         }
         // `LayerDefinitions`: the adult husk is scaled up by 1.0625.
         let scale = if zombie.kind == ZombieKind::Husk && !zombie.baby { 1.0625 } else { 1.0 };

@@ -27,6 +27,8 @@ use crate::world::World;
 mod creative_screen;
 #[path = "menu_screen.rs"]
 mod menu_screen;
+#[path = "ranged.rs"]
+mod ranged;
 
 const TICK_SECONDS: f64 = 1.0 / 20.0;
 /// Vanilla's default field of view.
@@ -147,6 +149,8 @@ pub struct Game {
     previous_equip: f32,
     equipped: Option<String>,
     eating: Option<FoodUse>,
+    /// The item in use that is not eaten (a bow drawn).
+    using: Option<ranged::ItemUse>,
     walk: Walk,
     fov: f32,
     previous_fov: f32,
@@ -317,6 +321,7 @@ impl Game {
             previous_equip: 1.0,
             equipped: None,
             eating: None,
+            using: None,
             walk: Walk::default(),
             fov: 1.0,
             previous_fov: 1.0,
@@ -574,6 +579,8 @@ impl Game {
             pitch: self.player.pitch as f32,
             velocity: self.player.velocity,
             hurts: std::mem::take(&mut self.hurts),
+            creative: self.creative,
+            shield: None,
         };
         let bright = self.world.sky_light_level() > 11.0;
         self.entities.hold_pickups = self.pickups_wait();
@@ -779,12 +786,18 @@ impl Game {
         if events.use_passed
             && use_held
             && self.eating.is_none()
+            && self.using.is_none()
             && self.captures_mouse()
             && self.alive()
-            && let Some(stack) = self.entities.held().cloned()
         {
-            let food = &self.player.survival.food;
-            self.eating = FoodUse::start(self.entities.selected, &stack, food, self.mode());
+            let main = self.entities.held().cloned();
+            if !main.as_ref().is_some_and(|_| self.start_using(self.entities.selected)) {
+                let food = &self.player.survival.food;
+                self.eating = main.and_then(|stack| FoodUse::start(self.entities.selected, &stack, food, self.mode()));
+                if self.eating.is_none() {
+                    self.start_using(ranged::OFFHAND);
+                }
+            }
         }
         for (event, at, volume, pitch) in std::mem::take(&mut self.entities.sounds) {
             self.play(&event, Some(at), volume, pitch);
@@ -1329,6 +1342,7 @@ impl Game {
             self.use_presses = 0;
             self.mining.reset();
             self.eating = None;
+            self.using = None;
         }
         self.swing.tick(self.swing_duration());
         // `LocalPlayer.tickSpinningEffect`: nausea turns the warp at seven
@@ -1410,6 +1424,15 @@ impl Game {
     }
 
     fn tick_hands(&mut self, input: &Input) {
+        if self.using.is_some() {
+            // `Minecraft.handleKeybinds`: while an item is in use, its
+            // release is all the buttons do.
+            self.attack_presses = 0;
+            self.use_presses = 0;
+            self.mining.reset();
+            self.tick_using(input.use_item);
+            return;
+        }
         let held = self.entities.held().cloned();
         let eye = self.player.eye();
         let look = self.player.look();
@@ -1737,7 +1760,12 @@ impl Game {
                 return;
             }
         }
-        let Some(stack) = held else { return };
+        // `startUseItem` goes on to the offhand when the main hand has
+        // nothing to use.
+        let Some(stack) = held else {
+            self.start_using(ranged::OFFHAND);
+            return;
+        };
         if stack.id == "minecraft:bucket" {
             if let Some(hit) = self
                 .player
@@ -1844,10 +1872,15 @@ impl Game {
             self.throw_potion(stack);
             return;
         }
+        if self.start_using(self.entities.selected) {
+            return;
+        }
         let food = &self.player.survival.food;
         if let Some(eating) = FoodUse::start(self.entities.selected, stack, food, self.mode()) {
             self.eating = Some(eating);
+            return;
         }
+        self.start_using(ranged::OFFHAND);
     }
 
     /// `ThrowablePotionItem.use`: the throw's sound, the potion in flight
@@ -2294,16 +2327,20 @@ impl Game {
             // `isSprintingPossible`: fed enough, and not blind.
             let fed = (self.creative || self.player.survival.food.level > 6)
                 && !self.player.survival.has_effect(MobEffect::Blindness);
-            movement.sprint = (input.sprint || self.tap_sprint) && fed && self.eating.is_none();
+            // `isSlowDueToUsingItem` keeps the player from sprinting.
+            let using = self.eating.is_some() || self.using.is_some();
+            movement.sprint = (input.sprint || self.tap_sprint) && fed && !using;
             // `LocalPlayer.aiStep`: too hungry (or blind) to keep running.
             if !fed {
                 self.player.sprinting = false;
                 self.tap_sprint = false;
             }
-            if self.eating.is_some() {
-                // Eating slows the player to a fifth.
+            if using {
+                // Using an item slows the player to a fifth
+                // (`UseEffects.speedMultiplier`).
                 movement.forward *= 0.2;
                 movement.strafe *= 0.2;
+                self.player.sprinting = false;
             }
         }
         let before = self.player.pos;
@@ -2465,6 +2502,7 @@ impl Game {
             target *= 1.1;
         }
         target *= (self.player.movement_speed() / 0.1 + 1.0) / 2.0;
+        target *= self.use_fov();
         self.fov += (target - self.fov) * 0.5;
         self.fov = self.fov.clamp(0.1, 1.5);
     }
@@ -2487,7 +2525,7 @@ impl Game {
                 melee_weapon = Some(weapon);
                 (HitFrom::Position(attacker), "mob_attack")
             }
-            PlayerHitKind::Arrow { velocity, effect } => {
+            PlayerHitKind::Arrow { velocity, effect, .. } => {
                 after = effect.map(|(kind, ticks)| EffectInstance::new(kind, ticks as i32, 0));
                 (HitFrom::Projectile(velocity), "arrow")
             }
@@ -2821,7 +2859,11 @@ impl Game {
             .clone()
             .and_then(|id| self.entities.held().filter(|s| s.id == id).cloned());
         let light_at = eye.as_vec3();
-        let (mut vertices, mut indices) = if let Some(stack) = held {
+        let selected = self.entities.selected;
+        let (main_shown, offhand_shown) = self.hands_shown();
+        let (mut vertices, mut indices) = if !main_shown {
+            Default::default()
+        } else if let Some(stack) = held {
             // Eating holds the item up to the mouth, bobbing.
             let eating = self.eating.as_ref().map(|eating| {
                 let left = eating.remaining_ticks() as f32 - partial + 1.0;
@@ -2833,13 +2875,16 @@ impl Game {
                 Mat4::from_translation(Vec3::new(-0.3, bob - 0.1, 0.0))
                     * Mat4::from_rotation_y(-0.6)
             });
-            let pose = bob
-                * eating.unwrap_or(Mat4::IDENTITY)
-                * crate::hand::item_pose(swing, equip, false);
+            let pose = match self.ranged_hand_pose(selected, swing, equip, false, partial) {
+                Some(pose) if eating.is_none() => bob * pose,
+                _ => bob * eating.unwrap_or(Mat4::IDENTITY) * crate::hand::item_pose(swing, equip, false),
+            };
+            let state = self.held_state(selected);
             let mesh = self.entities.held_item_mesh(
                 &stack,
                 pose,
                 false,
+                state,
                 light_at,
                 &self.world.packs,
                 &self.world.atlas,
@@ -2865,12 +2910,14 @@ impl Game {
         };
         // The offhand's item in the left hand (`renderArmWithItem` for
         // `OFF_HAND`); the main hand's swing leaves it still.
-        if let Some(stack) = self.entities.inventory.slots[40].clone() {
-            let pose = bob * crate::hand::item_pose(0.0, 0.0, true);
+        if let Some(stack) = self.entities.inventory.slots[40].clone().filter(|_| offhand_shown) {
+            let pose = bob * self.ranged_hand_pose(ranged::OFFHAND, 0.0, 0.0, true, partial).unwrap_or_else(|| crate::hand::item_pose(0.0, 0.0, true));
+            let state = self.held_state(ranged::OFFHAND);
             let mesh = self.entities.held_item_mesh(
                 &stack,
                 pose,
                 true,
+                state,
                 light_at,
                 &self.world.packs,
                 &self.world.atlas,

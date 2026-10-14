@@ -1,13 +1,65 @@
-//! Source-informed Java 26.3 arrow launch, flight, block and simple entity hits.
-//! Provenance: Projectile.getMovementToShoot/shoot,
-//! AbstractArrow.tick/onHitBlock/shouldFall/startFalling/tickDespawn,
-//! AbstractArrow.onHitEntity, ProjectileUtil.getManyEntityHitResult,
-//! ProjectileDeflection.REVERSE, AABB.clip, Level.clipIncludingBorder,
-//! and AbstractSkeleton.performRangedAttack.
-//! This slice models a direct living villager hit; broader entity impacts follow.
+//! Source-informed Java 26.3 arrow launch, flight, block and entity hits.
+//! Provenance: Projectile.getMovementToShoot/shoot/shootFromRotation/
+//! checkLeftOwner, AbstractArrow.tick/stepMoveAndHit/onHitBlock/
+//! onHitEntity/shouldFall/startFalling/tickDespawn/playerTouch,
+//! ProjectileUtil.getManyEntityHitResult, ProjectileDeflection.REVERSE,
+//! AABB.clip, Level.clipIncludingBorder, and
+//! AbstractSkeleton.performRangedAttack. The world applies each struck
+//! entity's damage and reports back whether it took it.
 
 use glam::DVec3;
+use minecraftoss_player::inventory::ItemStack;
 use minecraftoss_player::{collision_boxes_at, rng::LegacyRandom, Block, Pos, World};
+
+/// `AbstractArrow.Pickup`: what a player touching a landed arrow takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pickup {
+    #[default]
+    Disallowed,
+    Allowed,
+    /// Only a player with infinite materials takes it (it gives nothing).
+    CreativeOnly,
+}
+
+/// Which `AbstractArrow` it is (`EntityTypes.ARROW`, `SPECTRAL_ARROW`,
+/// `TRIDENT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArrowKind {
+    #[default]
+    Arrow,
+    Spectral,
+    Trident,
+}
+
+impl ArrowKind {
+    /// Its entity type's ID.
+    pub fn type_id(self) -> &'static str {
+        match self {
+            Self::Arrow => "minecraft:arrow",
+            Self::Spectral => "minecraft:spectral_arrow",
+            Self::Trident => "minecraft:trident",
+        }
+    }
+
+    /// `getWaterInertia`: a trident keeps its speed under water.
+    fn water_inertia(self) -> f32 {
+        if self == Self::Trident { 0.99 } else { 0.6 }
+    }
+
+    /// `getDefaultHitGroundSoundEvent`.
+    pub fn hit_ground_sound(self) -> &'static str {
+        if self == Self::Trident { "item.trident.hit_ground" } else { "entity.arrow.hit" }
+    }
+
+    /// `getDefaultPickupItem`.
+    pub fn default_item(self) -> &'static str {
+        match self {
+            Self::Arrow => "minecraft:arrow",
+            Self::Spectral => "minecraft:spectral_arrow",
+            Self::Trident => "minecraft:trident",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Arrow {
@@ -20,10 +72,36 @@ pub struct Arrow {
     pub alive: bool,
     pub impact_block: Option<Pos>,
     pub base_damage: f64,
+    pub kind: ArrowKind,
+    /// `isCritArrow`: a fully drawn bow's, or any player's crossbow bolt.
+    pub crit: bool,
+    /// `getPierceLevel`.
+    pub pierce_level: u8,
+    pub pickup: Pickup,
+    /// `pickupItemStack`: what a pickup gives; a tipped arrow's potion.
+    pub item: Option<ItemStack>,
+    /// `firedFromWeapon`: its enchantments act on the hits.
+    pub weapon: Option<ItemStack>,
+    /// `remainingFireTicks`: flame sets it alight; water puts it out.
+    pub fire_ticks: i32,
+    /// `wasTouchingWater` from its last flight tick.
+    pub in_water: bool,
+    /// `noPhysics`: a returning trident flies through everything.
+    pub no_physics: bool,
+    /// `leftOwner`: it has flown clear of its shooter.
+    pub left_owner: bool,
+    /// `getYRot` and `getXRot`, for drawing.
+    pub yaw: f32,
+    pub pitch: f32,
+    /// `soundEvent`: what it plays as it strikes (a crossbow's bolt its
+    /// own, then `entity.arrow.hit` once it has landed).
+    pub sound: &'static str,
+    /// `piercingIgnoreEntityIds`.
+    pierced: Vec<u64>,
     impact_state: Option<Block>,
     random: LegacyRandom,
-    /// Where it played `entity.arrow.hit` this tick, and the pitch.
-    hit_sound: Option<(DVec3, f32)>,
+    /// Where it played its hit sound this tick: event, position, pitch.
+    hit_sound: Option<(&'static str, DVec3, f32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -31,16 +109,101 @@ pub struct ArrowTarget {
     pub id: u64,
     pub min: DVec3,
     pub max: DVec3,
+    /// Its feet (`position`), which orders the hits.
+    pub feet: DVec3,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct ArrowImpact {
     pub target_id: u64,
+    /// `ceil(speed * baseDamage)` before the weapon's enchantments and a
+    /// critical arrow's bonus.
     pub damage: f32,
     pub velocity: DVec3,
 }
 
+/// This tick's flight (`stepMoveAndHit`): the block it runs into, if any.
+#[derive(Clone, Copy, Debug)]
+pub struct Flight {
+    block: Option<(DVec3, Pos)>,
+    end: DVec3,
+    struck: bool,
+}
+
+impl Flight {
+    /// Whether it ended at what it struck (it does not pierce on).
+    pub fn stopped(&self) -> bool {
+        self.struck
+    }
+}
+
+/// `EntityTypes.ARROW` and `TRIDENT`: half a block each way.
+pub const SIZE: f64 = 0.5;
+
+/// `Projectile.lerpRotation`: a fifth of the way, the short way round.
+fn lerp_rotation(mut from: f32, to: f32) -> f32 {
+    while to - from < -180.0 {
+        from -= 360.0;
+    }
+    while to - from >= 180.0 {
+        from += 360.0;
+    }
+    from + 0.2 * (to - from)
+}
+
+/// `atan2` in degrees, as `Projectile` turns it to a float.
+fn degrees(y: f64, x: f64) -> f32 {
+    (crate::control::minecraft_atan2(y, x) * minecraftoss_player::mth::RAD_TO_DEG) as f32
+}
+
 impl Arrow {
+    fn new(position: DVec3, velocity: DVec3, random: LegacyRandom) -> Self {
+        let mut arrow = Self {
+            position,
+            velocity,
+            in_ground: false,
+            in_ground_time: 0,
+            life: 0,
+            shake_time: 0,
+            alive: true,
+            impact_block: None,
+            base_damage: 2.0,
+            kind: ArrowKind::Arrow,
+            crit: false,
+            pierce_level: 0,
+            pickup: Pickup::Disallowed,
+            item: None,
+            weapon: None,
+            fire_ticks: 0,
+            in_water: false,
+            no_physics: false,
+            left_owner: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            sound: ArrowKind::Arrow.hit_ground_sound(),
+            pierced: Vec::new(),
+            impact_state: None,
+            random,
+            hit_sound: None,
+        };
+        arrow.face_motion();
+        arrow
+    }
+
+    /// The same arrow as another kind, with that kind's sound.
+    pub fn with_kind(mut self, kind: ArrowKind) -> Self {
+        self.kind = kind;
+        self.sound = kind.hit_ground_sound();
+        self
+    }
+
+    /// `Projectile.shoot`'s rotation: straight along its motion.
+    fn face_motion(&mut self) {
+        let v = self.velocity;
+        self.yaw = degrees(v.x, v.z);
+        self.pitch = degrees(v.y, (v.x * v.x + v.z * v.z).sqrt());
+    }
+
     /// AbstractArrow.setBaseDamageFromMob with Normal difficulty's ID 2 in
     /// the measured skeleton fixture. The damage stream precedes shoot's
     /// independent stream reset in the harness.
@@ -60,20 +223,7 @@ impl Arrow {
     /// An arrow in flight at `velocity` (`summon` with `Motion`), with its
     /// default base damage.
     pub fn in_flight(position: DVec3, velocity: DVec3, random: LegacyRandom) -> Self {
-        Self {
-            position,
-            velocity,
-            in_ground: false,
-            in_ground_time: 0,
-            life: 0,
-            shake_time: 0,
-            alive: true,
-            impact_block: None,
-            base_damage: 2.0,
-            impact_state: None,
-            random,
-            hit_sound: None,
-        }
+        Self::new(position, velocity, random)
     }
 
     pub fn shoot(
@@ -101,20 +251,24 @@ impl Arrow {
             unit.y + (random.next_double() - random.next_double()) * spread,
             unit.z + (random.next_double() - random.next_double()) * spread,
         ) * power as f64;
-        Self {
-            position,
-            velocity,
-            in_ground: false,
-            in_ground_time: 0,
-            life: 0,
-            shake_time: 0,
-            alive: true,
-            impact_block: None,
-            base_damage: 2.0,
-            impact_state: None,
-            random: random.clone(),
-            hit_sound: None,
-        }
+        Self::new(position, velocity, random.clone())
+    }
+
+    /// `Projectile.shootFromRotation`: along the look (`x_rot` pitch,
+    /// `y_rot` yaw, the pitch raised by `y_offset`) at `power`, carrying
+    /// the shooter's known motion (none upward while it stands).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shoot_from_rotation(position: DVec3, x_rot: f32, y_rot: f32, y_offset: f32, power: f32, uncertainty: f32, random: &mut LegacyRandom, motion: DVec3, on_ground: bool) -> Self {
+        use minecraftoss_player::mth::{cos, sin};
+        let rad = |degrees: f32| f64::from(degrees * (std::f32::consts::PI / 180.0));
+        let direction = DVec3::new(
+            f64::from(-sin(rad(y_rot)) * cos(rad(x_rot))),
+            f64::from(-sin(rad(x_rot + y_offset))),
+            f64::from(cos(rad(y_rot)) * cos(rad(x_rot))),
+        );
+        let mut arrow = Self::shoot(position, direction, power, uncertainty, random);
+        arrow.velocity += DVec3::new(motion.x, if on_ground { 0.0 } else { motion.y }, motion.z);
+        arrow
     }
 
     /// A skeleton's ordinary bow shot at a living target. The caller supplies
@@ -156,27 +310,46 @@ impl Arrow {
         self.velocity.y -= 0.05;
     }
 
-    /// AbstractArrow.tick for an ordinary physical arrow against the shared
-    /// block collision shapes and direct living target boxes. Exotic block
-    /// callbacks and broader projectile interactions follow in later slices.
-    pub fn tick_world(
-        &mut self,
-        world: &impl World,
-        targets: &[ArrowTarget],
-    ) -> Option<ArrowImpact> {
+    /// Its box (`makeBoundingBox`).
+    pub fn bounds(&self) -> (DVec3, DVec3) {
+        let half = SIZE / 2.0;
+        let p = self.position;
+        (DVec3::new(p.x - half, p.y, p.z - half), DVec3::new(p.x + half, p.y + SIZE, p.z + half))
+    }
+
+    /// Whether it is on fire (`isOnFire`).
+    pub fn on_fire(&self) -> bool {
+        self.fire_ticks > 0
+    }
+
+    /// `AbstractArrow.tick` up to `stepMoveAndHit`: the block it stands in
+    /// lodges it, the shake runs down, water puts its fire out; a landed
+    /// arrow falls when its block changes and despawns after a minute
+    /// (`tickDespawn`; a loyal trident one may pick up stays); in flight,
+    /// water's drag, the turn toward its heading, `checkLeftOwner` against
+    /// the shooter's box (`owner_box`, none once it is gone) and the block
+    /// its motion runs into. `None` when it does not fly this tick.
+    pub fn begin_tick(&mut self, world: &impl World, owner_box: Option<(DVec3, DVec3)>, keeps: bool) -> Option<Flight> {
         if !self.alive {
             return None;
+        }
+        let cell = (self.position.x.floor() as i32, self.position.y.floor() as i32, self.position.z.floor() as i32);
+        if !self.no_physics {
+            let p = self.position;
+            let inside = collision_boxes_at(world, cell).into_iter().any(|(min, max)| p.x >= min.x && p.x < max.x && p.y >= min.y && p.y < max.y && p.z >= min.z && p.z < max.z);
+            if inside {
+                self.velocity = DVec3::ZERO;
+                self.in_ground = true;
+            }
         }
         if self.shake_time > 0 {
             self.shake_time -= 1;
         }
-        if self.in_ground {
-            let current_pos = (
-                self.position.x.floor() as i32,
-                self.position.y.floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            if world.block(current_pos) != self.impact_state && self.should_fall(world) {
+        if self.in_water {
+            self.fire_ticks = 0;
+        }
+        if self.in_ground && !self.no_physics {
+            if world.block(cell) != self.impact_state && self.should_fall(world) {
                 self.in_ground = false;
                 self.velocity *= DVec3::new(
                     f64::from(self.random.next_float() * 0.2),
@@ -184,7 +357,7 @@ impl Arrow {
                     f64::from(self.random.next_float() * 0.2),
                 );
                 self.life = 0;
-            } else {
+            } else if !keeps {
                 self.life += 1;
                 if self.life >= 1200 {
                     self.alive = false;
@@ -194,74 +367,184 @@ impl Arrow {
             return None;
         }
         self.in_ground_time = 0;
-        let block_hit = first_block_hit(world, self.position, self.velocity);
-        let target_end = block_hit.map_or(self.position + self.velocity, |(_, hit, _)| hit);
-        let ray = target_end - self.position;
-        if let Some((fraction, target)) = targets
-            .iter()
-            .filter_map(|target| {
-                clip_fraction(self.position, ray, target.min, target.max)
-                    .map(|fraction| (fraction, target))
-            })
-            .min_by(|(a, _), (b, _)| a.total_cmp(b))
-        {
-            self.position += ray * fraction;
-            let velocity = self.velocity;
-            let speed = f64::from(velocity.length() as f32);
-            let damage = (speed * self.base_damage).max(0.0).ceil() as f32;
-            return Some(ArrowImpact {
-                target_id: target.id,
-                damage,
-                velocity,
+        if self.in_water {
+            self.velocity *= f64::from(self.kind.water_inertia());
+        }
+        let v = self.velocity;
+        let yaw = if self.no_physics { degrees(-v.x, -v.z) } else { degrees(v.x, v.z) };
+        let pitch = degrees(v.y, (v.x * v.x + v.z * v.z).sqrt());
+        self.pitch = lerp_rotation(self.pitch, pitch);
+        self.yaw = lerp_rotation(self.yaw, yaw);
+        if !self.left_owner {
+            self.left_owner = owner_box.is_none_or(|(owner_min, owner_max)| {
+                let (min, max) = self.bounds();
+                let (min, max) = (min.min(min + v) - DVec3::ONE, max.max(max + v) + DVec3::ONE);
+                !(owner_min.x < max.x && owner_max.x > min.x && owner_min.y < max.y && owner_max.y > min.y && owner_min.z < max.z && owner_max.z > min.z)
             });
         }
-        if let Some((_, hit, block)) = block_hit {
-            // `Math.signum`: zero stays zero.
-            let signum = |v: f64| if v == 0.0 { v } else { v.signum() };
-            let sign = DVec3::new(signum(self.velocity.x), signum(self.velocity.y), signum(self.velocity.z));
-            self.position = hit - sign * 0.05_f32 as f64;
-            self.velocity = DVec3::ZERO;
-            self.play_hit_sound();
-            self.in_ground = true;
-            self.impact_block = Some(block);
-            self.impact_state = world.block(block);
-            self.shake_time = 7;
-        } else {
-            self.tick_open_air();
+        if self.no_physics {
+            self.position += self.velocity;
+            return Some(Flight { block: None, end: self.position, struck: true });
         }
-        // The flight ends with `super.tick()`: `Entity.checkBelowWorld`
-        // discards an arrow 64 blocks below the world.
+        let block = first_block_hit(world, self.position, self.velocity).map(|(_, at, pos)| (at, pos));
+        let end = block.map_or(self.position + self.velocity, |(at, _)| at);
+        Some(Flight { block, end, struck: false })
+    }
+
+    /// `findHitEntities` along the rest of this tick's flight: the targets
+    /// it passes through (but those it pierced already), nearest by their
+    /// feet first. The arrow moves to the first one's hit point; one that
+    /// does not pierce stops there. The world strikes each in turn while
+    /// the arrow lives, and asks again while it pierces on
+    /// (`stepMoveAndHit`). The world leaves the shooter out of `targets`
+    /// until it has left it.
+    pub fn entity_hits(&mut self, flight: &mut Flight, targets: &[ArrowTarget]) -> Vec<ArrowImpact> {
+        if self.no_physics || flight.struck || !self.alive {
+            return Vec::new();
+        }
+        let from = self.position;
+        let ray = flight.end - from;
+        let mut hits: Vec<(f64, u64, DVec3)> = targets
+            .iter()
+            .filter(|t| !self.pierced.contains(&t.id))
+            .filter_map(|t| clip_fraction(from, ray, t.min, t.max).map(|f| (from.distance_squared(t.feet), t.id, from + ray * f)))
+            .collect();
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let Some(&(_, _, at)) = hits.first() else { return Vec::new() };
+        self.position = at;
+        flight.struck = self.pierce_level == 0;
+        let speed = f64::from(self.velocity.length() as f32);
+        let damage = (speed * self.base_damage).max(0.0).ceil() as f32;
+        hits.into_iter().map(|(_, target_id, _)| ArrowImpact { target_id, damage, velocity: self.velocity }).collect()
+    }
+
+    /// `onHitEntity`'s piercing count: false when the arrow has pierced as
+    /// many as it may and is gone; else `id` is among those pierced.
+    pub fn pierce(&mut self, id: u64) -> bool {
+        if self.pierce_level == 0 {
+            return true;
+        }
+        if self.pierced.len() >= usize::from(self.pierce_level) + 1 {
+            self.alive = false;
+            return false;
+        }
+        self.pierced.push(id);
+        true
+    }
+
+    /// A hit's damage from the base damage the weapon's enchantments left
+    /// (`modifyDamage`): `ceil(speed * base)`, and a critical arrow's
+    /// bonus of up to half again and one (`nextInt(damage / 2 + 2)`).
+    pub fn hit_damage(&mut self, base: f64) -> f32 {
+        let speed = f64::from(self.velocity.length() as f32);
+        let mut damage = (speed * base).clamp(0.0, 2.147483647e9).ceil() as i32;
+        if self.crit {
+            let bonus = self.random.next_int((damage / 2 + 2) as u32) as i64;
+            damage = (bonus + i64::from(damage)).min(i64::from(i32::MAX)) as i32;
+        }
+        damage as f32
+    }
+
+    /// The rest of `onHitEntity` once the world has hurt the target: a hit
+    /// that took plays its sound and ends the arrow (a piercing one flies
+    /// on); one turned away reverses it (`ProjectileDeflection.REVERSE`,
+    /// a trident's mostly upward).
+    pub fn resolve_entity_hit(&mut self, accepted: bool) {
+        if self.kind == ArrowKind::Trident {
+            self.hit_sound = Some(("item.trident.hit", self.position, 1.0));
+            self.deflect(DVec3::new(0.02, 0.2, 0.02));
+            return;
+        }
+        if accepted {
+            self.play_hit_sound();
+            if self.pierce_level == 0 {
+                self.alive = false;
+            }
+        } else {
+            self.deflect(DVec3::splat(0.2));
+        }
+    }
+
+    /// `ProjectileDeflection.REVERSE` at `power`: back the way it came at
+    /// half the power, turned about.
+    fn deflect(&mut self, power: DVec3) {
+        let rotation = 170.0 + self.random.next_float() * 20.0;
+        self.velocity *= -power * 0.5;
+        self.yaw += rotation;
+    }
+
+    /// The end of the tick: the block it ran into when nothing stopped it
+    /// first (`onHitBlock`: lodged a hair back along its motion, its
+    /// sound, shaking, no longer critical or piercing), else on to the
+    /// end of its motion; air drag out of water, gravity while flying,
+    /// then `Entity.baseTick`'s water check, fire and the floor 64 below
+    /// the world. Returns the block it struck.
+    pub fn finish_tick(&mut self, world: &impl World, flight: Flight) -> Option<Pos> {
+        let mut struck = None;
+        if !flight.struck && self.alive {
+            self.position = flight.end;
+            if let Some((hit, block)) = flight.block {
+                // `Math.signum`: zero stays zero.
+                let signum = |v: f64| if v == 0.0 { v } else { v.signum() };
+                let sign = DVec3::new(signum(self.velocity.x), signum(self.velocity.y), signum(self.velocity.z));
+                self.position = hit - sign * 0.05_f32 as f64;
+                self.velocity = DVec3::ZERO;
+                self.play_hit_sound();
+                self.in_ground = true;
+                self.impact_block = Some(block);
+                self.impact_state = world.block(block);
+                self.shake_time = 7;
+                self.crit = false;
+                self.pierce_level = 0;
+                self.sound = "entity.arrow.hit";
+                self.pierced.clear();
+                struck = Some(block);
+            }
+        }
+        if !self.in_water {
+            self.velocity *= 0.99_f32 as f64;
+        }
+        if !self.no_physics && !self.in_ground {
+            self.velocity.y -= 0.05;
+        }
+        self.in_water = crate::fluid::FluidFrame::sample(world, self.position, SIZE as f32, SIZE as f32).in_water();
+        if self.fire_ticks > 0 {
+            self.fire_ticks -= 1;
+        }
+        // `Entity.checkBelowWorld`.
         if self.position.y < f64::from(world.min_y() - 64) {
             self.alive = false;
         }
-        None
+        struck
     }
 
-    /// Complete `AbstractArrow.onHitEntity` after the ordered world applies
-    /// damage to the struck target. Rejected damage reverses the arrow and
-    /// still receives the current tick's air drag and gravity.
-    pub fn resolve_entity_hit(&mut self, accepted: bool) {
-        if accepted {
-            self.play_hit_sound();
-            self.alive = false;
-        } else {
-            let _ = self.random.next_float(); // REVERSE yaw variation.
-            self.velocity *= -0.1;
-            self.velocity *= 0.99_f32 as f64;
-            self.velocity.y -= 0.05;
-        }
-    }
-
-    /// `playSound(ARROW_HIT, 1.0F, 1.2F / (random.nextFloat() * 0.2F +
+    /// `playSound(soundEvent, 1.0F, 1.2F / (random.nextFloat() * 0.2F +
     /// 0.9F))` where it stands, on a block or an entity it hurt.
     fn play_hit_sound(&mut self) {
         let pitch = 1.2 / (self.random.next_float() * 0.2 + 0.9);
-        self.hit_sound = Some((self.position, pitch));
+        self.hit_sound = Some((self.sound, self.position, pitch));
     }
 
-    /// The hit sound it played since the last call.
-    pub fn take_hit_sound(&mut self) -> Option<(DVec3, f32)> {
+    /// The hit sound it played since the last call: event, where, pitch.
+    pub fn take_hit_sound(&mut self) -> Option<(&'static str, DVec3, f32)> {
         self.hit_sound.take()
+    }
+
+    /// `playerTouch`: a landed arrow (or a returning trident) done
+    /// shaking, whose box meets the player's grown by a block across and
+    /// half up and down (`Player.aiStep`'s touch box).
+    pub fn touched_by(&self, feet: DVec3) -> bool {
+        if !self.alive || !(self.in_ground || self.no_physics) || self.shake_time > 0 {
+            return false;
+        }
+        let (min, max) = self.bounds();
+        let (pmin, pmax) = (feet - DVec3::new(1.3, 0.5, 1.3), feet + DVec3::new(1.3, 2.3, 1.3));
+        min.x < pmax.x && max.x > pmin.x && min.y < pmax.y && max.y > pmin.y && min.z < pmax.z && max.z > pmin.z
+    }
+
+    /// `getPickupItem`: what a pickup gives.
+    pub fn pickup_item(&self) -> ItemStack {
+        self.item.clone().unwrap_or_else(|| ItemStack::new(self.kind.default_item(), 1))
     }
 
     fn should_fall(&self, world: &impl World) -> bool {

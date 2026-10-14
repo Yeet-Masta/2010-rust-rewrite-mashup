@@ -228,7 +228,7 @@ pub fn append_villagers<'a>(
                 * Mat4::from_scale(Vec3::splat(1.07))
                 * Mat4::from_translation(Vec3::new(0.0, 0.13, -0.34))
                 * Mat4::from_rotation_x(PI);
-            held.push(crate::mesh::HeldItem { pose, light: mob.light_probe.as_vec3(), id: item.id.clone(), display: crate::mesh::HeldDisplay::Ground, first_tint: None });
+            held.push(crate::mesh::HeldItem { pose, light: mob.light_probe.as_vec3(), id: item.id.clone(), display: crate::mesh::HeldDisplay::Ground, first_tint: None, state: Default::default() });
         }
         for (texture, hat_visible) in layers {
             let region = atlas.entity_region(&texture);

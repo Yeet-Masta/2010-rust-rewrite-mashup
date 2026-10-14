@@ -32,6 +32,8 @@ mod slimes;
 mod villagers;
 pub use villagers::VillagerAi;
 mod witches;
+mod ranged;
+pub use ranged::{PlayerShot, NO_OWNER};
 use living::{breathe, dying_travel, fall_damage};
 pub use endermen::EndermanEntity;
 pub use golems::IronGolemEntity;
@@ -330,6 +332,8 @@ pub struct ArrowEntity {
     pub arrow: Arrow,
     /// The effect it carries (`Arrow.addEffect`), with its duration.
     pub effect: Option<(EffectKind, u32)>,
+    /// Where it was a tick ago, for drawing between ticks.
+    pub previous_position: DVec3,
 }
 
 /// A spider on the monster goal framework (`Spider.registerGoals`,
@@ -578,10 +582,10 @@ pub enum PlayerHitKind {
     /// knockback resistance takes (`IronGolem.doHurtTarget`); what the
     /// attacker's weapon's enchantments add.
     Melee { attacker: DVec3, hunger_ticks: i32, lift: f32, weapon: MeleeWeapon },
-    /// An arrow (`arrow`) along its velocity.
-    /// An arrow in flight at `velocity`; a tipped one's effect lands with
-    /// the hit (`Arrow.doPostHurtEffects`).
-    Arrow { velocity: DVec3, effect: Option<(EffectKind, u32)> },
+    /// An arrow in flight at `velocity`, struck at `position`; a tipped
+    /// one's effect lands with the hit (`Arrow.doPostHurtEffects`). A
+    /// piercing one passes a shield.
+    Arrow { velocity: DVec3, effect: Option<(EffectKind, u32)>, position: DVec3, pierces: bool },
     /// A creeper's blast (`player_explosion`, no default knockback): the
     /// push `ServerExplosion` hands the player (`hitPlayers`).
     Explosion { knockback: DVec3 },
@@ -2701,11 +2705,13 @@ impl EntityWorld {
     fn spawn_arrow(&mut self, owner_id: u64, arrow: Arrow) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
+        let previous_position = arrow.position;
         self.arrows.push(ArrowEntity {
             id,
             owner_id,
             arrow,
             effect: None,
+            previous_position,
         });
         self.order.push(EntityKey::Arrow(id));
         id
@@ -2714,93 +2720,6 @@ impl EntityWorld {
     /// An arrow already in flight (a summoned one) belonging to `owner_id`.
     pub fn spawn_owned_arrow(&mut self, owner_id: u64, arrow: Arrow) -> u64 {
         self.spawn_arrow(owner_id, arrow)
-    }
-
-    fn arrow_targets(&self, owner_id: u64, players: &[PlayerCandidate]) -> Vec<ArrowTarget> {
-        // Players are pickable unless spectating (`canHitEntity`).
-        let players = players.iter().filter(|p| self.players_pickable && p.alive && !p.spectator).map(|p| ArrowTarget {
-            id: PLAYER_TARGET + p.id,
-            min: p.position - DVec3::new(0.3, 0.0, 0.3),
-            max: p.position + DVec3::new(0.3, 1.8, 0.3),
-        });
-        self.order
-            .iter()
-            .filter_map(|key| {
-                let (id, body, health) = match *key {
-                    EntityKey::Bat(id) => {
-                        let entity = self.bats.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.bat.body, entity.bat.health)
-                    }
-                    EntityKey::Zombie(id) => {
-                        let entity = self.zombies.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.zombie.body, entity.zombie.health)
-                    }
-                    EntityKey::Skeleton(id) => {
-                        let entity = self.skeletons.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.skeleton.body, entity.skeleton.health)
-                    }
-                    EntityKey::Creeper(id) => {
-                        let entity = self.creepers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.creeper.body, entity.creeper.health)
-                    }
-                    EntityKey::Spider(id) => {
-                        let entity = self.spiders.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.spider.body, entity.spider.health)
-                    }
-                    EntityKey::Slime(id) => {
-                        let entity = self.slimes.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.slime.body, entity.slime.health)
-                    }
-                    EntityKey::Enderman(id) => {
-                        let entity = self.endermen.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.enderman.body, entity.enderman.health)
-                    }
-                    EntityKey::Witch(id) => {
-                        let entity = self.witches.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.witch.body, entity.witch.health)
-                    }
-                    EntityKey::IronGolem(id) => {
-                        let entity = self.iron_golems.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.golem.body, entity.golem.health)
-                    }
-                    EntityKey::Wolf(id) => {
-                        let entity = self.wolves.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.wolf.body, entity.wolf.health)
-                    }
-                    EntityKey::Villager(id) => {
-                        let entity = self.villagers.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.villager.body, entity.villager.health)
-                    }
-                    EntityKey::Cow(id) => {
-                        let entity = self.cows.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.cow.body, entity.cow.health)
-                    }
-                    EntityKey::Sheep(id) => {
-                        let entity = self.sheep.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.body, entity.health)
-                    }
-                    EntityKey::Pig(id) => {
-                        let entity = self.pigs.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.pig.body, entity.pig.health)
-                    }
-                    EntityKey::Chicken(id) => {
-                        let entity = self.chickens.iter().find(|entity| entity.id == id)?;
-                        (id, &entity.chicken.body, entity.chicken.health)
-                    }
-                    EntityKey::Arrow(_) | EntityKey::Potion(_) => return None,
-                };
-                if id == owner_id || health <= 0.0 {
-                    return None;
-                }
-                let half_width = f64::from(body.width / 2.0);
-                Some(ArrowTarget {
-                    id,
-                    min: body.position - DVec3::new(half_width, 0.0, half_width),
-                    max: body.position + DVec3::new(half_width, f64::from(body.height), half_width),
-                })
-            })
-            .chain(players)
-            .collect()
     }
 
     /// The world's difficulty (`Difficulty.getId`, 0 peaceful to 3 hard).
@@ -5065,55 +4984,7 @@ impl EntityWorld {
                     continue;
                 }
                 EntityKey::Arrow(id) => {
-                    let owner_id = self
-                        .arrows
-                        .iter()
-                        .find(|entity| entity.id == id)
-                        .unwrap()
-                        .owner_id;
-                    let targets = self.arrow_targets(owner_id, players);
-                    let hit = self
-                        .arrows
-                        .iter_mut()
-                        .find(|entity| entity.id == id)
-                        .and_then(|entity| entity.arrow.tick_world(world, &targets));
-                    if let Some(hit) = hit {
-                        let accepted = if hit.target_id >= PLAYER_TARGET {
-                            // `Player.hurtServer` turns arrows away from
-                            // players who cannot be hurt (creative).
-                            let player = players.iter().find(|p| p.id == hit.target_id - PLAYER_TARGET);
-                            let accepted = player.is_some_and(|p| p.attackable);
-                            if accepted {
-                                let effect = self.arrows.iter().find(|entity| entity.id == id).and_then(|entity| entity.effect);
-                                self.player_hits.push(PlayerHit {
-                                    player_id: hit.target_id - PLAYER_TARGET,
-                                    damage: hit.damage,
-                                    kind: PlayerHitKind::Arrow { velocity: hit.velocity, effect },
-                                    source: Some(owner_id),
-                                });
-                            }
-                            accepted
-                        } else {
-                            // `arrow(this, owner != null ? owner : this)`.
-                            let attacker = self.entity_type(owner_id).unwrap_or("minecraft:arrow");
-                            let target = hit.target_id;
-                            let result = self.apply_arrow_hit(hit, owner_id);
-                            if let Some(result) = result {
-                                self.credit(target, result, attacker, true);
-                            }
-                            result.is_some_and(|r| r.applied)
-                        };
-                        self.arrows
-                            .iter_mut()
-                            .find(|entity| entity.id == id)
-                            .unwrap()
-                            .arrow
-                            .resolve_entity_hit(accepted);
-                    }
-                    // `entity.arrow.hit`, from the arrow (`SoundSource.NEUTRAL`).
-                    if let Some((position, pitch)) = self.arrows.iter_mut().find(|entity| entity.id == id).and_then(|entity| entity.arrow.take_hit_sound()) {
-                        self.sounds.push(MobSound { event: "entity.arrow.hit".to_owned(), position, volume: 1.0, pitch, category: "friendly_volume" });
-                    }
+                    self.tick_arrow(id, world, players);
                     continue;
                 }
                 EntityKey::Villager(id) => {

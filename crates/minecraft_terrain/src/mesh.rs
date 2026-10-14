@@ -391,6 +391,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(&sheet)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/experience/experience_orb")?, ());
+    // Arrows and thrown tridents (`arrow_render`).
+    for sheet in crate::arrow_render::SHEETS {
+        textures.insert(ResourceId::parse(sheet)?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
@@ -694,6 +698,8 @@ pub fn rebuild_near_many_with_previous_light<S: Scene>(
 #[derive(Default)]
 pub struct ItemVisuals {
     models: HashMap<String, ItemVisual>,
+    /// Item definitions, by item, as read from the pack.
+    definitions: HashMap<String, Option<serde_json::Value>>,
 }
 struct ItemVisual {
     model: ResolvedModel,
@@ -720,11 +726,34 @@ pub fn level_item_shade(normal: Vec3) -> f32 {
 impl ItemVisuals {
     pub fn clear(&mut self) {
         self.models.clear();
+        self.definitions.clear();
     }
+
+    /// The key of the model a stack of `item` shows in a display context
+    /// for its holder's state (`held_model::model_key`).
+    pub fn model_key(&mut self, packs: &PackStack, item: &str, context: &str, state: &crate::held_model::HeldState, components: Option<&serde_json::Value>) -> String {
+        if !self.definitions.contains_key(item) {
+            let definition = ResourceId::parse(item).ok().and_then(|id| packs.item_definition(&id).ok().flatten());
+            self.definitions.insert(item.to_owned(), definition);
+        }
+        crate::held_model::model_key(self.definitions[item].as_ref(), item, context, state, components)
+    }
+    /// The visual of an item's model: the one it shows idle, or for a key
+    /// of the item, `#` and a model reference (`held_model::model_key`),
+    /// that model under the item's own display transforms (its variants
+    /// inherit them).
     fn model<'a>(&'a mut self, id: &str, packs: &PackStack) -> Result<Option<&'a ItemVisual>> {
         if !self.models.contains_key(id) {
-            let resource = ResourceId::parse(id)?;
-            let Some(model) = crate::model::resolve_item_model(packs, &resource)? else {
+            let (item, variant) = match id.split_once('#') {
+                Some((item, variant)) => (item, Some(variant)),
+                None => (id, None),
+            };
+            let resource = ResourceId::parse(item)?;
+            let model = match variant {
+                Some(reference) => crate::model::resolve_model_reference(packs, &resource, reference)?,
+                None => crate::model::resolve_item_model(packs, &resource)?,
+            };
+            let Some(model) = model else {
                 return Ok(None);
             };
             if model.elements.is_empty() {
@@ -928,7 +957,8 @@ impl ItemVisuals {
     /// item definition says, lit at its point.
     pub fn append_held_items(&mut self, mesh: &mut ChunkMesh, items: &[HeldItem], packs: &PackStack, atlas: &Atlas, sky_light: &SkyLight) -> Result<()> {
         for item in items {
-            let Some((display, mut tints)) = self.model(&item.id, packs)?.map(|visual| {
+            let key = if item.state == crate::held_model::HeldState::default() { item.id.clone() } else { self.model_key(packs, &item.id, "thirdperson_righthand", &item.state, None) };
+            let Some((display, mut tints)) = self.model(&key, packs)?.map(|visual| {
                 (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::Ground => visual.ground }, visual.tints.clone())
             }) else {
                 continue;
@@ -940,7 +970,7 @@ impl ItemVisuals {
                     tints[0] = color;
                 }
             }
-            self.append_model(mesh, &item.id, item.light, item.pose * display, 1.0, Some(&tints), packs, atlas, sky_light)?;
+            self.append_model(mesh, &key, item.light, item.pose * display, 1.0, Some(&tints), packs, atlas, sky_light)?;
         }
         Ok(())
     }
@@ -1159,6 +1189,8 @@ pub struct HeldItem {
     pub id: String,
     pub display: HeldDisplay,
     pub first_tint: Option<[f32; 3]>,
+    /// What its holder does with it (a skeleton drawing its bow).
+    pub state: crate::held_model::HeldState,
 }
 
 /// What `EntityRenderer.extractShadow` reads of one entity.

@@ -255,6 +255,12 @@ pub fn resolve_item_model(pack: &PackStack, item: &ResourceId) -> Result<Option<
     let Some(reference) = crate::interface::item_model_reference(&definition["model"]) else {
         return Ok(None);
     };
+    resolve_model_reference(pack, item, reference)
+}
+
+/// One of an item's models by its reference (a bow's pull stage, say),
+/// resolved as `resolve_item_model` resolves the one it shows idle.
+pub fn resolve_model_reference(pack: &PackStack, item: &ResourceId, reference: &str) -> Result<Option<ResolvedModel>> {
     let model_id = ResourceId::parse(reference)?;
     let inherited = load_parented(pack, &model_id, &mut HashSet::new())?;
     if inherited.get("builtin").and_then(Value::as_str) == Some("generated") {

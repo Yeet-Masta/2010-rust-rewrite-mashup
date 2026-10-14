@@ -75,6 +75,92 @@ pub fn item_pose(swing: f32, equip: f32, left: bool) -> Mat4 {
         * Mat4::from_rotation_y((invert * -45.0).to_radians())
 }
 
+/// `applyItemArmTransform` alone: the hand's place, lowered as the item
+/// is swapped in.
+pub fn arm_pose(equip: f32, left: bool) -> Mat4 {
+    let invert = if left { -1.0 } else { 1.0 };
+    Mat4::from_translation(Vec3::new(invert * 0.56, -0.52 - 0.6 * equip, -0.72))
+}
+
+/// What an item in use does to its hand (`submitArmWithItem`'s
+/// `ItemUseAnimation` cases, and a crossbow's charging), with the ticks it
+/// has been held (`useDuration - (remaining - partial + 1)`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UsePose {
+    /// `BOW`: drawn back to full power over a second.
+    Bow(f32),
+    /// `TRIDENT`: raised over the shoulder, ready in half a second.
+    Trident(f32),
+    /// A crossbow charging over its charge time.
+    Crossbow(f32, f32),
+    /// `BLOCK`: a shield's raise is in its model's display.
+    Block,
+}
+
+/// The pull's tremble once past a tenth of its power (`shakeOffset` by
+/// `shakeIntensity`), and the item drawn back and stretched along its
+/// length, then turned back 45 degrees (`Axis.YN`).
+fn draw_back(time_held: f32, power: f32, push: f32, invert: f32) -> Mat4 {
+    let mut pose = Mat4::IDENTITY;
+    if power > 0.1 {
+        let shake = ((time_held - 0.1) * 1.3).sin() * (power - 0.1);
+        pose *= Mat4::from_translation(Vec3::new(0.0, shake * 0.004, 0.0));
+    }
+    pose * Mat4::from_translation(Vec3::new(0.0, 0.0, power * push))
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + power * 0.2))
+        * Mat4::from_rotation_y((-invert * 45.0f32).to_radians())
+}
+
+/// A held item's pose while in use: `applyItemArmTransform`, then the use
+/// animation's own turn and draw.
+pub fn use_pose(pose: UsePose, equip: f32, left: bool) -> Mat4 {
+    let invert = if left { -1.0 } else { 1.0 };
+    let arm = arm_pose(equip, left);
+    let turn = |t: Vec3, x: f32, y: f32, z: f32| {
+        Mat4::from_translation(Vec3::new(invert * t.x, t.y, t.z))
+            * Mat4::from_rotation_x(x.to_radians())
+            * Mat4::from_rotation_y((invert * y).to_radians())
+            * Mat4::from_rotation_z((invert * z).to_radians())
+    };
+    match pose {
+        UsePose::Bow(time_held) => {
+            let mut power = time_held / 20.0;
+            power = ((power * power + power * 2.0) / 3.0).min(1.0);
+            arm * turn(Vec3::new(-0.2785682, 0.18344387, 0.15731531), -13.935, 35.3, -9.785) * draw_back(time_held, power, 0.04, invert)
+        }
+        UsePose::Trident(time_held) => {
+            let power = (time_held / 10.0).min(1.0);
+            arm * turn(Vec3::new(-0.5, 0.7, 0.1), -55.0, 35.3, -9.785) * draw_back(time_held, power, 0.2, invert)
+        }
+        UsePose::Crossbow(time_held, charge) => {
+            let power = (time_held / charge.max(1.0)).min(1.0);
+            arm * turn(Vec3::new(-0.4785682, -0.094387, 0.05731531), -11.935, 65.3, -9.785) * draw_back(time_held, power, 0.04, invert)
+        }
+        UsePose::Block => arm,
+    }
+}
+
+/// A charged crossbow held ready in the main hand, not swinging: turned
+/// in toward the middle (`submitArmWithItem`'s crossbow case).
+pub fn charged_crossbow_pose(swing: f32, equip: f32, left: bool) -> Mat4 {
+    let invert = if left { -1.0 } else { 1.0 };
+    let pose = item_pose(swing, equip, left);
+    if swing < 0.001 && !left {
+        pose * Mat4::from_translation(Vec3::new(invert * -0.641864, 0.0, 0.0)) * Mat4::from_rotation_y((invert * 10.0f32).to_radians())
+    } else {
+        pose
+    }
+}
+
+/// `isAutoSpinAttack`: the riptide's trident held out before the player.
+pub fn spin_pose(equip: f32, left: bool) -> Mat4 {
+    let invert = if left { -1.0 } else { 1.0 };
+    arm_pose(equip, left)
+        * Mat4::from_translation(Vec3::new(invert * -0.4, 0.8, 0.3))
+        * Mat4::from_rotation_y((invert * 65.0f32).to_radians())
+        * Mat4::from_rotation_z((invert * -85.0f32).to_radians())
+}
+
 /// The bare right arm: the wide player model's arm cuboid with Steve's skin,
 /// lit by the light at the eye (sky and block levels).
 /// `world_from_view` turns view-space normals to the world, where the

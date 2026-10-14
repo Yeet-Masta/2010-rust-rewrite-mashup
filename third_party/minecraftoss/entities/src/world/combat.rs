@@ -206,7 +206,7 @@ impl EntityWorld {
             let fraction = weapon.map_or(fraction, |w| effects.armor_effectiveness(w, victim, &source, fraction, random).clamp(0.0, 1.0));
             damage * (1.0 - fraction)
         };
-        let Some(hit) = self.hurt_by_player(target, base + magic, attack, &mut |d, a, t| armor(d, a, t, &victim, random)) else { return AttackResult::default() };
+        let Some(hit) = self.hurt_by_player(target, base + magic, attack, "minecraft:player_attack", None, &mut |d, a, t| armor(d, a, t, &victim, random)) else { return AttackResult::default() };
         (result.hurt, result.died, result.full_hit) = (hit.applied, hit.died, hit.full);
         result.damage_dealt = before - health(self);
         if !hit.applied {
@@ -256,7 +256,7 @@ impl EntityWorld {
                 }
                 let Some(nearby) = self.mob_facts(id) else { continue };
                 let amount = enchanted(&nearby, damage, random) * scale;
-                if let Some(hit) = self.hurt_by_player(id, amount, attack, &mut |d, a, t| armor(d, a, t, &nearby, random)) {
+                if let Some(hit) = self.hurt_by_player(id, amount, attack, "minecraft:player_attack", None, &mut |d, a, t| armor(d, a, t, &nearby, random)) {
                     if hit.applied {
                         self.knock_back(id, f64::from(0.4_f32), sin, -cos);
                         result.swept.push((id, hit.full, hit.died));
@@ -428,7 +428,7 @@ impl EntityWorld {
     /// took.
     pub fn hurt_by_player_effect(&mut self, id: u64, amount: f32, player_id: u64, position: DVec3) -> bool {
         let attack = PlayerAttack { player_id, position, ..PlayerAttack::default() };
-        self.hurt_by_player(id, amount, &attack, &mut damage_after_armor).is_some_and(|hit| hit.applied)
+        self.hurt_by_player(id, amount, &attack, "minecraft:player_attack", None, &mut damage_after_armor).is_some_and(|hit| hit.applied)
     }
 
     /// A living mob's feet, width and height, by ID.
@@ -532,13 +532,15 @@ impl EntityWorld {
         }
     }
 
-    /// `hurtServer` with `player_attack` on a mob: its armor, the damage
+    /// `hurtServer` on a mob by a player, with `player_attack` (or the
+    /// `damage_type` of the player's projectile): its armor, the damage
     /// cooldown, the attacker remembered, and on a full hit the default
-    /// knockback away from the player. `None` when no such mob lives.
-    fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack, armor: &mut dyn FnMut(f32, f32, f32) -> f32) -> Option<DamageResult> {
+    /// knockback away from the player, or along the flight of the
+    /// `projectile` moving at that velocity. `None` when no such mob lives.
+    pub(super) fn hurt_by_player(&mut self, id: u64, amount: f32, attack: &PlayerAttack, damage_type: &'static str, projectile: Option<DVec3>, armor: &mut dyn FnMut(f32, f32, f32) -> f32) -> Option<DamageResult> {
         let source = DamageSourceKind::PlayerAttack;
         let player = attack.player_id;
-        let (zombie_armor, zombie_toughness, zombie_protection) = self.zombie_armor(id, "minecraft:player_attack");
+        let (zombie_armor, zombie_toughness, zombie_protection) = self.zombie_armor(id, damage_type);
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
@@ -599,7 +601,7 @@ impl EntityWorld {
             }
             hit
         } else if let Some(e) = self.villagers.iter_mut().find(|e| e.id == id) {
-            e.hurt_from(amount, "minecraft:player_attack", Some(PLAYER_TARGET + player), self.game_time)
+            e.hurt_from(amount, damage_type, Some(PLAYER_TARGET + player), self.game_time)
         } else if let Some(e) = self.iron_golems.iter_mut().find(|e| e.id == id) {
             let hit = e.hurt(amount);
             if hit.applied {
@@ -608,7 +610,7 @@ impl EntityWorld {
             hit
         } else if let Some(e) = self.wolves.iter_mut().find(|e| e.id == id) {
             let time = self.game_time;
-            e.hurt_from(amount, "minecraft:player_attack", Some(crate::monster_ai::Target::Player(player)), time)
+            e.hurt_from(amount, damage_type, Some(crate::monster_ai::Target::Player(player)), time)
         } else if let Some(e) = self.cows.iter_mut().find(|e| e.id == id) {
             e.hurt(amount, source)
         } else if let Some(e) = self.sheep.iter_mut().find(|e| e.id == id) {
@@ -631,7 +633,11 @@ impl EntityWorld {
         }
         if hit.applied && hit.full {
             if let Some((body, _)) = self.mob_body(id) {
-                let (xd, zd) = (attack.position.x - body.position.x, attack.position.z - body.position.z);
+                // `dealDefaultKnockback`: a projectile's from its motion.
+                let (xd, zd) = match projectile {
+                    Some(v) => (-v.x, -v.z),
+                    None => (attack.position.x - body.position.x, attack.position.z - body.position.z),
+                };
                 self.knock_back(id, f64::from(0.4_f32), xd, zd);
             }
         }

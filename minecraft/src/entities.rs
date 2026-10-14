@@ -55,6 +55,10 @@ pub struct PlayerView {
     /// Hurts the player took since the last tick: the mob behind each and
     /// its damage type.
     pub hurts: Vec<(Option<u64>, &'static str)>,
+    /// A creative player (`hasInfiniteMaterials`).
+    pub creative: bool,
+    /// The yaw of its head while it blocks with a shield (`isBlocking`).
+    pub shield: Option<f32>,
 }
 
 /// What the server sent back this frame.
@@ -473,6 +477,7 @@ impl Entities {
         stack: &ItemStack,
         pose: glam::Mat4,
         left: bool,
+        state: minecraft_terrain::held_model::HeldState,
         light_at: Vec3,
         packs: &PackStack,
         atlas: &Atlas,
@@ -481,7 +486,7 @@ impl Entities {
         let mut mesh = ChunkMesh::default();
         // A special model renderer's item (a shield, a trident) applies its
         // base model's display itself.
-        if minecraft_terrain::special_icon::append_special_in_hand(
+        if minecraft_terrain::special_icon::append_special_in_hand_using(
             &mut mesh,
             packs,
             atlas,
@@ -490,6 +495,7 @@ impl Entities {
             pose,
             left,
             true,
+            state.using,
             &minecraft_terrain::mesh::level_item_shade,
         )
         .unwrap_or(false)
@@ -512,9 +518,12 @@ impl Entities {
                 minecraft_terrain::model::item_first_person_hand_transform(packs, &id, left).ok()
             })
             .unwrap_or(glam::Mat4::IDENTITY);
+        // The model its state picks (a bow's pull stage).
+        let context = if left { "firstperson_lefthand" } else { "firstperson_righthand" };
+        let key = self.items.model_key(packs, &stack.id, context, &state, stack.components.as_ref());
         let _ = self.items.append_posed_blocks(
             &mut mesh,
-            &[(pose * display, light_at, stack.id.clone())],
+            &[(pose * display, light_at, key)],
             packs,
             atlas,
             light,
@@ -711,6 +720,11 @@ impl Entities {
         self.server.ignite_tnt(pos);
     }
 
+    /// The player's bow or crossbow looses a volley (the server's arrows).
+    pub fn shoot(&mut self, shot: minecraftoss_entities::world::PlayerShot) {
+        self.server.shoot(shot);
+    }
+
     /// The player throws a splash or lingering potion (the server's).
     pub fn throw_potion(
         &mut self,
@@ -839,6 +853,8 @@ impl Entities {
                 tracking: (feet.to_array(), 160.0),
                 player_hurts: std::mem::take(&mut player.hurts),
                 spawn_mobs: true,
+                creative: player.creative,
+                shields: player.shield.map(|yaw| vec![(PLAYER, yaw)]).unwrap_or_default(),
             });
         }
         let mut events = Events::default();
@@ -1163,6 +1179,16 @@ impl Entities {
             atlas,
             forward,
             light,
+        );
+        // `ArrowRenderer`, `ThrownTridentRenderer`.
+        arrow_render::append_arrows(
+            &mut out.models,
+            w.arrows().iter().filter(|e| e.arrow.alive).map(|e| {
+                (e, e.previous_position.lerp(e.arrow.position, f64::from(partial)))
+            }),
+            atlas,
+            light,
+            partial,
         );
         witch_render::append_potions(
             &mut out.items,

@@ -207,21 +207,7 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
                 part([0.0; 3], vec![cube(26.0, 0.0, [-1.0, -3.0, -1.0], [2.0, 6.0, 6.0])]),
             ],
         )],
-        // `TridentModel.createLayer`.
-        "minecraft:trident" => {
-            let mut right_spike = cube(4.0, 3.0, [1.5, -3.0, -0.5], [1.0, 4.0, 1.0]);
-            right_spike.mirror = true;
-            vec![layer(
-                "minecraft:entity/trident/trident",
-                [32.0, 32.0],
-                vec![part([0.0; 3], vec![cube(0.0, 6.0, [-0.5, 2.0, -0.5], [1.0, 25.0, 1.0])]).with(vec![
-                    part([0.0; 3], vec![cube(4.0, 0.0, [-1.5, 0.0, -0.5], [3.0, 2.0, 1.0])]),
-                    part([0.0; 3], vec![cube(4.0, 3.0, [-2.5, -3.0, -0.5], [1.0, 4.0, 1.0])]),
-                    part([0.0; 3], vec![cube(0.0, 0.0, [-0.5, -4.0, -0.5], [1.0, 4.0, 1.0])]),
-                    part([0.0; 3], vec![right_spike]),
-                ])],
-            )]
-        }
+        "minecraft:trident" => vec![layer("minecraft:entity/trident/trident", [32.0, 32.0], trident_model())],
         // `ConduitRenderer.createShellLayer`.
         "minecraft:conduit" => vec![layer(
             "minecraft:entity/conduit/base",
@@ -311,6 +297,34 @@ fn layers(model: &Value, components: Option<&Value>) -> Result<Option<Vec<Layer>
 /// `createDoubleBodyRightLayer`, whose halves run to the join and leave
 /// out its face. The bottom, then the lid and the lock, both hinged at
 /// 9 up and 1 in.
+/// `TridentModel.createLayer`, on its 32-pixel sheet.
+pub(crate) fn trident_model() -> Vec<Part> {
+    let mut right_spike = cube(4.0, 3.0, [1.5, -3.0, -0.5], [1.0, 4.0, 1.0]);
+    right_spike.mirror = true;
+    vec![part([0.0; 3], vec![cube(0.0, 6.0, [-0.5, 2.0, -0.5], [1.0, 25.0, 1.0])]).with(vec![
+        part([0.0; 3], vec![cube(4.0, 0.0, [-1.5, 0.0, -0.5], [3.0, 2.0, 1.0])]),
+        part([0.0; 3], vec![cube(4.0, 3.0, [-2.5, -3.0, -0.5], [1.0, 4.0, 1.0])]),
+        part([0.0; 3], vec![cube(0.0, 0.0, [-0.5, -4.0, -0.5], [1.0, 4.0, 1.0])]),
+        part([0.0; 3], vec![right_spike]),
+    ])]
+}
+
+/// `ArrowModel.createBodyLayer`, its mesh scaled by 0.9: the fletching's
+/// square (its own pose scaled 0.8) and the shaft's two crossed planes,
+/// whose UVs count in a sheet 0.8 as tall (`addBox`'s `vScale`). Each
+/// with the sheet size its UVs count in.
+pub(crate) fn arrow_model() -> [(Part, [f32; 2]); 2] {
+    let quarter = std::f32::consts::FRAC_PI_4;
+    let mut back = part([-11.0 * 0.9, 0.0, 0.0], vec![cube(0.0, 0.0, [0.0, -2.5, -2.5], [0.0, 5.0, 5.0])]).rotated([quarter, 0.0, 0.0]);
+    back.scale = 0.8 * 0.9;
+    let cross = cube(0.0, 0.0, [-12.0, -2.0, 0.0], [16.0, 4.0, 0.0]);
+    let mut cross_1 = part([0.0; 3], vec![cross]).rotated([quarter, 0.0, 0.0]);
+    let mut cross_2 = part([0.0; 3], vec![cross]).rotated([quarter * 3.0, 0.0, 0.0]);
+    cross_1.scale = 0.9;
+    cross_2.scale = 0.9;
+    [(back, [32.0, 32.0]), (part([0.0; 3], Vec::new()).with(vec![cross_1, cross_2]), [32.0, 25.6])]
+}
+
 pub(crate) fn chest_model(chest_type: &str) -> Vec<Part> {
     let (x, width, lock_x, lock_width, faces) = match chest_type {
         "left" => (0.0, 15.0, 0.0, 1.0, ALL & !WEST),
@@ -589,13 +603,13 @@ fn dragon_head(texture: &str) -> Layer {
 /// The GUI's model node of an item definition, with the transformations
 /// above it composed.
 fn gui_node(value: &Value, transform: Mat4) -> Option<(&Value, Mat4)> {
-    node_for(value, "gui", transform)
+    node_for(value, "gui", transform, false)
 }
 
 /// The special model node an item definition picks in a display context
 /// (`ItemDisplayContext`'s name), with the transformations above it
 /// composed.
-fn node_for<'a>(value: &'a Value, context: &str, transform: Mat4) -> Option<(&'a Value, Mat4)> {
+fn node_for<'a>(value: &'a Value, context: &str, transform: Mat4, using: bool) -> Option<(&'a Value, Mat4)> {
     let transform = transform * transformation(value.get("transformation"));
     match value["type"].as_str()? {
         "minecraft:special" => Some((value, transform)),
@@ -614,12 +628,16 @@ fn node_for<'a>(value: &'a Value, context: &str, transform: Mat4) -> Option<(&'a
                 })
             });
             match case {
-                Some(case) => node_for(&case["model"], context, transform),
-                None => node_for(value.get("fallback")?, context, transform),
+                Some(case) => node_for(&case["model"], context, transform, using),
+                None => node_for(value.get("fallback")?, context, transform, using),
             }
         }
-        "minecraft:condition" => node_for(value.get("on_false")?, context, transform),
-        "minecraft:range_dispatch" => node_for(value.get("fallback")?, context, transform),
+        // `minecraft:using_item`: a raised shield, a trident drawn back.
+        "minecraft:condition" => {
+            let holds = using && value["property"] == "minecraft:using_item";
+            node_for(value.get(if holds { "on_true" } else { "on_false" })?, context, transform, using)
+        }
+        "minecraft:range_dispatch" => node_for(value.get("fallback")?, context, transform, using),
         _ => None,
     }
 }
@@ -967,13 +985,31 @@ pub fn append_special_in_hand(
     first_person: bool,
     shade: &dyn Fn(Vec3) -> f32,
 ) -> Result<bool> {
+    append_special_in_hand_using(mesh, packs, atlas, key, components, pose, left, first_person, false, shade)
+}
+
+/// `append_special_in_hand` for a stack its holder may be using
+/// (`minecraft:using_item`: a raised shield, a trident drawn back).
+#[allow(clippy::too_many_arguments)]
+pub fn append_special_in_hand_using(
+    mesh: &mut ChunkMesh,
+    packs: &PackStack,
+    atlas: &Atlas,
+    key: &str,
+    components: Option<&Value>,
+    pose: Mat4,
+    left: bool,
+    first_person: bool,
+    using: bool,
+    shade: &dyn Fn(Vec3) -> f32,
+) -> Result<bool> {
     let id = ResourceId::parse(key)?;
     let Some(definition) = packs.item_definition(&id)? else {
         return Ok(false);
     };
     let person = if first_person { "firstperson" } else { "thirdperson" };
     let context = format!("{person}_{}hand", if left { "left" } else { "right" });
-    let Some((node, local)) = node_for(&definition["model"], &context, Mat4::IDENTITY) else {
+    let Some((node, local)) = node_for(&definition["model"], &context, Mat4::IDENTITY, using) else {
         return Ok(false);
     };
     let Some(layers) = layers(&node["model"], components)? else {

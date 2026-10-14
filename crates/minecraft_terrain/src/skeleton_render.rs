@@ -172,7 +172,14 @@ pub fn append_skeletons<'a>(
         if holding_bow {
             let pivot = if kind == SkeletonKind::Parched { -5.5 } else { -5.0 } + 1.0;
             let hand = crate::cow_render::right_hand_pose(feet, rotation, Vec3::new(pivot, 2.0, 0.0), part(limbs[0]), false);
-            held.push(crate::mesh::HeldItem { pose: hand, light: mob.light_probe.as_vec3(), id: "minecraft:bow".to_owned(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None });
+            // `RangedBowAttackGoal` draws it (`startUsingItem`): its pull
+            // stages.
+            let (using, ticks) = match entity.ai.as_deref() {
+                Some(ai) => (ai.state.bow.using_item, ai.state.bow.ticks_using_item),
+                None => (entity.bow.using_item, entity.bow.ticks_using_item),
+            };
+            let state = crate::held_model::HeldState { using, use_ticks: ticks as f32, pull: 0.0 };
+            held.push(crate::mesh::HeldItem { pose: hand, light: mob.light_probe.as_vec3(), id: "minecraft:bow".to_owned(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None, state });
         }
         match kind {
             SkeletonKind::Parched => draw(&PARCHED, &texture("parched"), [64., 64.]),

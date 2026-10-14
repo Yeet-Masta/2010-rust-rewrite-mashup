@@ -427,6 +427,8 @@ impl Entities {
                 tracking: (player.feet, 160.0),
                 player_hurts: Vec::new(),
                 spawn_mobs: true,
+                creative: false,
+                shields: Vec::new(),
             });
         }
         let mut changes = Vec::new();

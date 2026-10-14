@@ -53,3 +53,5 @@ pub mod item_icon;
 pub mod special_icon;
 pub mod container_render;
 pub mod item_icons;
+pub mod held_model;
+pub mod arrow_render;

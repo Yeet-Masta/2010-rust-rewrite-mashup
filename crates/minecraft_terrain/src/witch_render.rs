@@ -139,7 +139,7 @@ pub fn append_witches<'a>(mesh: &mut ChunkMesh, witches: impl IntoIterator<Item 
                 * Mat4::from_rotation_x(deg(180.0));
             let rgb = potion.color();
             let color = [((rgb >> 16) & 255) as f32 / 255.0, ((rgb >> 8) & 255) as f32 / 255.0, (rgb & 255) as f32 / 255.0];
-            held.push(crate::mesh::HeldItem { pose, light: mob.light_probe.as_vec3(), id: "minecraft:potion".to_owned(), display: crate::mesh::HeldDisplay::Ground, first_tint: Some(color) });
+            held.push(crate::mesh::HeldItem { pose, light: mob.light_probe.as_vec3(), id: "minecraft:potion".to_owned(), display: crate::mesh::HeldDisplay::Ground, first_tint: Some(color), state: Default::default() });
         }
         let swing = walk_position * 0.6662;
         let right_leg = Pose::ROOT.child([-2.0, 12.0, 0.0], swing.cos() * 1.4 * walk_speed * 0.5, 0.0, 0.0);

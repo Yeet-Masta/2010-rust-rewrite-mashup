@@ -966,6 +966,8 @@ pub enum Command {
     /// A splash or lingering potion the player threw: its contents, the
     /// eyes, the look (pitch, yaw) and the player's motion.
     ThrowPotion { contents: minecraftoss_player::effects::PotionContents, lingering: bool, eye: [f64; 3], rotation: (f32, f32), motion: [f64; 3] },
+    /// A volley the player's bow or crossbow loosed.
+    Shoot(Box<minecraftoss_entities::world::PlayerShot>),
     SpawnItem { item: String, count: i32, components: Option<String>, position: [f64; 3], velocity: [f64; 3], pickup_delay: i32, age: i32 },
     /// The recipe book, for mobs.
     RecipeBook(Arc<minecraftoss_player::crafting::RecipeBook>),
@@ -1016,6 +1018,12 @@ pub struct TickInput {
     pub player_hurts: Vec<(Option<u64>, &'static str)>,
     /// The `spawn_mobs` game rule.
     pub spawn_mobs: bool,
+    /// Whether the player has infinite materials (creative): it takes
+    /// back only what such a player may (`AbstractArrow.tryPickup`).
+    pub creative: bool,
+    /// The players raising a shield that blocks (`isBlocking`), with the
+    /// yaw of their heads.
+    pub shields: Vec<(u64, f32)>,
 }
 
 /// A block a piston is moving (`PistonMovingBlockEntity`), for the
@@ -1327,6 +1335,11 @@ impl ServerHandle {
         self.send(Command::ThrowPotion { contents, lingering, eye, rotation, motion });
     }
 
+    /// The player's bow or crossbow looses a volley (the server's arrows).
+    pub fn shoot(&mut self, shot: minecraftoss_entities::world::PlayerShot) {
+        self.send(Command::Shoot(Box::new(shot)));
+    }
+
     /// `/summon` for a mob; what it did arrives in an output. The new
     /// mob's yaw comes from its own random (`LivingEntity`'s constructor:
     /// `nextFloat() * (float)(Math.PI * 2)`, in degrees), seeded here from
@@ -1458,6 +1471,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::ThrowPotion { contents, lingering, eye, rotation, motion } => {
                     sim.mobs.throw_potion(0, contents, lingering, glam::DVec3::from_array(eye), rotation.0, rotation.1, glam::DVec3::from_array(motion));
                 }
+                Command::Shoot(shot) => sim.mobs.shoot_player(&shot),
                 Command::Summon { kind, position, nbt, y_rot } => {
                     out.summoned.push(sim.summon(&kind, position, nbt.as_ref(), y_rot).map(|()| kind));
                 }
@@ -1531,6 +1545,13 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                             }
                         });
                         out.picked.extend(picked);
+                        // `AbstractArrow.playerTouch`: the landed arrows
+                        // and tridents it may take back.
+                        let arrows = sim.mobs.pick_up_arrows(0, glam::DVec3::from_array(feet), input.creative, |stack| inventory.add_item(stack.clone(), selected).is_none());
+                        for (position, stack) in arrows {
+                            let components = stack.components.as_ref().map(|c| c.to_string());
+                            out.picked.push((-1, position.to_array(), stack.id, i32::from(stack.count), components));
+                        }
                     }
                     // After the items, one experience orb.
                     out.orbs_taken.extend(sim.take_experience(pickup_feet));
