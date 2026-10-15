@@ -675,6 +675,34 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             posed.with("left_front_leg", |p| p.rotation.x = b);
             posed.with("right_front_leg", |p| p.rotation.x = a);
             posed.with("tail2", |p| p.rotation.x = 1.727_876_1 + PI / 4.0 * cos(pos) * speed);
+            // `isSitting`.
+            if e.sitting() {
+                posed.with("body", |p| {
+                    p.rotation.x = PI / 4.0;
+                    p.offset += Vec3::new(0.0, -4.0, 5.0);
+                });
+                posed.with("head", |p| p.offset += Vec3::new(0.0, -3.3, 1.0));
+                posed.with("tail1", |p| {
+                    p.offset += Vec3::new(0.0, 8.0, -2.0);
+                    p.rotation.x = 1.727_876_1;
+                });
+                posed.with("tail2", |p| {
+                    p.offset += Vec3::new(0.0, 2.0, -0.8);
+                    p.rotation.x = 2.670_354;
+                });
+                for leg in ["left_front_leg", "right_front_leg"] {
+                    posed.with(leg, |p| {
+                        p.rotation.x = -PI / 20.0;
+                        p.offset += Vec3::new(0.0, 2.0, -2.0);
+                    });
+                }
+                for leg in ["left_hind_leg", "right_hind_leg"] {
+                    posed.with(leg, |p| {
+                        p.rotation.x = -PI / 2.0;
+                        p.offset += Vec3::new(0.0, 3.0, -4.0);
+                    });
+                }
+            }
         }
         Kind::Fox => {
             posed.look("head", m.head_yaw, m.head_pitch);

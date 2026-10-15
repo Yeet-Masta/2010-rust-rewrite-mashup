@@ -366,7 +366,7 @@ fn teleport_to_owner(ctx: &mut MonsterGoalContext, world: &dyn World, owner: DVe
 /// when told to, or whenever its owner is not in the level; not beside an
 /// owner something has just hurt.
 #[derive(Clone)]
-struct SitGoal;
+pub(crate) struct SitGoal;
 impl Goal<MonsterGoalContext> for SitGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Jump, Control::Move])
@@ -400,10 +400,10 @@ impl Goal<MonsterGoalContext> for SitGoal {
 /// looking at the owner, a new path every 5 goal ticks, or teleports when 12
 /// blocks or more away; it stops within two blocks or when its path ends.
 #[derive(Clone)]
-struct FollowOwnerGoal {
-    speed: f64,
-    start: f64,
-    stop: f64,
+pub(crate) struct FollowOwnerGoal {
+    pub(crate) speed: f64,
+    pub(crate) start: f64,
+    pub(crate) stop: f64,
 }
 impl Goal<MonsterGoalContext> for FollowOwnerGoal {
     fn controls(&self) -> Controls {

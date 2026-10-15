@@ -280,6 +280,14 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         }
         // The generic kinds' `Animal.mobInteract`: feeding and breeding.
         MobHit::Mob(id) => {
+            // Taming and orders first (`TamableAnimal`s, the ocelot's trust).
+            if let Some(events) = world.tame_mob(id, 0, actor.inventory, selected, infinite) {
+                outcome.inventory_changed = true;
+                outcome.events.extend(events);
+                outcome.handled = true;
+                outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
+                return outcome;
+            }
             let Some((used, events)) = world.feed_mob(id, actor.inventory, selected, infinite) else { return outcome };
             if !used {
                 return outcome;

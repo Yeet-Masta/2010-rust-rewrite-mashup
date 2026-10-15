@@ -901,6 +901,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
             entity.age.locked = int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
+            entity.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            entity.ordered_to_sit = int(tag, "Sitting").unwrap_or(0) != 0;
+            entity.trusting = int(tag, "Trusting").unwrap_or(0) != 0;
             if let Some(health) = health {
                 entity.health = health;
             }
@@ -1186,6 +1189,13 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         let mut fields = if s.ageable { vec![("Age", Tag::Int(e.age.ticks)), ("ForcedAge", Tag::Int(e.age.forced)), ("AgeLocked", Tag::Byte(i8::from(e.age.locked)))] } else { Vec::new() };
         if s.breeding_food().is_some() {
             fields.push(("InLove", Tag::Int(e.in_love)));
+        }
+        if let Some(owner) = e.owner {
+            fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+            fields.push(("Sitting", Tag::Byte(i8::from(e.ordered_to_sit))));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Ocelot {
+            fields.push(("Trusting", Tag::Byte(i8::from(e.trusting))));
         }
         add(e.id, s.id, &e.body, e.yaw, e.health, e.persistence_required, fields);
     }

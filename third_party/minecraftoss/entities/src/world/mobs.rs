@@ -37,6 +37,12 @@ pub struct MobEntity {
     pub age: crate::age::Age,
     /// `Animal.inLove`: ticks of love left.
     pub in_love: i32,
+    /// `TamableAnimal`'s owner (a player's UUID) and whether it was told to
+    /// sit (cats and parrots).
+    pub owner: Option<u128>,
+    pub ordered_to_sit: bool,
+    /// `Ocelot.isTrusting`: fed by a player, it no longer flees and breeds.
+    pub trusting: bool,
     /// Its look (`Variant`, a texture's name), where it has one.
     pub variant: String,
     pub no_ai: bool,
@@ -90,6 +96,11 @@ impl MobEntity {
     /// `MeleeAttackGoal`'s swings so far, for the arm swing.
     pub fn swings(&self) -> u32 {
         self.ai.state.melee.swings
+    }
+
+    /// Sitting where its owner told it to (`isInSittingPose`).
+    pub fn sitting(&self) -> bool {
+        self.ai.state.wolf.sitting
     }
 
     /// Chasing a target (`isAggressive`).
@@ -368,6 +379,9 @@ impl EntityWorld {
             pitch: 0.0,
             age: crate::age::Age { ticks: if baby { age } else { 0 }, ..Default::default() },
             in_love: 0,
+            owner: None,
+            ordered_to_sit: false,
+            trusting: false,
             variant: String::new(),
             no_ai,
             tick_count: 0,
@@ -419,8 +433,14 @@ impl EntityWorld {
         let parent = baby
             .then(|| self.mobs.iter().filter(|o| o.kind == kind && !o.baby() && o.health > 0.0 && o.body.position.distance_squared(position) <= 64.0).map(|o| o.body.position).min_by(|a, b| a.distance_squared(position).total_cmp(&b.distance_squared(position))))
             .flatten();
+        // Its owner, while that player is in the level.
+        let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
+        let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
         let (melee, shot, stepped, bred) = {
             let e = self.mob_mut(id).unwrap();
+            e.ai.state.wolf.tame = e.owner.is_some();
+            e.ai.state.wolf.owner = owner;
+            e.ai.state.wolf.ordered_to_sit = e.ordered_to_sit;
             e.ai.state.mobs = mobs;
             e.ai.state.tempters = tempters;
             e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0;
@@ -587,6 +607,103 @@ impl EntityWorld {
         self.entity_events.push((first, 18));
     }
 
+    /// Taming and orders (`Cat.mobInteract`, `Parrot.mobInteract`,
+    /// `Ocelot.mobInteract`), before feeding: a wild cat eats raw cod or
+    /// salmon and is tamed one time in three, a wild parrot eats seeds and is
+    /// tamed one time in ten (a cookie kills it), a wary ocelot fed within
+    /// three blocks comes to trust one time in three (hearts 7, smoke 6); a
+    /// tame cat is healed by its food when hurt, and its owner's use (other
+    /// than its food at full health) tells a cat or parrot to sit or stand.
+    /// None when this is not for taming.
+    pub fn tame_mob(&mut self, id: u64, player: u64, inventory: &mut minecraftoss_player::inventory::Inventory, hand: usize, infinite: bool) -> Option<Vec<(u64, u8)>> {
+        let player_uuid = self.uuid_of(PLAYER_TARGET + player);
+        let player_feet = self.pushing_players.iter().find(|p| p.id == player).map(|p| p.position);
+        let recipes = self.recipes.clone();
+        let e = self.mobs.iter_mut().find(|e| e.id == id)?;
+        if e.health <= 0.0 || !matches!(e.kind, Kind::Cat | Kind::Parrot | Kind::Ocelot) {
+            return None;
+        }
+        let item = inventory.slots.get(hand).and_then(Option::as_ref).map(|s| s.id.clone()).unwrap_or_default();
+        let in_tag = |tag: &str| recipes.as_ref().is_some_and(|r| r.item_in_tag(tag, &item));
+        let consume = |inventory: &mut minecraftoss_player::inventory::Inventory| {
+            if !infinite {
+                crate::animal::consume_one(inventory, hand);
+            }
+        };
+        let position = e.body.position;
+        let owned = e.owner == Some(player_uuid);
+        match e.kind {
+            Kind::Cat if e.owner.is_none() && in_tag("minecraft:cat_food") => {
+                consume(inventory);
+                let event = if e.random.next_int(3) == 0 {
+                    e.owner = Some(player_uuid);
+                    e.ordered_to_sit = true;
+                    e.persistence_required = true;
+                    e.ai.state.navigation.stop();
+                    7
+                } else {
+                    6
+                };
+                e.voices.push((Voice::Event("entity.cat.eat", 1.0, 1.0), position));
+                Some(vec![(id, event)])
+            }
+            Kind::Cat if owned => {
+                if in_tag("minecraft:cat_food") && e.health < e.max_health() {
+                    // `Cat.mobInteract`: its food heals it by the food's nutrition.
+                    consume(inventory);
+                    let heal = minecraftoss_player::food::catalog().get(&item).map_or(2.0, |f| f32::from(f.nutrition));
+                    let max = e.max_health();
+                    crate::effects::heal(&mut e.health, max, heal);
+                    e.voices.push((Voice::Event("entity.cat.eat", 1.0, 1.0), position));
+                    return Some(Vec::new());
+                }
+                if in_tag("minecraft:cat_food") {
+                    return None;
+                }
+                e.ordered_to_sit = !e.ordered_to_sit;
+                e.ai.state.navigation.stop();
+                Some(Vec::new())
+            }
+            Kind::Parrot if e.owner.is_none() && in_tag("minecraft:parrot_food") => {
+                consume(inventory);
+                e.voices.push((Voice::Event("entity.parrot.eat", 1.0, 1.0 + (e.random.next_float() - e.random.next_float()) * 0.2), position));
+                let event = if e.random.next_int(10) == 0 {
+                    e.owner = Some(player_uuid);
+                    e.ordered_to_sit = true;
+                    e.persistence_required = true;
+                    7
+                } else {
+                    6
+                };
+                Some(vec![(id, event)])
+            }
+            Kind::Parrot if in_tag("minecraft:parrot_poisonous_food") => {
+                // A cookie: poison, and a hit that kills it.
+                consume(inventory);
+                e.effects.insert(crate::effects::EffectInstance::new(crate::effects::MobEffect::Poison, 900, 0));
+                e.hurt(f32::MAX);
+                Some(Vec::new())
+            }
+            Kind::Parrot if owned && e.body.on_ground => {
+                e.ordered_to_sit = !e.ordered_to_sit;
+                Some(Vec::new())
+            }
+            Kind::Ocelot if !e.trusting && in_tag("minecraft:ocelot_food") && player_feet.is_none_or(|feet| feet.distance_squared(position) < 9.0) => {
+                consume(inventory);
+                let event = if e.random.next_int(3) == 0 {
+                    e.trusting = true;
+                    e.persistence_required = true;
+                    7
+                } else {
+                    6
+                };
+                e.voices.push((Voice::Event("entity.ocelot.ambient", 1.0, 1.0), position));
+                Some(vec![(id, event)])
+            }
+            _ => None,
+        }
+    }
+
     /// `Animal.mobInteract` with the held item: its food puts an adult in
     /// love or grows a baby by a tenth (`ageUp`); a golden dandelion locks or
     /// unlocks a baby's age. Returns whether the item was used, and the
@@ -596,6 +713,11 @@ impl EntityWorld {
         let recipes = self.recipes.clone();
         let e = self.mobs.iter_mut().find(|e| e.id == id)?;
         let tag = e.species().breeding_food()?;
+        // A wild cat or a wary ocelot does not breed (`TamableAnimal.canMate`,
+        // `Ocelot.isTrusting`).
+        if (e.kind == Kind::Cat && (e.owner.is_none() || e.ordered_to_sit)) || (e.kind == Kind::Ocelot && !e.trusting) {
+            return None;
+        }
         let is_food = |item: &str| recipes.as_ref().is_some_and(|r| r.item_in_tag(tag, item));
         let held = inventory.slots.get(hand).and_then(Option::as_ref).map(|s| s.id.clone());
         let was_baby = e.baby();

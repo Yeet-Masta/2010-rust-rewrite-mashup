@@ -464,6 +464,19 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if s.temper != Temper::Hostile && !matches!(kind, Kind::Giant) {
         selector.add(3, TemptGoal::new(if flies { 1.0 } else { 1.1 }));
     }
+    // `TamableAnimal`s: `SitWhenOrderedToGoal` and `FollowOwnerGoal`
+    // (the cat's 10 and 5 blocks, the parrot's 5 and 1).
+    match kind {
+        Kind::Cat => {
+            selector.add(1, crate::wolf_ai::SitGoal);
+            selector.add(6, crate::wolf_ai::FollowOwnerGoal { speed: 1.0, start: 10.0, stop: 5.0 });
+        }
+        Kind::Parrot => {
+            selector.add(1, crate::wolf_ai::SitGoal);
+            selector.add(2, crate::wolf_ai::FollowOwnerGoal { speed: 1.0, start: 5.0, stop: 1.0 });
+        }
+        _ => {}
+    }
     // `BreedGoal` and `FollowParentGoal` for those that breed.
     if s.breeding_food().is_some() {
         selector.add(2, BreedGoal { partner: None, love_time: 0 });
