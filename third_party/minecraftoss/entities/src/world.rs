@@ -396,7 +396,7 @@ impl SpiderEntity {
     /// spider stood (`Mob.doHurtTarget` runs in the goals, before travel).
     fn tick_ai(&mut self, world: &impl World, players: &[PlayerCandidate], game_time: i64, difficulty: i32) -> Option<(crate::monster_ai::Target, DVec3)> {
         let position = self.spider.body.position;
-        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(crate::spider::movement_speed()), sounds: SPIDER_SOUNDS };
+        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(crate::spider::movement_speed()), sounds: SPIDER_SOUNDS, stands_on_lava: false };
         let landed = monster_ai_step(&mut self.ai, &mut self.spider.body, self.spider.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
         self.spider.yaw = self.ai.yaw;
         if let Some(damage) = landed.and_then(|fallen| fall_damage(&self.spider.body, world, fallen, true, &mut self.voices)) {
@@ -459,7 +459,7 @@ impl CreeperEntity {
     /// body turn.
     fn tick_ai(&mut self, world: &impl World, players: &[PlayerCandidate], game_time: i64, difficulty: i32) {
         self.ai.state.swell_dir = self.creeper.swell_dir;
-        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(crate::monster_ai::MOVEMENT_SPEED), sounds: CREEPER_SOUNDS };
+        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(crate::monster_ai::MOVEMENT_SPEED), sounds: CREEPER_SOUNDS, stands_on_lava: false };
         let landed = monster_ai_step(&mut self.ai, &mut self.creeper.body, self.creeper.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
         self.creeper.swell_dir = self.ai.state.swell_dir;
         if let Some(damage) = landed.and_then(|fallen| fall_damage(&self.creeper.body, world, fallen, true, &mut self.voices)) {
@@ -1094,6 +1094,8 @@ struct MonsterStep<'a> {
     movement_speed: f64,
     /// Its step, swim and splash sounds.
     sounds: MovementSounds,
+    /// `canStandOnFluid(lava)`: a strider walks on lava, not through it.
+    stands_on_lava: bool,
 }
 
 /// `Mob.checkDespawn` and `Monster.updateNoActionTime` for a NoAI monster:
@@ -1180,7 +1182,7 @@ fn monster_ai_step(ai: &mut MonsterAi, body: &mut Body, health: f32, random: &mu
     let landed = if fluid.in_water() {
         body.travel_water(world, input, ai.yaw);
         None
-    } else if fluid.in_lava() {
+    } else if fluid.in_lava() && !step.stands_on_lava {
         body.travel_lava(world, input, ai.yaw, fluid.lava_height);
         None
     } else {
@@ -1265,7 +1267,7 @@ impl SkeletonEntity {
         ai.state.on_fire = self.skeleton.body.fire_ticks > 0;
         ai.state.helmet = self.skeleton.head_item.is_some();
         // `AbstractSkeleton.createAttributes`: 0.25 speed.
-        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(0.25), sounds: self.skeleton.kind.movement_sounds() };
+        let step = MonsterStep { players, villagers: &[], game_time, difficulty, movement_speed: self.effects.movement_speed(0.25), sounds: self.skeleton.kind.movement_sounds(), stands_on_lava: false };
         let landed = monster_ai_step(ai, &mut self.skeleton.body, self.skeleton.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
         // The gates, renderer and census read the skeleton's own fields.
         self.yaw = ai.yaw;
@@ -4857,7 +4859,7 @@ impl EntityWorld {
                                     .collect();
                                 // `Zombie.createAttributes`: 0.23 speed, half again for babies.
                                 let speed = entity.effects.movement_speed(f64::from(0.23_f32) * if entity.zombie.baby { 1.5 } else { 1.0 });
-                                let step = MonsterStep { players, villagers: &mob_villagers, game_time, difficulty, movement_speed: speed, sounds: entity.zombie.kind.movement_sounds() };
+                                let step = MonsterStep { players, villagers: &mob_villagers, game_time, difficulty, movement_speed: speed, sounds: entity.zombie.kind.movement_sounds(), stands_on_lava: false };
                                 let ai = entity.ai.as_deref_mut().unwrap();
                                 ai.state.mob_griefing = mob_griefing;
                                 ai.state.bright_outside = bright_outside;

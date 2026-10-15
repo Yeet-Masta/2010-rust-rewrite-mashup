@@ -281,7 +281,9 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
         }
         Kind::Strider => {
             baby_model = own_baby("strider");
-            add("strider", format!("strider/strider{b}"), &mut out);
+            // `StriderRenderer`: purple with cold out of lava.
+            let cold = if e.cold { "_cold" } else { "" };
+            add("strider", format!("strider/strider{cold}{b}"), &mut out);
         }
         Kind::SulfurCube => out.push(layer("sulfur_cube", "sulfur_cube/sulfur_cube_outer")),
         Kind::Tadpole => out.push(layer("tadpole", "tadpole/tadpole")),
@@ -325,7 +327,7 @@ pub fn textures() -> Vec<String> {
         "zombie/zombie", "squid/glow_squid", "squid/glow_squid_baby", "squid/squid", "squid/squid_baby", "goat/goat", "goat/goat_baby", "hoglin/hoglin", "hoglin/hoglin_baby", "hoglin/zoglin", "hoglin/zoglin_baby",
         "slime/magmacube", "horse/mule", "horse/mule_baby", "horse/horse_skeleton", "horse/horse_skeleton_baby", "horse/horse_zombie", "horse/horse_zombie_baby", "nautilus/nautilus", "nautilus/nautilus_baby", "nautilus/zombie_nautilus",
         "cat/ocelot", "cat/ocelot_baby", "phantom/phantom", "phantom/phantom_eyes", "piglin/piglin", "piglin/piglin_baby", "piglin/piglin_brute", "piglin/zombified_piglin", "piglin/zombified_piglin_baby",
-        "bear/polarbear", "bear/polarbear_baby", "fish/pufferfish", "fish/salmon", "silverfish/silverfish", "sniffer/sniffer", "sniffer/snifflet", "snow_golem/snow_golem", "strider/strider", "strider/strider_baby",
+        "bear/polarbear", "bear/polarbear_baby", "fish/pufferfish", "fish/salmon", "silverfish/silverfish", "sniffer/sniffer", "sniffer/snifflet", "snow_golem/snow_golem", "strider/strider", "strider/strider_baby", "strider/strider_cold", "strider/strider_cold_baby",
         "sulfur_cube/sulfur_cube_outer", "tadpole/tadpole", "fish/tropical_a", "fish/tropical_b", "turtle/turtle", "turtle/turtle_baby", "wandering_trader/wandering_trader", "warden/warden", "wither/wither",
         "skeleton/wither_skeleton", "shulker/shulker",
     ] {
@@ -1017,6 +1019,11 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     }
     if matches!(e.kind, Kind::Phantom) {
         return (Quat::from_rotation_x(e.pitch.to_radians()), Vec3::ZERO);
+    }
+    // `isShaking`: a cold strider's turn jitters (`setupRotations`).
+    if e.kind == Kind::Strider && e.cold {
+        let shake = (m.age_in_ticks.floor() * 3.25).cos() * PI * 0.4;
+        return (Quat::from_rotation_y(-shake.to_radians()), Vec3::ZERO);
     }
     (Quat::IDENTITY, Vec3::ZERO)
 }

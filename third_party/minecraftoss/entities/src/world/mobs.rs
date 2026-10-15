@@ -62,6 +62,8 @@ pub struct MobEntity {
     pub puff: i32,
     inflate: i32,
     deflate: i32,
+    /// `Strider.isSuffocating`: out of the warmth of lava, cold and slow.
+    pub cold: bool,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -85,6 +87,34 @@ impl MobEntity {
 
     pub fn baby(&self) -> bool {
         self.age.baby()
+    }
+
+    /// A strider on lava: a lava source bears it on its lower half when it
+    /// came from above (`LiquidBlock.STABLE_SHAPE` for `canStandOnFluid`),
+    /// standing there it is on the ground, and deeper in it rises
+    /// (`floatStrider`). Lava, at its feet or below them, keeps it warm.
+    fn float_strider(&mut self, world: &impl World) {
+        let position = self.body.position;
+        let cell = (position.x.floor() as i32, position.y.floor() as i32, position.z.floor() as i32);
+        let lava = |pos| world.block(pos).is_some_and(|b| b.id == "minecraft:lava");
+        let source = |pos| world.block(pos).is_some_and(|b| b.id == "minecraft:lava" && b.properties.get("level").is_none_or(|level| level == "0"));
+        let top = f64::from(cell.1) + 0.5;
+        if source(cell) && self.previous_position.y >= top - 1.0e-5 && position.y < top {
+            self.body.position.y = top;
+            self.body.velocity.y = self.body.velocity.y.max(0.0);
+            self.body.on_ground = true;
+        }
+        let fluid = FluidFrame::sample(world, self.body.position, self.body.width, self.body.height);
+        if fluid.in_lava() {
+            let above = (cell.0, cell.1 + 1, cell.2);
+            if source(cell) && self.body.position.y >= top - 1.0e-5 && !lava(above) {
+                self.body.on_ground = true;
+            } else {
+                self.body.velocity = self.body.velocity * 0.5 + DVec3::new(0.0, 0.05, 0.0);
+            }
+        }
+        let below = (cell.0, cell.1 - 1, cell.2);
+        self.cold = !(lava(cell) || lava(below) || fluid.lava_height > 0.0);
     }
 
     /// `Pufferfish.setPuffState`: its size follows (`getScale`: half, 0.7
@@ -406,13 +436,18 @@ impl MobEntity {
     /// a landing deals.
     fn tick_walk(&mut self, world: &impl World, players: &[PlayerCandidate], villagers: &[MobCandidate], game_time: i64, difficulty: i32) -> Option<f32> {
         let s = self.species();
-        let speed = self.effects.movement_speed(s.speed * if self.baby() && matches!(self.kind, Kind::ZombifiedPiglin | Kind::Piglin) { 1.5 } else { 1.0 });
-        let step = MonsterStep { players, villagers, game_time, difficulty, movement_speed: speed, sounds: self.movement_sounds() };
+        // A cold strider walks a third slower (`SUFFOCATING_MODIFIER`).
+        let cold = if self.kind == Kind::Strider && self.cold { 0.66 } else { 1.0 };
+        let speed = self.effects.movement_speed(s.speed * cold * if self.baby() && matches!(self.kind, Kind::ZombifiedPiglin | Kind::Piglin) { 1.5 } else { 1.0 });
+        let step = MonsterStep { players, villagers, game_time, difficulty, movement_speed: speed, sounds: self.movement_sounds(), stands_on_lava: self.kind == Kind::Strider };
         self.ai.state.on_fire = self.body.fire_ticks > 0;
         self.ai.state.tick_count = self.tick_count;
         let eye = self.eye_height();
         self.ai.state.eye_height = eye;
         let landed = monster_ai_step(&mut self.ai, &mut self.body, self.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
+        if self.kind == Kind::Strider {
+            self.float_strider(world);
+        }
         self.yaw = self.ai.yaw;
         self.pitch = 0.0;
         // `Blaze.aiStep`: it falls slowly, and rises towards a target above.
@@ -534,6 +569,7 @@ impl EntityWorld {
             puff: 0,
             inflate: 0,
             deflate: 0,
+            cold: false,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
