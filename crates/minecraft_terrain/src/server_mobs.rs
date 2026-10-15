@@ -896,13 +896,18 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 return Some(world.launch_missile(missile, None, pos, motion, speed, None));
             }
             let kind = Kind::of_id(other)?;
+            // Piglins, zombified piglins and zoglins keep a baby as `IsBaby`;
+            // they never grow up.
+            let flagged_baby = !kind.species().ageable && int(tag, "IsBaby").unwrap_or(0) != 0;
+            let age = if flagged_baby { minecraftoss_entities::age::Age::BABY_START } else if kind.species().ageable { age } else { 0 };
             let id = world.spawn_mob(kind, pos, yaw, age, no_ai);
             let entity = world.mob_mut(id)?;
             entity.random = random;
             entity.persistence_required = persistent;
             entity.head_item = head_item(tag);
+            entity.hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
-            entity.age.locked = int(tag, "AgeLocked").unwrap_or(0) != 0;
+            entity.age.locked = flagged_baby || int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
             entity.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             entity.ordered_to_sit = int(tag, "Sitting").unwrap_or(0) != 0;
@@ -911,11 +916,14 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.health = health;
             }
             // Its look, under whichever name its type saves it.
-            entity.variant = ["variant", "Type", "type", "MainGene"]
+            let found = ["variant", "Type", "type", "MainGene"]
                 .iter()
-                .find_map(|key| text(tag, key).map(str::to_owned))
-                .or_else(|| ["Variant", "RabbitType", "Color", "Size"].iter().find_map(|key| int(tag, key).map(|v| v.to_string())))
-                .unwrap_or_default();
+                .find_map(|key| text(tag, key).map(|v| (v.to_owned(), (*key, false))))
+                .or_else(|| ["Variant", "RabbitType", "Color", "Size"].iter().find_map(|key| int(tag, key).map(|v| (v.to_string(), (*key, true)))));
+            if let Some((variant, key)) = found {
+                entity.variant = variant;
+                entity.variant_key = Some(key);
+            }
             if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
                 entity.ai.state.follow_range = range;
             }
@@ -1199,6 +1207,17 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if e.kind == minecraftoss_entities::species::Kind::Ocelot {
             fields.push(("Trusting", Tag::Byte(i8::from(e.trusting))));
+        }
+        if !s.ageable && e.baby() {
+            fields.push(("IsBaby", Tag::Byte(1)));
+        }
+        // Its look, under the key it came by.
+        if let Some((key, number)) = e.variant_key {
+            fields.push((key, if number { Tag::Int(e.variant.parse().unwrap_or(0)) } else { text_tag(&e.variant) }));
+        }
+        if let Some(item) = &e.hand {
+            let stack = [("id".to_owned(), text_tag(item)), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+            fields.push(("equipment", Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect())));
         }
         add(e.id, s.id, &e.body, e.yaw, e.health, e.persistence_required, fields);
     }

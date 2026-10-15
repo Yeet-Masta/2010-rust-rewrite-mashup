@@ -45,6 +45,10 @@ pub struct MobEntity {
     pub trusting: bool,
     /// Its look (`Variant`, a texture's name), where it has one.
     pub variant: String,
+    /// The key its type saves the look under, and whether as a number.
+    pub variant_key: Option<(&'static str, bool)>,
+    /// What it holds in its main hand (`equipment.mainhand`).
+    pub hand: Option<String>,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -347,6 +351,21 @@ fn rotlerp(from: f32, to: f32, max: f32) -> f32 {
     out
 }
 
+/// A weapon's `attack_damage` modifier for its holder.
+pub fn weapon_damage(item: &str) -> f32 {
+    match item.trim_start_matches("minecraft:") {
+        "wooden_sword" | "golden_sword" => 3.0,
+        "stone_sword" => 4.0,
+        "iron_sword" => 5.0,
+        "diamond_sword" => 6.0,
+        "netherite_sword" => 7.0,
+        "wooden_axe" | "golden_axe" => 6.0,
+        "stone_axe" | "iron_axe" | "diamond_axe" => 8.0,
+        "netherite_axe" => 9.0,
+        _ => 0.0,
+    }
+}
+
 impl EntityWorld {
     /// A generic mob of `kind` at `position`, facing `yaw`, full of health;
     /// a baby when `age` is below zero.
@@ -354,7 +373,8 @@ impl EntityWorld {
         self.next_id += 1;
         let id = self.next_id;
         let s = kind.species();
-        let baby = age < 0 && s.ageable;
+        // (Piglins and zoglins are babies by `IsBaby`, not by age.)
+        let baby = age < 0;
         let (width, height) = s.dimensions(baby);
         let mut body = Body::new(position, width, height);
         body.step_height = s.step_height as f32;
@@ -383,6 +403,8 @@ impl EntityWorld {
             ordered_to_sit: false,
             trusting: false,
             variant: String::new(),
+            variant_key: None,
+            hand: None,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -594,6 +616,7 @@ impl EntityWorld {
         let (position, yaw) = (self.mobs[a].body.position, self.mobs[a].yaw);
         let pick_first = self.mobs[a].random.next_boolean();
         let variant = if pick_first { self.mobs[a].variant.clone() } else { self.mobs[b].variant.clone() };
+        let variant_key = self.mobs[a].variant_key;
         let xp = self.mobs[a].random.next_int(7) as i32 + 1;
         for i in [a, b] {
             self.mobs[i].age.set(6000);
@@ -602,6 +625,7 @@ impl EntityWorld {
         let child = self.spawn_mob(kind, position, yaw, crate::age::Age::BABY_START, false);
         if let Some(c) = self.mob_mut(child) {
             c.variant = variant;
+            c.variant_key = variant_key;
         }
         self.spawned.experience.push((position, xp));
         self.entity_events.push((first, 18));
@@ -746,7 +770,10 @@ impl EntityWorld {
     fn mob_melee(&mut self, id: u64, kind: Kind, target: Target, from: DVec3) {
         let s = kind.species();
         let difficulty = self.difficulty;
-        let mut damage = s.attack;
+        // The base attack plus the held weapon's (`ATTACK_DAMAGE` with the
+        // main hand's modifiers).
+        let weapon = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.hand.as_deref()).map_or(0.0, weapon_damage);
+        let mut damage = s.attack + weapon;
         let mut lift = 0.0_f32;
         // `HoglinBase.hurtAndThrowTarget`: half its attack plus up to all
         // of it for an adult, tossing the target up.

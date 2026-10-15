@@ -1142,7 +1142,7 @@ impl Entities {
             light,
             partial,
         );
-        mob_render::append_mobs(&mut out.models, w.mobs().iter(), poses, atlas, light, partial);
+        let mob_items = mob_render::append_mobs(&mut out.models, w.mobs().iter(), poses, atlas, light, partial);
         let skeleton_items = skeleton_render::append_skeletons(
             &mut out.models,
             w.skeletons().iter(),
@@ -1311,6 +1311,7 @@ impl Entities {
             .chain(zombie_items)
             .chain(villager_items)
             .chain(witch_items)
+            .chain(mob_items)
             .collect();
         let _ = self
             .items

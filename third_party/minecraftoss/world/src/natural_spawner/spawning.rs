@@ -984,6 +984,47 @@ impl CreatureSpawns {
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
             "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
+            "minecraft:piglin" => {
+                // `Piglin.finalizeSpawn`: a fifth are babies; a grown one
+                // takes a crossbow or a golden sword (or, rarely, spear)
+                // from its own random, and may wear each piece of gold.
+                if level.random().next_f32() < 0.2 {
+                    set(&mut tag, "IsBaby", byte(true));
+                } else {
+                    let weapon = if own.next_f32() < 0.5 {
+                        "minecraft:crossbow"
+                    } else if own.next_i32_bound(10) == 0 {
+                        "minecraft:golden_spear"
+                    } else {
+                        "minecraft:golden_sword"
+                    };
+                    equip(&mut tag, "mainhand", weapon);
+                    for (slot, item) in [("head", "minecraft:golden_helmet"), ("chest", "minecraft:golden_chestplate"), ("legs", "minecraft:golden_leggings"), ("feet", "minecraft:golden_boots")] {
+                        if level.random().next_f32() < 0.1 {
+                            equip(&mut tag, slot, item);
+                        }
+                    }
+                }
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            // Each `populateDefaultEquipmentSlots`.
+            "minecraft:zombified_piglin" => {
+                let weapon = if level.random().next_i32_bound(20) == 0 { "minecraft:golden_spear" } else { "minecraft:golden_sword" };
+                equip(&mut tag, "mainhand", weapon);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
+            "minecraft:piglin_brute" | "minecraft:pillager" | "minecraft:vindicator" | "minecraft:vex" | "minecraft:illusioner" | "minecraft:wither_skeleton" => {
+                let weapon = match kind {
+                    "minecraft:piglin_brute" => "minecraft:golden_axe",
+                    "minecraft:pillager" => "minecraft:crossbow",
+                    "minecraft:vindicator" => "minecraft:iron_axe",
+                    "minecraft:vex" => "minecraft:iron_sword",
+                    "minecraft:illusioner" => "minecraft:bow",
+                    _ => "minecraft:stone_sword",
+                };
+                equip(&mut tag, "mainhand", weapon);
+                finalize_mob(&mut tag, &mut RandomRef(level.random()));
+            }
             _ => {
                 let biome = level.biome(pos);
                 super::spawn_variant(&self.registries, level, kind, &mut tag, biome);

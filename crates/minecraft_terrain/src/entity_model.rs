@@ -264,6 +264,24 @@ impl<'a> Posed<'a> {
         }
     }
 
+    /// A part's matrix in model space: its ancestors' poses and its own
+    /// (`translateAndRotate` down the tree, as `translateToHand` does).
+    pub fn matrix_of(&self, name: &str) -> Option<Mat4> {
+        fn walk(posed: &Posed, index: usize, target: usize, parent: Mat4) -> Option<Mat4> {
+            let matrix = parent * posed.poses[index].matrix();
+            if index == target {
+                return Some(matrix);
+            }
+            posed.model.parts[index].children.iter().find_map(|&child| walk(posed, child, target, matrix))
+        }
+        walk(self, 0, self.model.part(name)?, Mat4::IDENTITY)
+    }
+
+    /// Whether the part is drawn.
+    pub fn shown(&self, name: &str) -> bool {
+        self.model.part(name).is_some_and(|i| self.visible[i])
+    }
+
     /// The head's look (`head.yRot`, `head.xRot`) in degrees.
     pub fn look(&mut self, part: &str, yaw: f32, pitch: f32) {
         self.with(part, |p| {

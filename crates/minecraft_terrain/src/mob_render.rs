@@ -777,7 +777,9 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         }
         Kind::WitherSkeleton | Kind::Giant => humanoid(posed, m, aggressive, e.kind == Kind::Giant),
         Kind::Pillager | Kind::Vindicator | Kind::Evoker | Kind::Illusioner | Kind::WanderingTrader => {
-            illager(posed, m, e.kind, aggressive, e.charging());
+            // `Pillager.getArmPose`: a crossbow is always held ready.
+            let ready = e.kind == Kind::Pillager && e.hand.as_deref() == Some("minecraft:crossbow");
+            illager(posed, m, e.kind, aggressive || ready, e.charging());
         }
         Kind::Vex => {
             posed.look("head", m.head_yaw, m.head_pitch);
@@ -1006,10 +1008,35 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     (Quat::IDENTITY, Vec3::ZERO)
 }
 
-/// Draws the generic mobs into the model mesh.
-pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a MobEntity>, poses: &ClientMobs, atlas: &Atlas, light: &SkyLight, partial: f32) {
+/// `ItemInHandLayer` for a mob holding something: the right arm's place
+/// (`translateToHand`, with the vex's shrink and shift), turned to hold it.
+fn held_in_right_hand(e: &MobEntity, posed: &Posed, m: &MobPose, rotation: Quat, scale: Vec3) -> Option<crate::mesh::HeldItem> {
+    use glam::Mat4;
+    let item = e.hand.as_ref()?;
+    if !posed.shown("right_arm") {
+        return None;
+    }
+    let mut arm = posed.matrix_of("right_arm")?;
+    if e.kind == Kind::Vex {
+        arm = arm * Mat4::from_scale(Vec3::splat(0.55)) * Mat4::from_translation(Vec3::new(0.046875, -0.15625, 0.078125));
+    }
+    let pose = Mat4::from_translation(m.feet.as_vec3())
+        * Mat4::from_quat(rotation)
+        * Mat4::from_scale(scale)
+        * Mat4::from_translation(Vec3::new(0.0, 1.501, 0.0))
+        * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+        * arm
+        * Mat4::from_rotation_x((-90.0f32).to_radians())
+        * Mat4::from_rotation_y(180.0f32.to_radians())
+        * Mat4::from_translation(Vec3::new(1.0, 2.0, -10.0) / 16.0);
+    Some(crate::mesh::HeldItem { pose, light: m.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::RightHand, first_tint: None, state: Default::default() })
+}
+
+/// Draws the generic mobs into the model mesh; returns what they hold.
+pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a MobEntity>, poses: &ClientMobs, atlas: &Atlas, light: &SkyLight, partial: f32) -> Vec<crate::mesh::HeldItem> {
     let partial = partial.clamp(0.0, 1.0);
     let mut marks = Vec::new();
+    let mut held = Vec::new();
     for e in mobs {
         let Some(m) = poses.pose(e.id, partial) else { continue };
         let (layers, own_baby) = layers(e);
@@ -1034,10 +1061,14 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
             }
             let mut posed = Posed::new(model);
             animate(&mut posed, e, &m);
+            if std::ptr::eq(l, &layers[0]) {
+                held.extend(held_in_right_hand(e, &posed, &m, rotation, scale));
+            }
             let feet = m.feet + rotation.mul_vec3(shift).as_dvec3();
             let placement = Placement { feet, rotation, scale, region: atlas.entity_region(&id), sky, block: if l.glow { 15.0 } else { block }, tint: l.tint };
             entity_model::draw(mesh, &posed, &placement);
         }
     }
     crate::cow_render::apply_overlays(mesh, &marks);
+    held
 }
