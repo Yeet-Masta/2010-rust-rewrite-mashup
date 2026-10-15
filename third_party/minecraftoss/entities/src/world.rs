@@ -42,6 +42,8 @@ mod illagers;
 mod shulkers;
 mod phantoms;
 mod squids;
+mod dolphins;
+pub use dolphins::{goals as dolphin_goals, DolphinState};
 pub use squids::{goals as squid_goals, targets as squid_targets, SquidState};
 pub use phantoms::{goals as phantom_goals, targets as phantom_targets};
 pub use shulkers::{goals as shulker_goals, targets as shulker_targets, ShulkerState};

@@ -198,11 +198,13 @@ pub struct PlayerVitals {
     pub slowed: bool,
     pub poisoned: bool,
     pub weakened: bool,
+    /// `Player.isSwimming` (a dolphin swims along).
+    pub swimming: bool,
 }
 
 impl Default for PlayerVitals {
     fn default() -> Self {
-        Self { health: 20.0, velocity: DVec3::ZERO, slowed: false, poisoned: false, weakened: false }
+        Self { health: 20.0, velocity: DVec3::ZERO, slowed: false, poisoned: false, weakened: false, swimming: false }
     }
 }
 
@@ -337,6 +339,19 @@ impl Default for PhantomCtx {
         // `PhantomMoveControl.speed`'s first 0.1.
         Self { swoop: false, anchor: None, move_target: DVec3::ZERO, swooped: false, speed: 0.1 }
     }
+}
+
+/// What a dolphin's goals see of it and ask of it: its pitch (`xRot`,
+/// which its jump turns), a leap's push, whether it is leaping or going up
+/// for air, the player it swims with this tick, and a breach's splash.
+#[derive(Clone, Debug, Default)]
+pub struct DolphinCtx {
+    pub pitch: f32,
+    pub leap: Option<DVec3>,
+    pub jumping: bool,
+    pub breathing: bool,
+    pub grace: Option<u64>,
+    pub breached: bool,
 }
 
 /// A target as the goals see it.
@@ -519,6 +534,8 @@ pub struct MonsterGoalContext {
     /// A squid's `movementVector`, and a bubble its flight blew.
     pub squid_vector: DVec3,
     pub squid_bubble: bool,
+    /// A dolphin's pitch and what its goals asked of it (`world/dolphins`).
+    pub dolphin: DolphinCtx,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -913,6 +930,7 @@ impl MonsterAi {
                 phantom: PhantomCtx::default(),
                 squid_vector: DVec3::ZERO,
                 squid_bubble: false,
+                dolphin: DolphinCtx::default(),
                 fly_target: None,
                 charging: false,
                 in_love: false,

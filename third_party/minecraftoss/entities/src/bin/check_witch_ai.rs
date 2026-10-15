@@ -194,6 +194,7 @@ fn main() {
                         slowed: effects.contains(&"minecraft:slowness"),
                         poisoned: effects.contains(&"minecraft:poison"),
                         weakened: effects.contains(&"minecraft:weakness"),
+                        swimming: false,
                     },
                 ));
                 world.set_player_vitals(vitals.clone());

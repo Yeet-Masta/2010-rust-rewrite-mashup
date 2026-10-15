@@ -250,6 +250,12 @@ pub(crate) struct WanderGoal {
     water: bool,
 }
 
+impl WanderGoal {
+    pub(crate) fn swimming(speed: f64, interval: u32) -> Self {
+        Self { speed, interval, horizontal: 10, vertical: 7, water: true }
+    }
+}
+
 impl Goal<MonsterGoalContext> for WanderGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Move])
@@ -285,6 +291,12 @@ impl Goal<MonsterGoalContext> for WanderGoal {
 pub(crate) struct ChargeGoal {
     speed: f64,
     cooldown: i32,
+}
+
+impl ChargeGoal {
+    pub(crate) fn new(speed: f64) -> Self {
+        Self { speed, cooldown: 0 }
+    }
 }
 
 impl Goal<MonsterGoalContext> for ChargeGoal {
@@ -417,6 +429,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if matches!(kind, Kind::Squid | Kind::GlowSquid) {
         return crate::world::squid_goals();
     }
+    if kind == Kind::Dolphin {
+        return crate::world::dolphin_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -543,7 +558,7 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         return selector;
     }
     if s.temper != Temper::Inert {
-        selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: matches!(kind, Kind::ZombifiedPiglin | Kind::Bee | Kind::Piglin | Kind::Hoglin | Kind::PolarBear) });
+        selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: matches!(kind, Kind::ZombifiedPiglin | Kind::Bee | Kind::Piglin | Kind::Hoglin | Kind::PolarBear | Kind::Dolphin) });
     }
     if s.temper == Temper::Hostile {
         // A piglin spares players in gold (a brute does not).

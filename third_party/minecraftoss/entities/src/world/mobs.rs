@@ -78,6 +78,7 @@ pub struct MobEntity {
     pub ravager: super::illagers::RavagerState,
     pub shulker: super::shulkers::ShulkerState,
     pub squid: super::squids::SquidState,
+    pub dolphin: super::dolphins::DolphinState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -342,7 +343,7 @@ impl MobEntity {
     /// Whether it breathes water and dries out in air.
     fn dries_out(&self) -> bool {
         let s = self.species();
-        s.aquatic && !matches!(self.kind, Kind::Axolotl | Kind::Turtle | Kind::ZombieNautilus | Kind::ElderGuardian | Kind::Guardian)
+        s.aquatic && !matches!(self.kind, Kind::Axolotl | Kind::Turtle | Kind::ZombieNautilus | Kind::ElderGuardian | Kind::Guardian | Kind::Dolphin)
     }
 
     /// `aiStep` for a flier, floater or swimmer: the goals, then the steer
@@ -612,6 +613,7 @@ impl EntityWorld {
             ravager: Default::default(),
             shulker: Default::default(),
             squid: Default::default(),
+            dolphin: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -655,6 +657,7 @@ impl EntityWorld {
         let mobs = self.mob_candidates();
         let tempters = self.tempters(kind);
         let gilded = self.gilded_players.clone();
+        let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
@@ -688,6 +691,9 @@ impl EntityWorld {
             e.ai.state.mobs = mobs;
             e.ai.state.tempters = tempters;
             e.ai.state.gilded = gilded.clone();
+            if kind == Kind::Dolphin {
+                e.ai.state.vitals = vitals;
+            }
             e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0;
             e.ai.state.mates = mates;
             e.ai.state.parent = parent;
@@ -780,6 +786,11 @@ impl EntityWorld {
                     // as a spellcaster does while it casts.
                     let motion = if e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
                     match motion {
+                        _ if e.kind == Kind::Dolphin => {
+                            if let Some(damage) = e.tick_dolphin(&*world, players, &villagers, game_time, difficulty) {
+                                e.hurt(damage);
+                            }
+                        }
                         _ if matches!(e.kind, Kind::Squid | Kind::GlowSquid) => {
                             if let Some(damage) = e.tick_squid(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);
@@ -873,6 +884,9 @@ impl EntityWorld {
         }
         if kind == Kind::Shulker {
             self.shulker_step(id, &*world);
+        }
+        if kind == Kind::Dolphin {
+            self.dolphin_step(id);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

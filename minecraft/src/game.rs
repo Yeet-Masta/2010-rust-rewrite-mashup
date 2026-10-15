@@ -610,6 +610,7 @@ impl Game {
             creative: self.creative,
             shield: self.blocking_slot().map(|_| self.player.yaw as f32),
             time_since_rest: self.time_since_rest,
+            swimming: self.player.swimming,
         };
         let bright = self.world.sky_light_level() > 11.0;
         self.entities.hold_pickups = self.pickups_wait();
@@ -1507,6 +1508,20 @@ impl Game {
             }
             for at in bubbles {
                 self.particles.spawn(&self.world, &Type::Bubble.into(), at, DVec3::ZERO);
+            }
+            // `Dolphin.tick`: two pairs of trail motes behind it, a little
+            // to each side.
+            for (at, yaw, pitch) in self.entities.dolphin_trails() {
+                let (yr, pr) = (yaw.to_radians(), pitch.to_radians());
+                let view = DVec3::new(f64::from(-yr.sin() * pr.cos()), f64::from(-pr.sin()), f64::from(yr.cos() * pr.cos()));
+                let (c, s) = (f64::from(yr.cos() * 0.3), f64::from(yr.sin() * 0.3));
+                let multiplier = f64::from(1.2 - self.particles.random.next_float() * 0.7);
+                for _ in 0..2 {
+                    for side in [1.0, -1.0] {
+                        let p = DVec3::new(at.x - view.x * multiplier + c * side, at.y - view.y, at.z - view.z * multiplier + s * side);
+                        self.particles.spawn(&self.world, &Type::Dolphin.into(), p, DVec3::ZERO);
+                    }
+                }
             }
             // `GlowSquid.aiStep`: a mote somewhere about it every tick.
             for (feet, width, height) in glows {

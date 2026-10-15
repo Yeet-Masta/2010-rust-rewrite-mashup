@@ -62,6 +62,8 @@ pub struct PlayerView {
     /// `Stats.TIME_SINCE_REST`: it counts up each tick (there is no
     /// sleeping yet), and the client resets it on death.
     pub time_since_rest: i32,
+    /// `Player.isSwimming`.
+    pub swimming: bool,
 }
 
 /// What the server sent back this frame.
@@ -624,6 +626,18 @@ impl Entities {
         (ink, bubbles, glows)
     }
 
+    /// The dolphins fast enough in water to leave a trail: where each is,
+    /// its yaw and its pitch (`Dolphin.tick`'s client side).
+    pub fn dolphin_trails(&self) -> Vec<(DVec3, f32, f32)> {
+        use minecraftoss_entities::species::Kind;
+        self.world
+            .mobs()
+            .iter()
+            .filter(|e| e.kind == Kind::Dolphin && e.body.touching_water && e.body.velocity.length_squared() > 0.03)
+            .map(|e| (e.body.position, e.yaw, e.pitch))
+            .collect()
+    }
+
     pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {
         self.world.mob_bounds(id)
     }
@@ -948,6 +962,7 @@ impl Entities {
                     minecraftoss_entities::monster_ai::PlayerVitals {
                         health: player.health,
                         velocity: player.velocity,
+                        swimming: player.swimming,
                         ..Default::default()
                     },
                 )],
