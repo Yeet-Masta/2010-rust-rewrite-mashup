@@ -396,6 +396,10 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(sheet)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/spider/spider")?, ());
+    // The generic mobs' skins (`mob_render`).
+    for skin in crate::mob_render::textures() {
+        textures.insert(ResourceId::parse(&skin)?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());

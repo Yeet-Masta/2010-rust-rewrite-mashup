@@ -15,6 +15,8 @@ pub mod lighting;
 pub mod mesh;
 pub mod model;
 pub mod outline;
+pub mod entity_model;
+pub mod mob_render;
 pub mod pack;
 pub mod scene;
 pub mod sections;

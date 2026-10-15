@@ -416,4 +416,12 @@ fn install_outlines() {
     {
         log!("The block outline table did not load: {error}");
     }
+    // The entity models and keyframe animations (`entity_model`).
+    const MODELS: &[u8] = include_bytes!("../data/entity-models-26.3.json.gz");
+    let mut json = Vec::new();
+    if flate2::read::GzDecoder::new(MODELS).read_to_end(&mut json).is_ok()
+        && let Err(error) = minecraft_terrain::entity_model::install(&json)
+    {
+        log!("The entity models did not load: {error}");
+    }
 }

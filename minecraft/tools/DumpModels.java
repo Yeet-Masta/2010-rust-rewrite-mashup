@@ -144,6 +144,8 @@ public class DumpModels {
 
     /** The float's shortest decimal that reads back as the same float. */
     static String n(float f) {
+        // The boat's water patch has no sheet: its coordinates divide by zero.
+        if (Float.isNaN(f) || Float.isInfinite(f)) return "0";
         if (f == (long) f && Math.abs(f) < 1e9) return Long.toString((long) f);
         return Float.toString(f);
     }

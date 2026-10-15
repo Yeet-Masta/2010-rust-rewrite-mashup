@@ -1061,7 +1061,10 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
         .filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings)))
         .chain(world.skeletons().iter().filter_map(|e| Some((e.id, e.ai.as_deref()?.state.melee.swings))))
         .chain(world.endermen().iter().map(|e| (e.id, e.ai.state.melee.swings)))
+        .chain(world.mobs().iter().map(|e| (e.id, e.swings())))
         .collect();
+    // The generic kinds' `updateInterval`s.
+    let intervals: HashMap<u64, i32> = world.mobs().iter().map(|e| (e.id, e.species().tracking[1])).collect();
     for e in world.zombies() {
         push(e.id, e.yaw, &e.look_control, &e.zombie.body, e.zombie.baby, e.zombie.eye_height());
     }
@@ -1097,7 +1100,13 @@ pub fn server_mobs(world: &minecraftoss_entities::world::EntityWorld) -> Vec<Ser
     for e in world.wolves() {
         push(e.id, e.wolf.yaw, &e.ai.state.look_control, &e.wolf.body, e.wolf.baby(), e.wolf.eye_height());
     }
+    for e in world.mobs() {
+        push(e.id, e.yaw, e.look_control(), &e.body, e.baby(), e.eye_height());
+    }
     for mob in &mut out {
+        if let Some(&interval) = intervals.get(&mob.id) {
+            mob.update_interval = interval;
+        }
         mob.resting = resting_bats.contains(&mob.id);
         if let Some(damage) = world.damage_state(mob.id) {
             mob.hurts = damage.hurts;
@@ -1131,6 +1140,7 @@ pub fn shadow_casters(world: &minecraftoss_entities::world::EntityWorld, mobs: &
     kinds.extend(world.slimes().iter().map(|e| (e.id, e.slime.size as f32 * 0.25)));
     kinds.extend(world.witches().iter().map(|e| (e.id, 0.5)));
     kinds.extend(world.wolves().iter().map(|e| (e.id, 0.5 * age(e.wolf.baby()))));
+    kinds.extend(world.mobs().iter().map(|e| (e.id, crate::mob_render::shadow_radius(e.kind) * age(e.baby()))));
     kinds
         .into_iter()
         .filter_map(|(id, radius)| {

@@ -98,13 +98,16 @@ impl MobCategory {
         Some(match kind.trim_start_matches("minecraft:") {
             "zombie" | "zombie_villager" | "zombie_horse" | "skeleton" | "creeper" | "spider" | "enderman" | "witch" | "slime" | "husk" | "stray" | "drowned"
             | "bogged" | "parched" | "camel_husk" | "cave_spider" | "silverfish" | "phantom" | "blaze" | "ghast" | "magma_cube" | "piglin" | "hoglin"
-            | "zombified_piglin" | "pillager" | "shulker" => Self::Monster,
+            | "zombified_piglin" | "pillager" | "shulker" | "wither_skeleton" | "guardian" | "elder_guardian" | "endermite" | "vex" | "vindicator" | "evoker"
+            | "illusioner" | "ravager" | "zoglin" | "piglin_brute" | "warden" | "breeze" | "creaking" | "sulfur_cube" | "zombie_nautilus" | "giant" | "wither"
+            | "ender_dragon" => Self::Monster,
             "cow" | "pig" | "sheep" | "chicken" | "horse" | "donkey" | "mule" | "mooshroom" | "rabbit" | "wolf" | "fox" | "goat" | "llama" | "panda"
-            | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" => Self::Creature,
+            | "polar_bear" | "cat" | "ocelot" | "parrot" | "frog" | "camel" | "armadillo" | "turtle" | "strider" | "bee" | "sniffer" | "allay" | "trader_llama"
+            | "wandering_trader" | "skeleton_horse" | "happy_ghast" | "tadpole" => Self::Creature,
             "bat" => Self::Ambient,
             "axolotl" => Self::Axolotls,
             "glow_squid" => Self::UndergroundWaterCreature,
-            "squid" | "dolphin" => Self::WaterCreature,
+            "squid" | "dolphin" | "nautilus" => Self::WaterCreature,
             "cod" | "salmon" | "tropical_fish" | "pufferfish" => Self::WaterAmbient,
             _ => return None,
         })
@@ -570,11 +573,67 @@ impl CreatureSpawns {
                 let water = self.registries.blocks.block(self.registries.blocks.block_of(state)).name.as_str() == "minecraft:water";
                 pos.y <= level.sea_level() - 33 && level.raw_brightness(pos, 0) == 0 && water
             }
+            Rules::OnTag(tag) => self.below_in_tag(level, pos, tag),
+            Rules::Ocelot => level.random().next_i32_bound(3) != 0,
+            Rules::Turtle => pos.y < level.sea_level() + 4 && self.below_in_tag(level, pos, "minecraft:sand") && level.raw_brightness(pos, 0) > 8,
+            Rules::SurfaceWater => self.surface_water(level, pos),
+            Rules::TropicalFish => {
+                let any_height = self.registries.biome_tags.id("minecraft:allows_tropical_fish_spawns_at_any_height").is_some_and(|t| self.registries.biome_in_tag(level.biome(pos), t));
+                self.water_at(level, pos.below()) && self.water_block(level, pos.above()) && (any_height || self.surface_water(level, pos))
+            }
+            Rules::Drowned => context.difficulty != 0 && self.water_at(level, pos.below()) && self.water_at(level, pos) && self.dark_enough(level, context, pos) && level.random().next_i32_bound(40) == 0,
+            Rules::Guardian => context.difficulty != 0 && self.water_at(level, pos.below()),
+            Rules::Ghast => context.difficulty != 0 && level.random().next_i32_bound(20) == 0 && self.mob_spawn_rules(level, kind, info, pos),
+            Rules::NotPeaceful => context.difficulty != 0,
+            Rules::NotOnWart => !self.below_named(level, pos, "minecraft:nether_wart_block"),
+            Rules::NotOnWartNotPeaceful => context.difficulty != 0 && !self.below_named(level, pos, "minecraft:nether_wart_block"),
+            Rules::Strider => {
+                let mut at = pos;
+                while self.lava_at(level, at) {
+                    at = at.above();
+                }
+                at != pos && self.registries.blocks.is_air(level.block(at))
+            }
             Rules::Other => {
                 level.note_unsupported(&format!("spawn rules of {kind}"));
                 false
             }
         }
+    }
+
+    /// The block below is in a block tag.
+    fn below_in_tag(&self, level: &mut dyn SpawnLevel, pos: BlockPos, tag: &str) -> bool {
+        let below = level.block(pos.below());
+        self.registries.block_tags.id(tag).is_some_and(|t| self.registries.block_in_tag(below, t))
+    }
+
+    /// The block below is this one.
+    fn below_named(&self, level: &mut dyn SpawnLevel, pos: BlockPos, name: &str) -> bool {
+        let below = level.block(pos.below());
+        self.registries.blocks.block(self.registries.blocks.block_of(below)).name.as_str() == name
+    }
+
+    /// `getFluidState(pos).is(FluidTags.WATER)`.
+    fn water_at(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let state = level.block(pos);
+        self.registries.blocks.state(state).fluid.is_some_and(|f| f.kind == minecraftoss_core::block::FluidKind::Water)
+    }
+
+    fn lava_at(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let state = level.block(pos);
+        self.registries.blocks.state(state).fluid.is_some_and(|f| f.kind == minecraftoss_core::block::FluidKind::Lava)
+    }
+
+    /// `getBlockState(pos).is(Blocks.WATER)`.
+    fn water_block(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let state = level.block(pos);
+        self.registries.blocks.block(self.registries.blocks.block_of(state)).name.as_str() == "minecraft:water"
+    }
+
+    /// `WaterAnimal.checkSurfaceWaterAnimalSpawnRules`.
+    fn surface_water(&self, level: &mut dyn SpawnLevel, pos: BlockPos) -> bool {
+        let sea = level.sea_level();
+        pos.y >= sea - 13 && pos.y <= sea && self.water_at(level, pos.below()) && self.water_block(level, pos.above())
     }
 
     /// `Monster.isDarkEnoughToSpawn`.
@@ -925,7 +984,8 @@ impl CreatureSpawns {
             }
             "minecraft:creeper" | "minecraft:enderman" | "minecraft:bat" => finalize_mob(&mut tag, &mut RandomRef(level.random())),
             _ => {
-                level.note_unsupported(&format!("finalizeSpawn of {kind}"));
+                let biome = level.biome(pos);
+                super::spawn_variant(&self.registries, level, kind, &mut tag, biome);
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
         }

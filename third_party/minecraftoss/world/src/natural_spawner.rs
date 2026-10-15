@@ -228,6 +228,33 @@ enum Rules {
     Bat,
     /// `GlowSquid.checkGlowSquidSpawnRules` (deep, dark water).
     GlowSquid,
+    /// `Axolotl.checkAxolotlSpawnRules`: only the block below (its tag).
+    OnTag(&'static str),
+    /// `Ocelot.checkOcelotSpawnRules`: two times in three.
+    Ocelot,
+    /// `Turtle.checkTurtleSpawnRules`: on sand up to four above the sea, bright enough.
+    Turtle,
+    /// `WaterAnimal.checkSurfaceWaterAnimalSpawnRules`: within 13 below the
+    /// sea level, water below and above.
+    SurfaceWater,
+    /// `TropicalFish.checkTropicalFishSpawnRules`: water below and above, at
+    /// any height in the biomes that allow it, else near the surface.
+    TropicalFish,
+    /// `Drowned.checkDrownedSpawnRules`: in water, dark enough, not peaceful.
+    Drowned,
+    /// `Guardian.checkGuardianSpawnRules`: in water, not peaceful.
+    Guardian,
+    /// `Ghast.checkGhastSpawnRules`: not peaceful, one time in twenty.
+    Ghast,
+    /// `MagmaCube.checkMagmaCubeSpawnRules`: not peaceful.
+    NotPeaceful,
+    /// `Piglin.checkPiglinSpawnRules`, `Hoglin.checkHoglinSpawnRules`: not on
+    /// a nether wart block.
+    NotOnWart,
+    /// `ZombifiedPiglin.checkZombifiedPiglinSpawnRules`.
+    NotOnWartNotPeaceful,
+    /// `Strider.checkStriderSpawnRules`: lava at its feet with air above.
+    Strider,
     /// Rules not ported yet: the type is not spawned.
     Other,
 }
@@ -248,6 +275,76 @@ enum Walk {
     Monster,
     /// `PathfinderMob`'s 0 (cube mobs).
     Neutral,
+}
+
+/// The look a fresh spawn of a generic kind draws in its `finalizeSpawn`
+/// (`Parrot`, `Axolotl`, `Cat`, `Frog`, `Panda`, `Goat`, `TropicalFish`,
+/// `Salmon`), as its save data names it.
+pub(crate) fn spawn_variant(registries: &minecraftoss_core::registries::Registries, level: &mut dyn SpawnLevel, kind: &str, tag: &mut Tag, biome: minecraftoss_core::BiomeId) {
+    let in_tag = |name: &str| registries.biome_tags.id(name).is_some_and(|t| registries.biome_in_tag(biome, t));
+    match kind {
+        // `Parrot.finalizeSpawn`: one of its five colours.
+        "minecraft:parrot" => {
+            let variant = level.random().next_i32_bound(5);
+            set(tag, "Variant", Tag::Int(variant));
+        }
+        // `Axolotl.finalizeSpawn`: a common colour, blue one time in 1200.
+        "minecraft:axolotl" => {
+            let random = level.random();
+            let variant = if random.next_i32_bound(1200) == 0 { 4 } else { random.next_i32_bound(4) };
+            set(tag, "Variant", Tag::Int(variant));
+        }
+        "minecraft:cat" => {
+            const CATS: [&str; 10] = ["tabby", "black", "red", "siamese", "british_shorthair", "calico", "persian", "ragdoll", "white", "jellie"];
+            let cat = CATS[level.random().next_i32_bound(CATS.len() as i32) as usize];
+            set(tag, "variant", Tag::String(format!("minecraft:{cat}")));
+        }
+        // The frog variants' spawn conditions: by the biome's tags.
+        "minecraft:frog" => {
+            let variant = if in_tag("minecraft:spawns_warm_variant_frogs") {
+                "warm"
+            } else if in_tag("minecraft:spawns_cold_variant_frogs") {
+                "cold"
+            } else {
+                "temperate"
+            };
+            set(tag, "variant", Tag::String(format!("minecraft:{variant}")));
+        }
+        // `Panda.finalizeSpawn`: both genes by `Gene.getRandom`.
+        "minecraft:panda" => {
+            let gene = |random: &mut dyn minecraftoss_core::random::RandomSource| match random.next_i32_bound(16) {
+                0 => "lazy",
+                1 => "worried",
+                2 => "playful",
+                3 => "brown",
+                4 => "weak",
+                5..=8 => "aggressive",
+                _ => "normal",
+            };
+            let main = gene(level.random());
+            let hidden = gene(level.random());
+            set(tag, "MainGene", Tag::String(main.to_owned()));
+            set(tag, "HiddenGene", Tag::String(hidden.to_owned()));
+        }
+        // `Goat.finalizeSpawn`: one in fifty screams.
+        "minecraft:goat" => {
+            let screaming = level.random().next_f64() < 0.02;
+            set(tag, "IsScreamingGoat", Tag::Byte(i8::from(screaming)));
+        }
+        // `TropicalFish.finalizeSpawn`: nine times in ten a common pattern.
+        "minecraft:tropical_fish" => {
+            let random = level.random();
+            let variant = random.next_i32_bound(2) | random.next_i32_bound(6) << 8 | random.next_i32_bound(16) << 16 | random.next_i32_bound(16) << 24;
+            set(tag, "Variant", Tag::Int(variant));
+        }
+        // `Salmon.finalizeSpawn`: small 15%, medium 70%, large 15%.
+        "minecraft:salmon" => {
+            let roll = level.random().next_f32();
+            let size = if roll < 0.15 { "small" } else if roll < 0.85 { "medium" } else { "large" };
+            set(tag, "type", Tag::String(size.to_owned()));
+        }
+        _ => {}
+    }
 }
 
 /// The creature types spawn tables name.
@@ -287,16 +384,71 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         "zombie_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "bat" => (0.5, 0.9, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         "glow_squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        // The water animals (`SpawnPlacementTypes.IN_WATER`).
+        "squid" => (0.8, 0.8, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "dolphin" => (0.9, 0.6, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "cod" => (0.5, 0.3, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "salmon" => (0.7, 0.4, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "pufferfish" => (0.7, 0.7, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "tropical_fish" => (0.5, 0.4, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "nautilus" => (0.875, 0.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "zombie_nautilus" => (0.875, 0.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "drowned" => (0.6, 1.95, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "guardian" => (0.85, 0.85, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "elder_guardian" => (1.9975, 1.9975, Placement::InWater, MotionBlockingNoLeaves, false, false),
+        "ocelot" => (0.6, 0.7, Placement::OnGround, MotionBlocking, false, false),
+        "cat" => (0.6, 0.7, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "bee" => (0.55, 0.5, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
+        "sniffer" => (1.9, 1.75, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "skeleton_horse" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "mule" => (1.396_484_4, 1.6, Placement::OnGround, MotionBlockingNoLeaves, false, true),
+        "trader_llama" => (0.9, 1.87, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        // Monsters of caves, structures and the Nether.
+        "cave_spider" => (0.7, 0.5, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "silverfish" => (0.4, 0.3, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "endermite" => (0.4, 0.3, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "pillager" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "vindicator" | "evoker" | "illusioner" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "blaze" => (0.6, 1.8, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "wither_skeleton" => (0.7, 2.4, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "magma_cube" => (0.52, 0.52, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "ghast" => (4.0, 4.0, Placement::OnGround, MotionBlockingNoLeaves, true, false),
+        "piglin" | "zombified_piglin" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "piglin_brute" => (0.6, 1.95, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "hoglin" | "zoglin" => (1.396_484_4, 1.4, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "shulker" => (1.0, 1.0, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
+        "phantom" => (0.9, 0.5, Placement::NoRestrictions, MotionBlockingNoLeaves, false, false),
+        "breeze" => (0.6, 1.77, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "creaking" => (0.9, 2.7, Placement::OnGround, MotionBlockingNoLeaves, false, false),
+        "sulfur_cube" => (0.49, 0.49, Placement::OnGround, MotionBlockingNoLeaves, false, false),
         _ => return None,
     };
     let short = kind.trim_start_matches("minecraft:");
-    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched");
+    let monster = matches!(short, "zombie" | "zombie_villager" | "witch" | "skeleton" | "creeper" | "spider" | "enderman" | "husk" | "stray" | "bogged" | "parched")
+        || matches!(short, "cave_spider" | "silverfish" | "endermite" | "pillager" | "vindicator" | "evoker" | "illusioner" | "blaze" | "wither_skeleton" | "piglin_brute" | "zoglin" | "breeze" | "creaking" | "sulfur_cube");
     let rules = match short {
         _ if animal_rules => Rules::Animal,
         "wolf" => Rules::SpawnableOn("minecraft:wolves_spawnable_on"),
         "fox" => Rules::SpawnableOn("minecraft:foxes_spawnable_on"),
         "rabbit" => Rules::SpawnableOn("minecraft:rabbits_spawnable_on"),
         "armadillo" => Rules::SpawnableOn("minecraft:armadillo_spawnable_on"),
+        "goat" => Rules::SpawnableOn("minecraft:goats_spawnable_on"),
+        "frog" => Rules::SpawnableOn("minecraft:frogs_spawnable_on"),
+        "parrot" => Rules::SpawnableOn("minecraft:parrots_spawnable_on"),
+        "camel" => Rules::SpawnableOn("minecraft:camels_spawnable_on"),
+        "polar_bear" | "panda" | "llama" | "trader_llama" | "mule" | "skeleton_horse" | "sniffer" | "cat" => Rules::Animal,
+        "axolotl" => Rules::OnTag("minecraft:axolotls_spawnable_on"),
+        "ocelot" => Rules::Ocelot,
+        "turtle" => Rules::Turtle,
+        "squid" | "dolphin" | "cod" | "salmon" | "pufferfish" | "nautilus" => Rules::SurfaceWater,
+        "tropical_fish" => Rules::TropicalFish,
+        "drowned" | "zombie_nautilus" => Rules::Drowned,
+        "guardian" | "elder_guardian" => Rules::Guardian,
+        "ghast" => Rules::Ghast,
+        "magma_cube" => Rules::NotPeaceful,
+        "piglin" | "hoglin" => Rules::NotOnWart,
+        "zombified_piglin" => Rules::NotOnWartNotPeaceful,
+        "strider" => Rules::Strider,
         "zombie_horse" => Rules::Monster,
         "husk" | "parched" => Rules::SurfaceMonster,
         "stray" => Rules::Stray,
@@ -315,9 +467,11 @@ fn type_info(kind: &str) -> Option<TypeInfo> {
         _ => Walk::Animal,
     };
     // Animals stay (`Animal.removeWhenFarAway`) except the overrides.
-    let remove_far = monster || matches!(short, "slime" | "zombie_horse" | "axolotl" | "bat" | "glow_squid");
+    let remove_far = monster || matches!(short, "slime" | "zombie_horse" | "axolotl" | "bat" | "glow_squid" | "squid" | "dolphin" | "cod" | "salmon" | "pufferfish" | "tropical_fish" | "drowned" | "guardian" | "ghast" | "magma_cube" | "piglin" | "hoglin" | "zombified_piglin" | "phantom" | "nautilus" | "zombie_nautilus");
     let cluster = match short {
         "horse" | "donkey" | "mule" | "llama" | "camel" | "zombie_horse" => 6,
+        "ghast" | "ocelot" => 1,
+        "cod" | "salmon" | "tropical_fish" | "pufferfish" => 8,
         "wolf" => 8,
         _ => 4,
     };
@@ -905,7 +1059,7 @@ impl CreatureSpawns {
                 ageable(level, tag, group, 0.2);
             }
             _ => {
-                level.note_unsupported(&format!("finalizeSpawn of {kind}"));
+                spawn_variant(registries, level, kind, tag, biome);
                 ageable(level, tag, group, 0.05);
             }
         }

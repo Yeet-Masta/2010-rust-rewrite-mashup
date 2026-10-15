@@ -1131,6 +1131,7 @@ impl Entities {
             light,
             partial,
         );
+        mob_render::append_mobs(&mut out.models, w.mobs().iter(), poses, atlas, light, partial);
         let skeleton_items = skeleton_render::append_skeletons(
             &mut out.models,
             w.skeletons().iter(),

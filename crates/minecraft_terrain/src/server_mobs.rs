@@ -883,7 +883,33 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        _ => return None,
+        other => {
+            use minecraftoss_entities::species::Kind;
+            if let Some(missile) = minecraftoss_entities::world::MissileKind::of_id(other) {
+                // A fireball, skull, bullet or spit in flight, its owner gone.
+                let motion = motion_of(tag);
+                let speed = motion.length();
+                return Some(world.launch_missile(missile, None, pos, motion, speed, None));
+            }
+            let kind = Kind::of_id(other)?;
+            let id = world.spawn_mob(kind, pos, yaw, age, no_ai);
+            let entity = world.mob_mut(id)?;
+            entity.random = random;
+            entity.persistence_required = persistent;
+            if let Some(health) = health {
+                entity.health = health;
+            }
+            // Its look, under whichever name its type saves it.
+            entity.variant = ["variant", "Type", "type", "MainGene"]
+                .iter()
+                .find_map(|key| text(tag, key).map(str::to_owned))
+                .or_else(|| ["Variant", "RabbitType", "Color", "Size"].iter().find_map(|key| int(tag, key).map(|v| v.to_string())))
+                .unwrap_or_default();
+            if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
+                entity.ai.state.follow_range = range;
+            }
+            id
+        }
     };
     // `Entity.load`: the UUID gossip about it is kept by.
     if let Some(ints) = tag.get("UUID").and_then(Tag::as_ints).filter(|i| i.len() == 4) {
@@ -1147,6 +1173,13 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     }
     for e in world.spiders() {
         add(e.id, "minecraft:spider", &e.spider.body, e.spider.yaw, e.spider.health, e.spider.persistence_required, Vec::new());
+    }
+    // The generic mobs keep the rest of what they loaded with (their look
+    // among it).
+    for e in world.mobs() {
+        let s = e.species();
+        let fields = if s.ageable { vec![("Age", Tag::Int(e.age))] } else { Vec::new() };
+        add(e.id, s.id, &e.body, e.yaw, e.health, e.persistence_required, fields);
     }
     for e in world.villagers() {
         let v = &e.villager;
