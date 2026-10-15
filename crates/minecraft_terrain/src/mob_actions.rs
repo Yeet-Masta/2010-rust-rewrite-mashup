@@ -146,6 +146,17 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         MobHit::Cow(id) => {
             let Some(entity) = world.cow_mut(id) else { return outcome };
             let position = entity.cow.body.position;
+            // Horses and donkeys have their own click (no milk).
+            if let Some((result, love)) = entity.interact_horse(actor.inventory, selected, infinite, |item| recipes.item_in_tag("minecraft:horse_food", item)) {
+                if result == InteractionResult::Pass {
+                    return outcome;
+                }
+                if love {
+                    outcome.events.push((id, 18));
+                }
+                outcome.handled = true;
+                return outcome;
+            }
             let (result, events) = entity.cow.interact(actor.inventory, selected, infinite, |item| recipes.item_in_tag("minecraft:cow_food", item), false);
             if result == InteractionResult::Pass {
                 return outcome;

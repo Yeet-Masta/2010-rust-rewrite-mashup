@@ -911,6 +911,113 @@ impl PigEntity {
 }
 
 impl CowEntity {
+    /// A right click on a horse or donkey (`Horse.mobInteract`,
+    /// `AbstractChestedHorse.mobInteract`, then `AbstractHorse`'s), short
+    /// of what needs riding or the horse's inventory: horse food feeds it
+    /// (`fedFood`); any other item makes an untamed one rear in anger
+    /// (`makeMad`); a donkey takes a chest. Everything else would mount it
+    /// (`doPlayerRide`), which takes the click. None for a plain animal; the
+    /// bool is whether it fell in love.
+    pub fn interact_horse(&mut self, inventory: &mut minecraftoss_player::inventory::Inventory, hand: usize, infinite: bool, in_horse_food: impl Fn(&str) -> bool) -> Option<(crate::cow::InteractionResult, bool)> {
+        use crate::cow::InteractionResult;
+        let horse = self.horse.as_mut()?;
+        let held = inventory.slots.get(hand).and_then(Option::as_ref).map(|stack| stack.id.clone());
+        let baby = self.cow.age.baby();
+        // A baby offered a golden dandelion goes to `Animal.mobInteract`.
+        if baby && held.as_deref() == Some("minecraft:golden_dandelion") {
+            return None;
+        }
+        let position = self.cow.body.position;
+        // The rest goes on to `AbstractHorse.mobInteract`: a foal passes,
+        // a grown horse would be mounted.
+        let ride = if baby { InteractionResult::Pass } else { InteractionResult::SuccessServer };
+        let Some(item) = held else { return Some((ride, false)) };
+        if in_horse_food(&item) {
+            let (used, love) = handle_eating(&mut self.cow, horse, &item, &mut self.random, &mut self.voices, position);
+            if used && !infinite {
+                crate::animal::consume_one(inventory, hand);
+            }
+            return Some((if used { InteractionResult::SuccessServer } else { InteractionResult::Pass }, love));
+        }
+        if !horse.tame {
+            // `makeMad`: rear and complain, unless already rearing.
+            if !horse.standing {
+                horse.stand_if_possible();
+                let pitch = (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
+                let pitch = if baby { pitch + 0.5 } else { pitch };
+                let event = match horse.kind {
+                    crate::horse::HorseKind::Donkey => "entity.donkey.angry",
+                    _ if baby => "entity.baby_horse.angry",
+                    _ => "entity.horse.angry",
+                };
+                self.voices.push((Voice::Event(event, crate::horse::SOUND_VOLUME, pitch), position));
+            }
+            return Some((InteractionResult::SuccessServer, false));
+        }
+        if horse.kind == crate::horse::HorseKind::Donkey && !horse.chest && item == "minecraft:chest" {
+            // `equipChest`.
+            horse.chest = true;
+            let pitch = (self.random.next_float() - self.random.next_float()) * 0.2 + 1.0;
+            self.voices.push((Voice::Event("entity.donkey.chest", 1.0, pitch), position));
+            if !infinite {
+                crate::animal::consume_one(inventory, hand);
+            }
+            return Some((InteractionResult::SuccessServer, false));
+        }
+        Some((ride, false))
+    }
+}
+
+/// `AbstractHorse.handleEating`: what each food heals, grows a foal and
+/// calms; golden carrots and apples put a tamed adult in love. Whether it
+/// ate, and whether it fell in love.
+fn handle_eating(cow: &mut Cow, horse: &mut crate::horse::HorseState, item: &str, random: &mut LegacyRandom, voices: &mut Vec<(Voice, DVec3)>, position: DVec3) -> (bool, bool) {
+    let (heal_by, age_up, temper, golden) = match item {
+        "minecraft:wheat" => (2.0, 20, 3, false),
+        "minecraft:sugar" => (1.0, 30, 3, false),
+        "minecraft:hay_block" => (20.0, 180, 0, false),
+        "minecraft:apple" => (3.0, 60, 3, false),
+        "minecraft:red_mushroom" => (3.0, 0, 3, false),
+        "minecraft:carrot" => (3.0, 60, 3, false),
+        "minecraft:golden_carrot" => (4.0, 60, 5, true),
+        "minecraft:golden_apple" | "minecraft:enchanted_golden_apple" => (10.0, 240, 10, true),
+        _ => (0.0, 0, 0, false),
+    };
+    let mut used = false;
+    let mut love = false;
+    if golden && horse.tame && cow.age.ticks == 0 && cow.in_love <= 0 {
+        used = true;
+        love = true;
+        cow.in_love = 600;
+    }
+    if cow.health < cow.max_health && heal_by > 0.0 {
+        heal(&mut cow.health, cow.max_health, heal_by);
+        used = true;
+    }
+    if cow.age.baby() && age_up > 0 && !cow.age.locked {
+        cow.age.grow(age_up, false);
+        used = true;
+    }
+    if temper > 0 && (used || !horse.tame) && horse.temper < 100 {
+        horse.temper = (horse.temper + temper).clamp(0, 100);
+        used = true;
+    }
+    if used {
+        // `eating`: the mouth opens and it chews.
+        horse.mouth_counter = 1;
+        horse.mouth_open = true;
+        let event = match horse.kind {
+            crate::horse::HorseKind::Donkey => "entity.donkey.eat",
+            _ if cow.age.baby() => "entity.baby_horse.eat",
+            _ => "entity.horse.eat",
+        };
+        let pitch = 1.0 + (random.next_float() - random.next_float()) * 0.2;
+        voices.push((Voice::Event(event, 1.0, pitch), position));
+    }
+    (used, love)
+}
+
+impl CowEntity {
     fn movement_sounds(&self) -> MovementSounds {
         if let Some(horse) = &self.horse {
             let family = horse.kind.sound_family(self.cow.age.baby());
