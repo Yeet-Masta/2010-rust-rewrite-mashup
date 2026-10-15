@@ -101,6 +101,8 @@ pub struct Options {
     /// Vanilla's VSync video setting, on by default; off, the frame rate
     /// is held to its default maximum of 120.
     pub vsync: bool,
+    /// `--mob-gallery`: every mob on a stage (`gallery`).
+    pub mob_gallery: bool,
 }
 
 #[derive(Default)]
@@ -138,6 +140,8 @@ pub struct Game {
     previous_eye_height: f64,
     clock: f64,
     ticks: u64,
+    /// The mob gallery is still to be built.
+    mob_gallery: bool,
     /// Whether the player's chunk has arrived, so its physics can run.
     landed: bool,
     swing: crate::hand::Swing,
@@ -326,6 +330,7 @@ impl Game {
             previous_eye_height: 1.62,
             clock: 0.0,
             ticks: 0,
+            mob_gallery: options.mob_gallery,
             landed: false,
             swing: crate::hand::Swing::default(),
             attack_presses: 0,
@@ -1332,6 +1337,11 @@ impl Game {
     /// One 20 Hz tick.
     fn tick(&mut self, input: &Input) {
         self.ticks += 1;
+        // `--mob-gallery`, once the world around the spawn is in.
+        if self.mob_gallery && self.ticks == 60 {
+            self.mob_gallery = false;
+            crate::gallery::build(self);
+        }
         // A developer's look at mobs: `MINECRAFT_SUMMON=blaze,fox,...`
         // lifts the player into open sky and hangs them, without AI, in a
         // row at eye level ahead (`MINECRAFT_SUMMON_TICK` picks when).

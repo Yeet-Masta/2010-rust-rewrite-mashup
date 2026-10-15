@@ -668,6 +668,11 @@ impl Entities {
         self.server.summon(format!("minecraft:{kind}"), at, None);
     }
 
+    /// A mob as a saved tag describes it (`/summon` with NBT).
+    pub fn summon_tagged(&mut self, kind: &str, at: [f64; 3], tag: minecraftoss_core::nbt::Tag) {
+        self.server.summon(format!("minecraft:{kind}"), at, Some(tag));
+    }
+
     /// A mob without AI (`NoAI`), for a look at it.
     pub fn summon_still(&mut self, kind: &str, at: [f64; 3]) {
         let tag = minecraftoss_core::nbt::Tag::Compound([("NoAI".to_owned(), minecraftoss_core::nbt::Tag::Byte(1))].into_iter().collect());

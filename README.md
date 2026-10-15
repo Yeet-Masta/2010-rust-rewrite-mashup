@@ -44,6 +44,10 @@ cargo run --release
 
 or run the built `minecraft` (`minecraft.exe` on Windows).
 
+To see every mob at once, `scripts/mob-gallery.sh` (`scripts\mob-gallery.bat`
+on Windows) opens a fresh creative world with all of them standing on a flat
+stage in the sky (the game's `--mob-gallery` option).
+
 The first time, it downloads Minecraft 26.3's own files (textures, sounds,
 world data) from Mojang's official servers, as the launcher does: about
 125 MB, into `minecraft-data/minecraft-26.3`. That needs an internet

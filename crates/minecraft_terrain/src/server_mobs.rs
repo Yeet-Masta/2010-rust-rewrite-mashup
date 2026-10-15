@@ -897,6 +897,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let entity = world.mob_mut(id)?;
             entity.random = random;
             entity.persistence_required = persistent;
+            entity.head_item = head_item(tag);
             if let Some(health) = health {
                 entity.health = health;
             }

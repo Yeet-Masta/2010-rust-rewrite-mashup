@@ -45,6 +45,9 @@ pub struct MobEntity {
     pub random: LegacyRandom,
     pub previous_position: DVec3,
     pub ai: Box<MonsterAi>,
+    /// What it wears on its head, if anything: whether that can be worn
+    /// down (`burnUndead`: the sun wears a helmet instead of burning it).
+    pub head_item: Option<bool>,
     /// A blaze's volley: shots left, ticks to the next, and at whom.
     burst: (i32, i32, Option<Target>),
 }
@@ -369,6 +372,7 @@ impl EntityWorld {
             no_action_time: 0,
             random,
             ai: Box::new(ai),
+            head_item: None,
             burst: (0, 0, None),
         });
         self.order.push(EntityKey::Mob(id));
@@ -468,7 +472,8 @@ impl EntityWorld {
                 }
                 // `Phantom.aiStep`: the sun burns it.
                 if kind == Kind::Phantom {
-                    burn_undead(&*world, &mut e.random, &mut e.body, eye, monsters_burn, None);
+                    let head = e.head_item;
+                    burn_undead(&*world, &mut e.random, &mut e.body, eye, monsters_burn, head);
                 }
             }
             let removed = e.damage.tick();

@@ -14,6 +14,7 @@ mod creative;
 mod emitters;
 mod entities;
 mod font;
+mod gallery;
 mod game;
 mod gui;
 mod hand;
@@ -62,6 +63,8 @@ Usage: minecraft [options]
                         minecraft-data where the game is run if it is there,
                         else next to the program)
   --screenshot FILE     save a screenshot once the world has loaded, and quit
+  --mob-gallery         every mob on a flat stage in the sky, standing still,
+                        in a fresh creative world at noon (not saved)
 
 Controls: WASD move, mouse look, Space jump (twice to fly in creative),
 Shift sneak, Ctrl or W twice sprint, left click mine and attack, right click
@@ -465,6 +468,7 @@ fn main() {
     let (mut seed, mut creative, mut view_distance, mut time, mut temporary) =
         (None, false, 8, None, false);
     let (mut data, mut capture, mut weather) = (None, None, None);
+    let mut mob_gallery = false;
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
@@ -496,6 +500,13 @@ fn main() {
                 })
             }
             "--temporary" => temporary = true,
+            // Every mob on a stage in the sky, in a fresh creative world
+            // at noon.
+            "--mob-gallery" => {
+                mob_gallery = true;
+                creative = true;
+                temporary = true;
+            }
             "--no-vsync" => vsync = false,
             "--data" => data = Some(PathBuf::from(value())),
             "--screenshot" => capture = Some(PathBuf::from(value())),
@@ -522,7 +533,12 @@ fn main() {
     if let Some(save) = save.as_ref() {
         log!("World `{world_name}` in {} (seed {seed})", save.display());
     }
+    if mob_gallery {
+        time = time.or(Some(6000.0));
+        weather = weather.or(Some((false, false)));
+    }
     let options = Options {
+        mob_gallery,
         seed,
         view_distance,
         creative,
