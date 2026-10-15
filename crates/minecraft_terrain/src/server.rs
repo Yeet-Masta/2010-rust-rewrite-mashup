@@ -1732,6 +1732,75 @@ mod tests {
         assert!(animals(&near) <= animals(&server.mobs));
     }
 
+    /// The generic kinds come with the chunks and the night's spawns, and
+    /// tick without trouble (`GENERIC_MOB_REPORT` prints the census).
+    #[test]
+    fn generic_mobs_spawn_and_tick() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in -12..=12 {
+            for z in -12..=12 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        let census = |server: &ServerSim| {
+            let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+            for e in server.mobs.mobs() {
+                *kinds.entry(e.species().name).or_default() += 1;
+            }
+            kinds
+        };
+        let generated = census(&server);
+        let player = minecraftoss_entities::tempt::PlayerCandidate {
+            id: 0,
+            position: glam::DVec3::new(8.0, 90.0, 8.0),
+            eye_height: 1.62,
+            main_hand_cow_food: false,
+            offhand_cow_food: false,
+            main_hand_pig_food: false,
+            offhand_pig_food: false,
+            main_hand_chicken_food: false,
+            offhand_chicken_food: false,
+            main_hand_carrot_on_a_stick: false,
+            offhand_carrot_on_a_stick: false,
+            main_hand_wolf_interest: false,
+            offhand_wolf_interest: false,
+            main_hand_horse_tempt: false,
+            offhand_horse_tempt: false,
+            alive: true,
+            spectator: false,
+            attackable: false,
+        };
+        server.set_simulation_area((0, 0), 8);
+        // One of every generic kind, on land and in the sea.
+        for (i, kind) in minecraftoss_entities::species::ALL.iter().enumerate() {
+            let at = [f64::from(i as i32 % 10) * 4.0 - 20.0, 75.0, f64::from(i as i32 / 10) * 4.0 - 14.0];
+            let _ = server.summon(kind.species().id, at, None, 0.0);
+        }
+        let summoned = census(&server);
+        for _ in 0..600 {
+            server.prepare_spawning(&[player]);
+            server.tick();
+            server.tick_mobs(&[player], false);
+        }
+        let later = census(&server);
+        if std::env::var("GENERIC_MOB_REPORT").is_ok() {
+            eprintln!("generated: {generated:?}");
+            eprintln!("summoned: {} kinds", summoned.len());
+            eprintln!("after 600 ticks: {later:?}");
+            let dormant: Vec<&str> = server.dormant.iter().filter_map(|(_, tag)| tag.get("id").and_then(minecraftoss_core::nbt::Tag::as_str)).collect();
+            eprintln!("dormant: {dormant:?}");
+            eprintln!("zombies {} skeletons {} creepers {} spiders {} cows {} sheep {} bats {}", server.mobs.zombies().len(), server.mobs.skeletons().len(), server.mobs.creepers().len(), server.mobs.spiders().len(), server.mobs.cows().len(), server.mobs.sheep().len(), server.mobs.bats().len());
+            eprintln!("unsupported: {:?}", server.level.unsupported);
+        }
+        assert!(!later.is_empty() || !generated.is_empty(), "some generic kind spawns");
+    }
+
     /// Generated animals wander about a player among them, climbing the
     /// terrain's steps (`jumpFromGround`); around a spectator they idle
     /// once `noActionTime` passes 100, as `Mob.checkDespawn` only resets it

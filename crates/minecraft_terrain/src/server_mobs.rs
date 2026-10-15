@@ -513,11 +513,12 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
         }
         // Monsters and bats natural spawning makes. Riders (jockeys) wait
         // dormant with their vehicle.
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" if tag.get("Passengers").is_none() => {
+        "minecraft:zombie" | "minecraft:husk" | "minecraft:zombie_villager" | "minecraft:drowned" if tag.get("Passengers").is_none() => {
             let mut zombie = minecraftoss_entities::zombie::Zombie::new(pos);
             zombie.kind = match kind {
                 "minecraft:husk" => ZombieKind::Husk,
                 "minecraft:zombie_villager" => ZombieKind::ZombieVillager,
+                "minecraft:drowned" => ZombieKind::Drowned,
                 _ => ZombieKind::Zombie,
             };
             if zombie.kind == ZombieKind::ZombieVillager {
