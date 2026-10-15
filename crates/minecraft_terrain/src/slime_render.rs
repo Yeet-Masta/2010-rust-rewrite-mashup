@@ -4,6 +4,9 @@
 //! after the core), both from `entity/slime/slime` and sized by
 //! `AbstractCubeMobRenderer.applySizeAndSquish` after `SlimeRenderer`'s
 //! slight downscale: squashed wide on landing, stretched tall on take-off.
+//! A magma cube (`MagmaCubeRenderer`) draws `MagmaCubeModel` instead: its
+//! eight stacked slices spread upward as it stretches (`setupAnim`), from
+//! `entity/slime/magmacube`, always fully lit (`getBlockLightLevel` 15).
 //! The death tip-over and hurt tint are not drawn.
 use crate::{
     client_mobs::ClientMobs,
@@ -45,6 +48,9 @@ pub fn append_slimes<'a>(
     partial: f32,
 ) {
     let region = atlas.entity_region(&ResourceId::parse("minecraft:entity/slime/slime").unwrap());
+    let magma_id = ResourceId::parse("minecraft:entity/slime/magmacube").unwrap();
+    let magma = crate::entity_model::model("minecraft:magma_cube#main").filter(|_| atlas.contains(&magma_id));
+    let magma_region = atlas.entity_region(&magma_id);
     let partial = partial.clamp(0.0, 1.0);
     // Each mob's first vertex and overlay (`getOverlayCoords`).
     let mut marks = Vec::new();
@@ -59,6 +65,17 @@ pub fn append_slimes<'a>(
         // `extractRenderState`: the squash between ticks.
         let squish = slime.previous_squish + (slime.squish - slime.previous_squish) * partial;
         let scale = size_and_squish(slime.size, squish);
+        if slime.magma {
+            let Some(model) = magma else { continue };
+            let mut posed = crate::entity_model::Posed::new(model);
+            let stretch = squish.max(0.0);
+            for i in 0..8 {
+                posed.with(&format!("cube{i}"), |p| p.offset.y = -(4 - i) as f32 * stretch * 1.7);
+            }
+            let placement = crate::entity_model::Placement { feet, rotation, scale, region: magma_region, sky, block: 15.0, tint: [1.0; 4] };
+            crate::entity_model::draw(mesh, &posed, &placement);
+            continue;
+        }
         for (from, to, uv) in INNER {
             cube_scaled(mesh, feet, rotation, scale, region, sky, block, from, to, uv, [0.0; 3], Quat::IDENTITY, [1.0; 3], [64., 32.], None, false);
         }

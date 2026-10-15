@@ -931,7 +931,8 @@ impl CreatureSpawns {
                 level.random().next_f32();
                 finalize_mob(&mut tag, &mut RandomRef(level.random()));
             }
-            "minecraft:slime" => {
+            "minecraft:slime" | "minecraft:magma_cube" => {
+                // (`MagmaCube.finalizeSpawn` makes the same group.)
                 // `AgeableMob.finalizeSpawn` without babies, `Mob`'s part,
                 // then `AbstractCubeMob.setSpawnSize`.
                 if matches!(group, MonsterGroup::None) {

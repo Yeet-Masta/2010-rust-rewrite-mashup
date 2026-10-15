@@ -3,6 +3,9 @@
 //! (`setSize`: size² health and `0.2F + 0.1F * size` speed; the landing
 //! squash; `getSoundVolume`, `getSoundPitch`, `getJumpDelay`) and
 //! `Slime.setSize` (attack damage and experience equal to the size).
+//! `MagmaCube` is the same cube with its own rules, flagged `magma`: fire
+//! immune, armoured three a size step, two harder hitting and hurting even
+//! at size 1, slower to hop but higher, and swimming up through lava.
 use crate::{health::DamageState, movement::Body};
 use glam::DVec3;
 
@@ -22,6 +25,8 @@ pub struct Slime {
     pub target_squish: f32,
     pub squish: f32,
     pub previous_squish: f32,
+    /// A `MagmaCube` rather than a `Slime`.
+    pub magma: bool,
 }
 
 impl Slime {
@@ -40,6 +45,67 @@ impl Slime {
             target_squish: 0.0,
             squish: 0.0,
             previous_squish: 0.0,
+            magma: false,
+        }
+    }
+
+    /// A magma cube of `size` at full health.
+    pub fn magma_cube(position: DVec3, size: i32) -> Self {
+        Self { magma: true, ..Self::new(position, size) }
+    }
+
+    /// The entity type's id.
+    pub fn type_id(&self) -> &'static str {
+        if self.magma {
+            "minecraft:magma_cube"
+        } else {
+            "minecraft:slime"
+        }
+    }
+
+    /// `MagmaCube.setSize`: `ARMOR` is three a size step (a slime has none).
+    pub fn armor(&self) -> f32 {
+        if self.magma {
+            (self.size * 3) as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// `canDealDamage`: a slime must be bigger than 1, a magma cube need
+    /// not (`MagmaCube.canDealDamage`).
+    pub fn deals_damage(&self) -> bool {
+        self.magma || !self.tiny()
+    }
+
+    /// `decreaseSquish`'s easing of the target squash.
+    pub fn squish_decay(&self) -> f32 {
+        if self.magma {
+            0.9
+        } else {
+            0.6
+        }
+    }
+
+    /// The sound `name` (hurt, death, jump or squish) of its kind and size:
+    /// `isTiny` cubes use the small ones, but a magma cube has one jump.
+    pub fn sound(&self, name: &str) -> &'static str {
+        match (self.magma, name, self.tiny()) {
+            (false, "hurt", true) => "entity.slime.hurt_small",
+            (false, "hurt", false) => "entity.slime.hurt",
+            (false, "death", true) => "entity.slime.death_small",
+            (false, "death", false) => "entity.slime.death",
+            (false, "jump", true) => "entity.slime.jump_small",
+            (false, "jump", false) => "entity.slime.jump",
+            (false, _, true) => "entity.slime.squish_small",
+            (false, _, false) => "entity.slime.squish",
+            (true, "hurt", true) => "entity.magma_cube.hurt_small",
+            (true, "hurt", false) => "entity.magma_cube.hurt",
+            (true, "death", true) => "entity.magma_cube.death_small",
+            (true, "death", false) => "entity.magma_cube.death",
+            (true, "jump", _) => "entity.magma_cube.jump",
+            (true, _, true) => "entity.magma_cube.squish_small",
+            (true, _, false) => "entity.magma_cube.squish",
         }
     }
 
@@ -53,9 +119,10 @@ impl Slime {
         f64::from(0.2_f32 + 0.1_f32 * self.size as f32)
     }
 
-    /// `Slime.setSize`: `ATTACK_DAMAGE` is the size.
+    /// `Slime.setSize`: `ATTACK_DAMAGE` is the size; a magma cube's
+    /// `getAttackDamage` adds 2.
     pub fn attack_damage(&self) -> f32 {
-        self.size as f32
+        self.size as f32 + if self.magma { 2.0 } else { 0.0 }
     }
 
     pub fn eye_height(&self) -> f32 {

@@ -314,6 +314,7 @@ pub fn is_enemy(kind: &str) -> bool {
             | "minecraft:creeper"
             | "minecraft:spider"
             | "minecraft:slime"
+            | "minecraft:magma_cube"
             | "minecraft:enderman"
             | "minecraft:witch"
     )

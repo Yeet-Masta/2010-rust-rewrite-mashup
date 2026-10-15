@@ -614,10 +614,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             }
             id
         }
-        "minecraft:slime" => {
+        "minecraft:slime" | "minecraft:magma_cube" => {
             // `AbstractCubeMob.readAdditionalSaveData`: `Size` is one short
             // of the size, and the landing state carries over.
             let mut slime = minecraftoss_entities::slime::Slime::new(pos, int(tag, "Size").unwrap_or(0) + 1);
+            slime.magma = kind == "minecraft:magma_cube";
             slime.yaw = yaw;
             slime.persistence_required = persistent;
             slime.was_on_ground = int(tag, "wasOnGround").unwrap_or(0) != 0;
@@ -1164,7 +1165,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     for e in world.slimes() {
         let slime = &e.slime;
         let fields = vec![("Size", Tag::Int(slime.size - 1)), ("wasOnGround", Tag::Byte(i8::from(slime.was_on_ground)))];
-        add(e.id, "minecraft:slime", &slime.body, slime.yaw, slime.health, slime.persistence_required, fields);
+        add(e.id, slime.type_id(), &slime.body, slime.yaw, slime.health, slime.persistence_required, fields);
     }
     for e in world.creepers() {
         let c = &e.creeper;

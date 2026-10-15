@@ -42,18 +42,9 @@ impl SlimeEntity {
         self.random = LegacyRandom::new(seed);
     }
 
-    /// The sound `name` of its size (`isTiny` slimes use the small ones).
+    /// The sound `name` of its kind and size.
     fn sound(&self, name: &str) -> &'static str {
-        match (name, self.slime.tiny()) {
-            ("hurt", true) => "entity.slime.hurt_small",
-            ("hurt", false) => "entity.slime.hurt",
-            ("death", true) => "entity.slime.death_small",
-            ("death", false) => "entity.slime.death",
-            ("jump", true) => "entity.slime.jump_small",
-            ("jump", false) => "entity.slime.jump",
-            ("squish", true) => "entity.slime.squish_small",
-            _ => "entity.slime.squish",
-        }
+        self.slime.sound(name)
     }
 
     pub fn hurt(&mut self, amount: f32) -> DamageResult {
@@ -91,7 +82,8 @@ impl SlimeEntity {
         if players.iter().any(|p| p.alive && !p.spectator && p.position.distance_squared(position) < 32.0 * 32.0) {
             self.no_action_time = 0;
         }
-        let (health, max_health, tiny) = (self.slime.health, self.slime.max_health(), self.slime.tiny());
+        let (health, max_health, tiny, magma, size) = (self.slime.health, self.slime.max_health(), self.slime.tiny(), self.slime.magma, self.slime.size);
+        let jump_event = self.slime.sound("jump");
         let (movement_speed, volume, eye_height) = (self.effects.movement_speed(self.slime.movement_speed()), self.slime.sound_volume(), self.slime.eye_height());
         let ai = &mut self.ai;
         let body = &mut self.slime.body;
@@ -132,8 +124,10 @@ impl SlimeEntity {
                 let delay = ai.state.cube.jump_delay;
                 ai.state.cube.jump_delay -= 1;
                 if delay <= 0 {
-                    // `getJumpDelay`, a third of it when aggressive.
-                    let mut next = self.random.next_int(20) as i32 + 10;
+                    // `getJumpDelay` (four times as long for a magma cube), a
+                    // third of it when aggressive.
+                    let draw = self.random.next_int(20) as i32;
+                    let mut next = (draw + 10) * if magma { 4 } else { 1 };
                     if ai.state.cube.aggressive {
                         next /= 3;
                     }
@@ -142,8 +136,7 @@ impl SlimeEntity {
                     // `doPlayJumpSound` (every size) at `getSoundPitch`.
                     let (a, b) = (self.random.next_float(), self.random.next_float());
                     let pitch = ((a - b) * 0.2 + 1.0) * if tiny { 1.4 } else { 0.8 };
-                    let event = if tiny { "entity.slime.jump_small" } else { "entity.slime.jump" };
-                    self.voices.push((Voice::Event(event, volume, pitch), position));
+                    self.voices.push((Voice::Event(jump_event, volume, pitch), position));
                 } else {
                     ai.sideways = 0.0;
                     ai.forward = 0.0;
@@ -156,7 +149,18 @@ impl SlimeEntity {
         }
         ai.state.look_control.tick(position, eye_height, ai.body_rotation.body_yaw, false);
         ai.jumping = ai.state.jump || hop;
-        body.living_jump(world, fluid, ai.jumping, &mut ai.no_jump_delay, 0.4);
+        if magma && ai.jumping && fluid.in_lava() && !fluid.in_water() && !(body.on_ground && fluid.lava_height <= 0.4) {
+            // `MagmaCube.jumpInLiquid`: it rises through lava.
+            body.velocity.y = f64::from(0.22_f32 + size as f32 * 0.05);
+            body.needs_sync = true;
+        } else {
+            let before = ai.no_jump_delay;
+            body.living_jump(world, fluid, ai.jumping, &mut ai.no_jump_delay, 0.4);
+            // `MagmaCube.jumpFromGround`: a tenth a size step higher.
+            if magma && before == 0 && ai.no_jump_delay == 10 {
+                body.velocity.y += f64::from(size as f32 * 0.1);
+            }
+        }
         let input = DVec3::new(f64::from(ai.sideways), 0.0, f64::from(ai.forward));
         let mut fall = None;
         if fluid.in_water() {
@@ -164,8 +168,13 @@ impl SlimeEntity {
         } else if fluid.in_lava() {
             body.travel_lava(world, input, ai.yaw, fluid.lava_height);
         } else if let Some(fallen) = body.travel_air_jumping(world, input, ai.speed, ai.yaw, ai.jumping) {
-            // A slime is no `Monster`: the generic fall sounds.
-            fall = super::living::fall_damage(body, world, fallen, false, &mut self.voices);
+            // A slime is no `Monster`: the generic fall sounds. Magma cubes
+            // are `#fall_damage_immune`.
+            if magma {
+                body.fall_distance = 0.0;
+            } else {
+                fall = super::living::fall_damage(body, world, fallen, false, &mut self.voices);
+            }
         }
         play_movement(body, self.tick_count, &mut self.random, &mut self.voices, SLIME_SOUNDS);
         ai.body_rotation.tick(ai.yaw, &mut ai.state.look_control, self.previous_position, body.position);
@@ -190,14 +199,14 @@ impl SlimeEntity {
             }
             let (a, b) = (self.random.next_float(), self.random.next_float());
             let pitch = ((a - b) * 0.2 + 1.0) / 0.8;
-            let event = if slime.tiny() { "entity.slime.squish_small" } else { "entity.slime.squish" };
+            let event = slime.sound("squish");
             self.voices.push((Voice::Event(event, slime.sound_volume(), pitch), slime.body.position));
             slime.target_squish = -0.5;
         } else if !on_ground && slime.was_on_ground {
             slime.target_squish = 1.0;
         }
         slime.was_on_ground = on_ground;
-        slime.target_squish *= 0.6;
+        slime.target_squish *= slime.squish_decay();
     }
 }
 
@@ -254,6 +263,10 @@ impl EntityWorld {
         entity.tick_count += 1;
         // `Entity.baseTick`'s fluid interaction (the first tick never splashes).
         base_tick_fluid(&mut entity.slime.body, world, entity.tick_count == 1, &mut entity.random, &mut entity.voices, SLIME_SOUNDS);
+        // `fireImmune`: a magma cube never burns.
+        if entity.slime.magma {
+            entity.slime.body.fire_ticks = 0;
+        }
         super::hazards::burn(entity, world, game_time);
         let eye = entity.slime.eye_height();
         super::hazards::suffocate(entity, world, eye, game_time);
@@ -298,12 +311,15 @@ impl EntityWorld {
             }
             let old = entity.previous_position;
             super::hazards::blocks_act(entity, world, old, game_time);
+            if entity.slime.magma {
+                entity.slime.body.fire_ticks = 0;
+            }
             self.push_entities(EntityKey::Slime(id), world, game_time, ticks);
         }
         // `AbstractCubeMob.tick` lands after the living tick.
         let Some(entity) = self.slimes.iter_mut().find(|e| e.id == id) else { return };
         entity.land();
-        if !active || entity.slime.tiny() {
+        if !active || !entity.slime.deals_damage() {
             return;
         }
         // `playerTouch` → `dealDamage`.
@@ -350,6 +366,7 @@ impl EntityWorld {
                 let at = parent.slime.body.position + DVec3::new(f64::from(xd), 0.5, f64::from(zd));
                 let yaw = parent.random.next_float() * 360.0;
                 let mut child = Slime::new(at, half);
+                child.magma = parent.slime.magma;
                 child.yaw = yaw;
                 child.persistence_required = parent.slime.persistence_required;
                 children.push((child, parent.no_ai));

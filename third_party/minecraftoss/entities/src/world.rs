@@ -2675,7 +2675,7 @@ impl EntityWorld {
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.skeleton.body)),
             EntityKey::Creeper(id) => self.creepers.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.creeper.body)),
             EntityKey::Spider(id) => self.spiders.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.spider.body)),
-            EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.slime.body)),
+            EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage_after_armor(damage, e.slime.armor(), 0.0)), &mut e.slime.body)),
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.enderman.body)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage, false, false), &mut e.witch.body)),
             EntityKey::IronGolem(id) => self.iron_golems.iter_mut().find(|e| e.id == id).map(|e| (e.hurt(damage), &mut e.golem.body)),
@@ -3276,7 +3276,7 @@ impl EntityWorld {
             add(e.id, "minecraft:spider", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0);
         }
         for e in &self.slimes {
-            add(e.id, "minecraft:slime", &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0);
+            add(e.id, e.slime.type_id(), &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0);
         }
         for e in &self.endermen {
             add(e.id, "minecraft:enderman", &e.enderman.body, e.enderman.eye_height(), e.enderman.health > 0.0);
@@ -3637,7 +3637,8 @@ impl EntityWorld {
         }
         for e in &mut self.slimes {
             let context = EntityLootContext { cube_size: Some(e.slime.size), ..plain };
-            let Some((order, mut death)) = death_of(e.id, &mut e.slime.damage, "minecraft:slime", Some("minecraft:slime"), context) else { continue };
+            let kind = e.slime.type_id();
+            let Some((order, mut death)) = death_of(e.id, &mut e.slime.damage, kind, Some(kind), context) else { continue };
             // `Slime.setSize`: `xpReward` is the size.
             if earns(&death, true) {
                 death.experience = e.slime.size;
@@ -3728,8 +3729,8 @@ impl EntityWorld {
         if self.creepers.iter().any(|e| e.id == id) {
             return Some("minecraft:creeper");
         }
-        if self.slimes.iter().any(|e| e.id == id) {
-            return Some("minecraft:slime");
+        if let Some(e) = self.slimes.iter().find(|e| e.id == id) {
+            return Some(e.slime.type_id());
         }
         if self.endermen.iter().any(|e| e.id == id) {
             return Some("minecraft:enderman");
@@ -4440,7 +4441,7 @@ impl EntityWorld {
         out.extend(self.skeletons.iter().map(|e| entry(e.skeleton.kind.type_id(), &e.skeleton.body, e.skeleton.persistence_required)));
         out.extend(self.creepers.iter().map(|e| entry("minecraft:creeper", &e.creeper.body, e.creeper.persistence_required)));
         out.extend(self.spiders.iter().map(|e| entry("minecraft:spider", &e.spider.body, e.spider.persistence_required)));
-        out.extend(self.slimes.iter().map(|e| entry("minecraft:slime", &e.slime.body, e.slime.persistence_required)));
+        out.extend(self.slimes.iter().map(|e| entry(e.slime.type_id(), &e.slime.body, e.slime.persistence_required)));
         // `requiresCustomPersistence`: carrying a block keeps it.
         out.extend(self.endermen.iter().map(|e| entry("minecraft:enderman", &e.enderman.body, e.enderman.persistence_required || e.carried().is_some())));
         out.extend(self.witches.iter().map(|e| entry("minecraft:witch", &e.witch.body, e.witch.persistence_required)));
