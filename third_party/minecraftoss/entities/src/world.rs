@@ -39,7 +39,7 @@ mod mobs;
 mod missiles;
 mod withers;
 mod illagers;
-pub use illagers::{FangsEntity, Illusion, Spell, Spellcaster};
+pub use illagers::{FangsEntity, Illusion, RavagerState, Spell, Spellcaster};
 pub use mobs::MobEntity;
 pub use missiles::{MissileEntity, MissileKind};
 pub use wind::{wind_sound, WindBlast, WindChargeEntity};
@@ -2973,6 +2973,13 @@ impl EntityWorld {
     /// `lastHurtByMob` (at its `tickCount`) and the damage its
     /// `lastDamageSource`.
     pub fn player_hurt(&mut self, player: u64, source: Option<u64>, kind: &'static str) {
+        // A hit the player's shield took (`blockedByShield` on its attacker).
+        if kind == "shield_block" {
+            if let Some(source) = source {
+                self.ravager_blocked(source);
+            }
+            return;
+        }
         let target = source.map(|id| if self.villagers.iter().any(|e| e.id == id) { crate::monster_ai::Target::Villager(id) } else { crate::monster_ai::Target::Mob(id) });
         let time = self.game_time;
         let fights = self.player_fights.entry(player).or_default();

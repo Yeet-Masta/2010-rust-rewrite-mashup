@@ -75,6 +75,7 @@ pub struct MobEntity {
     pub life_ticks: Option<i32>,
     /// The illusioner's images.
     pub illusion: super::illagers::Illusion,
+    pub ravager: super::illagers::RavagerState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -594,6 +595,7 @@ impl EntityWorld {
             bound_origin: None,
             life_ticks: None,
             illusion: Default::default(),
+            ravager: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -757,7 +759,7 @@ impl EntityWorld {
                     let position = e.body.position;
                     // A piglin admiring its gold stands still (`stopWalking`),
                     // as a spellcaster does while it casts.
-                    let motion = if e.admire_ticks > 0 || e.spells.casting() { Motion::Stationary } else { s.motion };
+                    let motion = if e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
                     match motion {
                         Motion::Ground | Motion::Amphibious => {
                             if let Some(damage) = e.tick_walk(&*world, players, &villagers, game_time, difficulty) {
@@ -841,6 +843,9 @@ impl EntityWorld {
         }
         if matches!(kind, Kind::Evoker | Kind::Illusioner) {
             self.spellcaster_step(id, &*world, players);
+        }
+        if kind == Kind::Ravager {
+            self.ravager_step(id, world, players);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
@@ -1066,6 +1071,12 @@ impl EntityWorld {
         let weapon = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.hand.as_deref()).map_or(0.0, weapon_damage);
         let mut damage = s.attack + weapon;
         let mut lift = 0.0_f32;
+        // `Ravager.doHurtTarget`: it stops to bite.
+        if kind == Kind::Ravager {
+            if let Some(e) = self.mob_mut(id) {
+                e.ravager.attack = 10;
+            }
+        }
         // `HoglinBase.hurtAndThrowTarget`: half its attack plus up to all
         // of it for an adult, tossing the target up.
         if matches!(kind, Kind::Hoglin | Kind::Zoglin) {

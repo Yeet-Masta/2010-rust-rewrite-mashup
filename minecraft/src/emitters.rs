@@ -158,6 +158,16 @@ pub fn entity_event(particles: &mut Particles, world: &World, bounds: Bounds, ev
         12 => around(particles, world, bounds, Type::Heart, 5, 1.0),
         13 => around(particles, world, bounds, Type::AngryVillager, 5, 1.0),
         14 => around(particles, world, bounds, Type::HappyVillager, 5, 1.0),
+        // `Ravager.addRoarParticleEffects`: forty puffs from its middle.
+        69 => {
+            let (feet, _, height) = bounds;
+            let center = feet + DVec3::new(0.0, f64::from(height) * 0.5, 0.0);
+            for _ in 0..40 {
+                let random = &mut particles.random;
+                let motion = DVec3::new(random.next_gaussian() * 0.2, random.next_gaussian() * 0.2, random.next_gaussian() * 0.2);
+                particles.spawn(world, &Type::Poof.into(), center, motion);
+            }
+        }
         _ => {}
     }
 }

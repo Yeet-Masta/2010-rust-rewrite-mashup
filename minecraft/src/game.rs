@@ -2860,6 +2860,10 @@ impl Game {
             return;
         }
         if self.shield_blocks(&hit) {
+            // `LivingEntity.blockedByShield` on the mob that struck it.
+            if matches!(hit.kind, PlayerHitKind::Melee { .. }) {
+                self.hurts.push((hit.source, "shield_block"));
+            }
             return;
         }
         // What lands with the hit: a husk's hunger (`Husk.doHurtTarget`)

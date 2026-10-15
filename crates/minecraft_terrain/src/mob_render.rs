@@ -645,6 +645,35 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             posed.with("left_hind_leg", |p| p.rotation.x = a);
         }
         Kind::Ravager => {
+            // `RavagerModel.setupAnim`: the neck lunges and the mouth gapes
+            // with the bite, the stunned head droops and sways, the roar
+            // opens the mouth wide.
+            let r = e.ravager;
+            let partial = m.age_in_ticks.fract();
+            let attack = if r.attack > 0 { r.attack as f32 - partial } else { 0.0 };
+            let stunned = if r.stun > 0 { r.stun as f32 - partial } else { 0.0 };
+            let roar = if r.roar > 0 { (20.0 - r.roar as f32 + partial) / 20.0 } else { 0.0 };
+            if attack > 0.0 {
+                // `Mth.triangleWave(attack, 10)`.
+                let wave = (((attack % 10.0) - 5.0).abs() - 2.5) / 2.5;
+                let scaled = (1.0 + wave) * 0.5;
+                let lunge = scaled * scaled * scaled * 12.0;
+                posed.with("neck", |p| {
+                    let y_offset = lunge * p.rotation.x.sin();
+                    p.offset.z = -6.5 + lunge;
+                    p.offset.y = -7.0 - y_offset;
+                });
+                let mouth = if attack > 5.0 { ((-4.0 + attack) / 4.0).sin() * PI * 0.4 } else { PI / 20.0 * (PI * attack / 10.0).sin() };
+                posed.with("mouth", |p| p.rotation.x = mouth);
+            } else {
+                let stun = stunned > 0.0;
+                posed.with("neck", |p| {
+                    p.rotation.x = if stun { 0.219_911_49 } else { 0.0 };
+                    p.offset = Vec3::new(if stun { ((f64::from(stunned) / 40.0 * 10.0).sin() * 3.0) as f32 } else { 0.0 }, -7.0, 5.5);
+                });
+                let mouth = if stun { PI * 0.05 } else if roar > 0.0 { PI / 2.0 * (roar * PI * 0.25).sin() } else { PI * 0.01 };
+                posed.with("mouth", |p| p.rotation.x = mouth);
+            }
             posed.look("head", m.head_yaw, m.head_pitch);
             let leg = 0.4 * speed;
             posed.with("right_hind_leg", |p| p.rotation.x = cos(pos * 0.6662) * leg);

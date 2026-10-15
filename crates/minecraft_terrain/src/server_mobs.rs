@@ -925,6 +925,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // `SpellcasterIllager`'s `SpellTicks`; a vex's `bound_pos` and
             // `life_ticks` (its owner is not kept across a reload here).
             entity.spells.casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
+            if kind == Kind::Ravager {
+                entity.ravager.attack = int(tag, "AttackTick").unwrap_or(0);
+                entity.ravager.stun = int(tag, "StunTick").unwrap_or(0);
+                entity.ravager.roar = int(tag, "RoarTick").unwrap_or(0);
+            }
             if kind == Kind::Vex {
                 entity.bound_origin = tag.get("bound_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
                 entity.life_ticks = int(tag, "life_ticks");
@@ -1256,6 +1261,11 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Evoker | minecraftoss_entities::species::Kind::Illusioner) {
             fields.push(("SpellTicks", Tag::Int(e.spells.casting_ticks)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Ravager {
+            fields.push(("AttackTick", Tag::Int(e.ravager.attack)));
+            fields.push(("StunTick", Tag::Int(e.ravager.stun)));
+            fields.push(("RoarTick", Tag::Int(e.ravager.roar)));
         }
         if let Some((x, y, z)) = e.bound_origin {
             fields.push(("bound_pos", Tag::IntArray(vec![x, y, z])));

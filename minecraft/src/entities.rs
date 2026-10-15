@@ -578,6 +578,13 @@ impl Entities {
         // An illusioner's images jumping: a puff in its box.
         let clouds = self.world.mobs().iter().filter(|e| e.illusion.moved).map(|e| (e.body.position, f64::from(e.body.width), f64::from(e.body.height))).collect();
         for e in self.world.mobs() {
+            // `Ravager.stunEffect`: now and then a grey mote at its head.
+            if e.ravager.stun > 0 && e.tick_count % 6 == 0 {
+                let yaw = f64::from(e.yaw.to_radians());
+                let (w, h) = (f64::from(e.body.width), f64::from(e.body.height));
+                let p = e.body.position;
+                motes.push((DVec3::new(p.x - w * yaw.sin(), p.y + h - 0.3, p.z + w * yaw.cos()), [0.498, 0.514, 0.573]));
+            }
             let spell = e.spells.spell;
             if spell == minecraftoss_entities::world::Spell::None {
                 continue;

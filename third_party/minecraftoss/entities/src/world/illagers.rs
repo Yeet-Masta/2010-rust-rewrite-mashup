@@ -17,6 +17,10 @@
 //! - A vex flies straight through blocks to where its move control wants
 //!   (`VexMoveControl`), and one an evoker summoned hurts 1 a second once
 //!   its 30 to 119 seconds of life are out.
+//! - A ravager's bite stops it for half a second; a shield that blocks it
+//!   stuns it two seconds half the time, after which it roars, hurting and
+//!   flinging all about it (`Ravager.aiStep`, `blockedByShield`, `roar`). It
+//!   tramples through leaves where mobs may grief.
 use super::*;
 use super::mobs::MobEntity;
 use crate::species::Kind;
@@ -586,6 +590,129 @@ impl MobEntity {
             self.hurt(1.0);
         } else {
             self.life_ticks = Some(left);
+        }
+    }
+}
+
+/// `Ravager`'s `attackTick`, `stunnedTick` and `roarTick`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RavagerState {
+    pub attack: i32,
+    pub stun: i32,
+    pub roar: i32,
+}
+
+impl RavagerState {
+    /// `isImmobile`: biting, stunned or roaring, it does not move.
+    pub fn immobile(&self) -> bool {
+        self.attack > 0 || self.stun > 0 || self.roar > 0
+    }
+}
+
+impl EntityWorld {
+    /// `Ravager.aiStep` after the living step: it breaks the leaves it ran
+    /// into (or jumps), and its roar, bite and stun count down; the stun's
+    /// end starts the roar, whose middle is the blast.
+    pub(super) fn ravager_step(&mut self, id: u64, world: &mut impl World, players: &[PlayerCandidate]) {
+        let griefing = self.mob_griefing;
+        let Some(e) = self.mob_mut(id) else { return };
+        if e.kind != Kind::Ravager || e.health <= 0.0 {
+            return;
+        }
+        if griefing && e.body.horizontal_collision {
+            let half = f64::from(e.body.width) / 2.0 + 0.2;
+            let p = e.body.position;
+            let (min, max) = (p - DVec3::new(half, 0.2, half), p + DVec3::new(half, f64::from(e.body.height) + 0.2, half));
+            let mut destroyed = false;
+            for x in min.x.floor() as i32..=max.x.floor() as i32 {
+                for y in min.y.floor() as i32..=max.y.floor() as i32 {
+                    for z in min.z.floor() as i32..=max.z.floor() as i32 {
+                        let Some(block) = world.block((x, y, z)) else { continue };
+                        // `LeavesBlock`: `destroyBlock(pos, true, this)`.
+                        if block.id.ends_with("_leaves") {
+                            let drops = world.block_drops((x, y, z), &block);
+                            world.set_block((x, y, z), None);
+                            let center = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+                            for stack in drops {
+                                world.spawn_popped_item(center, &stack);
+                            }
+                            destroyed = true;
+                        }
+                    }
+                }
+            }
+            if !destroyed && e.body.on_ground {
+                e.body.velocity.y = 0.42;
+            }
+        }
+        let state = &mut e.ravager;
+        let mut blast = false;
+        if state.roar > 0 {
+            state.roar -= 1;
+            blast = state.roar == 10;
+        }
+        if state.attack > 0 {
+            state.attack -= 1;
+        }
+        if state.stun > 0 {
+            state.stun -= 1;
+            if state.stun == 0 {
+                state.roar = 20;
+                let at = e.body.position;
+                e.voices.push((Voice::Event("entity.ravager.roar", 1.0, 1.0), at));
+            }
+        }
+        if blast {
+            self.ravager_roar(id, players);
+        }
+    }
+
+    /// `Ravager.roar`: everything living in its box grown by 4 but other
+    /// ravagers takes 6 (illagers spared), and all but players are flung
+    /// away, hardest up close (`strongKnockback`); the clients see the
+    /// puff (event 69).
+    fn ravager_roar(&mut self, id: u64, players: &[PlayerCandidate]) {
+        let Some(e) = self.mobs.iter().find(|e| e.id == id) else { return };
+        let (p, half, height) = (e.body.position, f64::from(e.body.width) / 2.0 + 4.0, f64::from(e.body.height));
+        let (min, max) = (p - DVec3::new(half, 4.0, half), p + DVec3::new(half, height + 4.0, half));
+        let illager = |kind: Option<&str>| matches!(kind, Some("minecraft:evoker" | "minecraft:illusioner" | "minecraft:pillager" | "minecraft:vindicator"));
+        for target in self.potion_targets(Some(id), players) {
+            let meets = target.min.x < max.x && target.max.x > min.x && target.min.y < max.y && target.max.y > min.y && target.min.z < max.z && target.max.z > min.z;
+            if !meets || target.owner {
+                continue;
+            }
+            if let Some(player_id) = target.id.checked_sub(PLAYER_TARGET) {
+                self.player_hits.push(PlayerHit { player_id, damage: 6.0, kind: PlayerHitKind::Melee { attacker: p, hunger_ticks: 0, lift: 0.2, weapon: Default::default(), effect: None }, source: Some(id) });
+                continue;
+            }
+            let kind = self.entity_type(target.id);
+            if kind == Some("minecraft:ravager") {
+                continue;
+            }
+            if !illager(kind) {
+                let _ = self.mob_hits_mob(id, target.id, 6.0, p, 0.0);
+            }
+            if let Some(body) = self.body_mut(target.id) {
+                let (dx, dz) = (body.position.x - p.x, body.position.z - p.z);
+                let distance = (dx * dx + dz * dz).max(0.001);
+                body.velocity += DVec3::new(dx / distance * 4.0, 0.2, dz / distance * 4.0);
+            }
+        }
+        self.entity_events.push((id, 69));
+    }
+
+    /// `Ravager.blockedByShield`: half the time it is stunned for two
+    /// seconds (`RAVAGER_STUNNED`); the other half it would fling the
+    /// player away (not felt here).
+    pub(super) fn ravager_blocked(&mut self, id: u64) {
+        let Some(e) = self.mob_mut(id) else { return };
+        if e.kind != Kind::Ravager {
+            return;
+        }
+        if e.random.next_double() < 0.5 {
+            e.ravager.stun = 40;
+            let at = e.body.position;
+            e.voices.push((Voice::Event("entity.ravager.stunned", 1.0, 1.0), at));
         }
     }
 }
