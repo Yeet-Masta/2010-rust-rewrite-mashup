@@ -290,6 +290,23 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             }
         }
         // The generic kinds' `Animal.mobInteract`: feeding and breeding.
+        MobHit::Mob(id) if held.as_deref() == Some("minecraft:water_bucket") && world.mobs().iter().any(|e| e.id == id && e.health > 0.0 && crate::mob_bucket::bucket_for(e.kind).is_some()) => {
+            // `Bucketable.bucketMobPickup`: into its bucket, with what
+            // `saveToBucketTag` keeps, and gone (`discard`).
+            let Some(mob) = world.discard_mob(id) else { return outcome };
+            let Some((item, sound)) = crate::mob_bucket::bucket_for(mob.kind) else { return outcome };
+            outcome.sound(sound, mob.body.position, 1.0, "neutral_volume");
+            let bucket = ItemStack { max: 1, components: Some(crate::mob_bucket::bucket_components(&mob)), ..ItemStack::new(item, 1) };
+            // `ItemUtils.createFilledResult` without the creative limit.
+            if !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
+            if actor.inventory.slots[selected].is_none() {
+                actor.inventory.slots[selected] = Some(bucket);
+            } else if let Some(rest) = actor.inventory.add_item(bucket, selected) {
+                outcome.drops.push((rest, mob.body.position));
+            }
+        }
         MobHit::Mob(id) => {
             // Taming and orders first (`TamableAnimal`s, the ocelot's trust).
             if let Some(events) = world.tame_mob(id, 0, actor.inventory, selected, infinite) {

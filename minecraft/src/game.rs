@@ -2153,6 +2153,15 @@ impl Game {
             }
         }
         let (pos, block) = &placed.blocks[0];
+        // `MobBucketItem.checkExtraContent`: the mob it holds comes out at
+        // the block's foot, with the bucket's empty sound.
+        if let Some((mob, tag)) = minecraft_terrain::mob_bucket::released_tag(&stack.id, stack.components.as_ref()) {
+            let at = [f64::from(pos.0) + 0.5, f64::from(pos.1), f64::from(pos.2) + 0.5];
+            self.entities.summon_tagged(mob.trim_start_matches("minecraft:"), at, tag);
+            if let Some((_, sound)) = minecraft_terrain::mob_bucket::mob_in(&stack.id) {
+                self.play(sound, Some(center(*pos)), 1.0, 1.0);
+            }
+        }
         if let Some(kind) = self.world.scene.sound_type(block) {
             self.play(
                 &kind.place,

@@ -384,7 +384,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
     let yaw = yaw(tag);
     let age = int(tag, "Age").unwrap_or(0);
     let health = tag.get("Health").and_then(Tag::as_f64).map(|h| h as f32);
-    let persistent = int(tag, "PersistenceRequired").unwrap_or(0) != 0;
+    // `AbstractFish`, `Axolotl` and `Tadpole` from a bucket never despawn
+    // (`requiresCustomPersistence`).
+    let persistent = int(tag, "PersistenceRequired").unwrap_or(0) != 0 || int(tag, "FromBucket").unwrap_or(0) != 0;
     let random = LegacyRandom::new(seed(tag));
     let variant = text(tag, "variant").unwrap_or("minecraft:temperate");
     let fire = tag.get("Fire").and_then(Tag::as_i64).map_or(0, |f| f as i32);

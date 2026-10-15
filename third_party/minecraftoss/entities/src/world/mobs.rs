@@ -607,6 +607,14 @@ impl EntityWorld {
         self.entity_events.push((first, 18));
     }
 
+    /// `Entity.discard` of a generic mob (scooped into a bucket, say): it
+    /// leaves without dying or dropping anything.
+    pub fn discard_mob(&mut self, id: u64) -> Option<MobEntity> {
+        let index = self.mobs.iter().position(|e| e.id == id)?;
+        self.order.retain(|key| !matches!(key, EntityKey::Mob(other) if *other == id));
+        Some(self.mobs.remove(index))
+    }
+
     /// Taming and orders (`Cat.mobInteract`, `Parrot.mobInteract`,
     /// `Ocelot.mobInteract`), before feeding: a wild cat eats raw cod or
     /// salmon and is tamed one time in three, a wild parrot eats seeds and is

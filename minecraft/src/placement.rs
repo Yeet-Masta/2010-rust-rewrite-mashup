@@ -32,6 +32,8 @@ fn block_for_item(item: &str) -> &str {
         "minecraft:string" => "minecraft:tripwire",
         "minecraft:redstone" => "minecraft:redstone_wire",
         "minecraft:water_bucket" => "minecraft:water",
+        // `MobBucketItem` pours its water before the mob comes out.
+        bucket if minecraft_terrain::mob_bucket::mob_in(bucket).is_some() => "minecraft:water",
         "minecraft:lava_bucket" => "minecraft:lava",
         other => other,
     }

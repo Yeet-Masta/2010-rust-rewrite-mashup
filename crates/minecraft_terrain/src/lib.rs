@@ -29,6 +29,7 @@ pub mod menus;
 pub mod server_mobs;
 pub mod stacks;
 pub mod mob_actions;
+pub mod mob_bucket;
 pub mod walk_animation;
 pub mod cow_render;
 pub mod sheep_render;
