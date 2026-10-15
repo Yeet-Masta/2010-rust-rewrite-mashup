@@ -157,8 +157,13 @@ impl EntityWorld {
     pub fn player_attack(&mut self, attack: &PlayerAttack, target: u64) -> AttackResult {
         let effects = self.enchantment_effects();
         let mut random = std::mem::take(&mut self.level_random);
+        // `Guardian.hurtServer`: a still guardian's spikes prick back.
+        let thorns = self.mobs().iter().any(|e| e.id == target && e.guardian_thorns());
         let result = self.attack_with(attack, target, &effects, &mut random);
         self.level_random = random;
+        if thorns {
+            self.player_hits.push(PlayerHit { player_id: attack.player_id, damage: 2.0, kind: PlayerHitKind::Projectile { velocity: DVec3::ZERO, damage_type: "minecraft:thorns", effect: None, fire_seconds: 0.0 }, source: Some(target) });
+        }
         result
     }
 

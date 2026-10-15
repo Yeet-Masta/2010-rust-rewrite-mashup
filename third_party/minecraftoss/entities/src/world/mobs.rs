@@ -79,6 +79,7 @@ pub struct MobEntity {
     pub shulker: super::shulkers::ShulkerState,
     pub squid: super::squids::SquidState,
     pub dolphin: super::dolphins::DolphinState,
+    pub guardian: super::guardians::GuardianState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -310,6 +311,7 @@ impl MobEntity {
             self.shulker_hurt();
             let by_something = self.ai.state.hurt_by.is_some();
             self.squid_hurt(by_something);
+            self.guardian_hurt();
         }
         result
     }
@@ -614,6 +616,7 @@ impl EntityWorld {
             shulker: Default::default(),
             squid: Default::default(),
             dolphin: Default::default(),
+            guardian: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -786,6 +789,11 @@ impl EntityWorld {
                     // as a spellcaster does while it casts.
                     let motion = if e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
                     match motion {
+                        _ if matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) => {
+                            if let Some(damage) = e.tick_guardian(&*world, players, &villagers, game_time, difficulty) {
+                                e.hurt(damage);
+                            }
+                        }
                         _ if e.kind == Kind::Dolphin => {
                             if let Some(damage) = e.tick_dolphin(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);
@@ -887,6 +895,9 @@ impl EntityWorld {
         }
         if kind == Kind::Dolphin {
             self.dolphin_step(id);
+        }
+        if matches!(kind, Kind::Guardian | Kind::ElderGuardian) {
+            self.guardian_step(id, kind, players);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
@@ -1104,7 +1115,7 @@ impl EntityWorld {
     }
 
     /// `Mob.doHurtTarget` for a generic mob, with its kind's extra.
-    fn mob_melee(&mut self, id: u64, kind: Kind, target: Target, from: DVec3) {
+    pub(super) fn mob_melee(&mut self, id: u64, kind: Kind, target: Target, from: DVec3) {
         let s = kind.species();
         let difficulty = self.difficulty;
         // The base attack plus the held weapon's (`ATTACK_DAMAGE` with the
@@ -1268,7 +1279,7 @@ impl EntityWorld {
     }
 
     /// A hit with no projectile in between (the guardian's beam, fangs).
-    fn direct_hit(&mut self, id: u64, target: Target, damage: f32, damage_type: &'static str, effect: Option<(EffectKind, u32)>, from: DVec3) {
+    pub(super) fn direct_hit(&mut self, id: u64, target: Target, damage: f32, damage_type: &'static str, effect: Option<(EffectKind, u32)>, from: DVec3) {
         match target {
             Target::Player(player_id) => {
                 self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Projectile { velocity: DVec3::ZERO, damage_type, effect, fire_seconds: 0.0 }, source: Some(id) });

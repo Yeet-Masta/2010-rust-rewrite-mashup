@@ -222,7 +222,7 @@ impl Goal<MonsterGoalContext> for FollowParentGoal {
 /// A random open spot about the mob: air for a flier, water for a swimmer
 /// (`AirAndWaterRandomPos`, `BehaviorUtils.getRandomSwimmablePos`): up to
 /// `horizontal` out and `vertical` up or down, ten tries.
-fn random_open(world: &dyn World, ctx: &mut MonsterGoalContext, horizontal: i32, vertical: i32, water: bool) -> Option<DVec3> {
+pub(crate) fn random_open(world: &dyn World, ctx: &mut MonsterGoalContext, horizontal: i32, vertical: i32, water: bool) -> Option<DVec3> {
     let p = ctx.body.position;
     for _ in 0..10 {
         let dx = ctx.random.next_int((2 * horizontal + 1) as u32) as i32 - horizontal;
@@ -432,6 +432,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Dolphin {
         return crate::world::dolphin_goals();
     }
+    if matches!(kind, Kind::Guardian | Kind::ElderGuardian) {
+        return crate::world::guardian_goals(kind);
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -551,6 +554,9 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if kind == Kind::Phantom {
         return crate::world::phantom_targets();
+    }
+    if matches!(kind, Kind::Guardian | Kind::ElderGuardian) {
+        return crate::world::guardian_targets();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

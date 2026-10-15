@@ -354,6 +354,18 @@ pub struct DolphinCtx {
     pub breached: bool,
 }
 
+/// What a guardian's goals share: who its beam holds, a beam just begun,
+/// the target its charged beam strikes, a stroll set going at once, and an
+/// elder's home.
+#[derive(Clone, Debug, Default)]
+pub struct GuardianCtx {
+    pub attack_target: Option<Target>,
+    pub beam_started: bool,
+    pub fire: Option<Target>,
+    pub trigger_stroll: bool,
+    pub home: Option<DVec3>,
+}
+
 /// A target as the goals see it.
 #[derive(Clone, Copy, Debug)]
 pub struct TargetInfo {
@@ -536,6 +548,8 @@ pub struct MonsterGoalContext {
     pub squid_bubble: bool,
     /// A dolphin's pitch and what its goals asked of it (`world/dolphins`).
     pub dolphin: DolphinCtx,
+    /// A guardian's beam, home and stroll trigger (`world/guardians`).
+    pub guardian: GuardianCtx,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -931,6 +945,7 @@ impl MonsterAi {
                 squid_vector: DVec3::ZERO,
                 squid_bubble: false,
                 dolphin: DolphinCtx::default(),
+                guardian: GuardianCtx::default(),
                 fly_target: None,
                 charging: false,
                 in_love: false,

@@ -16,7 +16,7 @@ use glam::{DVec3, Quat, Vec2, Vec3};
 use minecraftoss_entities::world::{FangsEntity, MissileEntity, MissileKind};
 
 /// The textures these draw, for the atlas.
-pub const TEXTURES: [&str; 4] = ["minecraft:entity/shulker/spark", "minecraft:entity/llama/llama_spit", "minecraft:entity/wither/wither", "minecraft:entity/illager/evoker_fangs"];
+pub const TEXTURES: [&str; 5] = ["minecraft:entity/shulker/spark", "minecraft:entity/llama/llama_spit", "minecraft:entity/wither/wither", "minecraft:entity/illager/evoker_fangs", "minecraft:entity/guardian_beam"];
 
 /// `ProjectileUtil.rotateTowardsMovement`'s heading, in degrees: its yaw
 /// and pitch along the motion.
@@ -138,5 +138,84 @@ pub fn append_fangs<'a>(models: &mut ChunkMesh, fangs: impl IntoIterator<Item = 
         let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
         let rotation = Quat::from_rotation_y((90.0 - f.yaw).to_radians());
         entity_model::draw(models, &posed, &Placement { feet: f.position, rotation, scale: Vec3::ONE, region, sky, block, tint: [1.0; 4] });
+    }
+}
+
+/// One guardian beam to draw: from the guardian's eyes to the middle of
+/// its target, the ticks it has shown (with the partial tick) and how far
+/// it has charged.
+pub struct Beam {
+    pub from: DVec3,
+    pub to: DVec3,
+    pub time: f32,
+    pub scale: f32,
+}
+
+/// `GuardianRenderer.renderBeam`: two crossed strips turning about the
+/// line, purple warming to yellow as it charges, the texture crawling
+/// along it, and a capping square at the target; fully lit, seen from
+/// both sides. The atlas cannot wrap, so the strips go in pieces, one per
+/// repeat of the texture.
+pub fn append_beams(models: &mut ChunkMesh, beams: impl IntoIterator<Item = Beam>, atlas: &Atlas) {
+    let Ok(texture) = ResourceId::parse("minecraft:entity/guardian_beam") else { return };
+    if !atlas.contains(&texture) {
+        return;
+    }
+    let [au0, av0, au1, av1] = atlas.entity_region(&texture);
+    let (du, dv) = (au1 - au0, av1 - av0);
+    let mut quad = |models: &mut ChunkMesh, corners: [(Vec3, f32, f32); 4], color: [f32; 4]| {
+        for order in [[0usize, 1, 2, 3], [3, 2, 1, 0]] {
+            let start = models.vertices.len() as u32;
+            for i in order {
+                let (p, u, v) = corners[i];
+                models.vertices.push(Vertex { position: p.to_array(), uv: [au0 + u * du, av0 + v * dv], color, sky_light: 15.0, block_light: 15.0 });
+            }
+            models.indices.extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+            models.faces += 1;
+        }
+    };
+    for beam in beams {
+        let line = beam.to - beam.from;
+        let length = (line.length() + 1.0) as f32;
+        let direction = line.normalize_or_zero().as_vec3();
+        if direction == Vec3::ZERO {
+            continue;
+        }
+        let x_rot = direction.y.clamp(-1.0, 1.0).acos();
+        let y_rot = std::f32::consts::FRAC_PI_2 - direction.z.atan2(direction.x);
+        let turn = Quat::from_rotation_y(y_rot) * Quat::from_rotation_x(x_rot);
+        let origin = beam.from.as_vec3();
+        let at = |x: f32, y: f32, z: f32| origin + turn * Vec3::new(x, y, z);
+        let rot = beam.time * 0.05 * -1.5;
+        let c = beam.scale * beam.scale;
+        let color = [(64.0 + (c * 191.0).floor()) / 255.0, (32.0 + (c * 191.0).floor()) / 255.0, (128.0 - (c * 64.0).floor()) / 255.0, 1.0];
+        let ring = |angle: f32, radius: f32| (angle.cos() * radius, angle.sin() * radius);
+        use std::f32::consts::PI;
+        let (wx, wz) = ring(rot + PI, 0.2);
+        let (ex, ez) = ring(rot, 0.2);
+        let (nx, nz) = ring(rot + PI / 2.0, 0.2);
+        let (sx, sz) = ring(rot + PI * 1.5, 0.2);
+        // The strips: v runs from `minV` at the eye to `maxV` at the far
+        // end, cut where it crosses a whole number.
+        let min_v = -1.0 + (beam.time * 0.5) % 1.0;
+        let max_v = min_v + length * 2.5;
+        let mut v = min_v;
+        while v < max_v {
+            let next = (v.floor() + 1.0).min(max_v);
+            let (y0, y1) = ((v - min_v) / 2.5, (next - min_v) / 2.5);
+            let base = v.floor();
+            let (t0, t1) = (v - base, next - base);
+            for ((ax, az), (bx, bz)) in [((wx, wz), (ex, ez)), ((nx, nz), (sx, sz))] {
+                quad(models, [(at(ax, y1, az), 0.4999, t1), (at(ax, y0, az), 0.4999, t0), (at(bx, y0, bz), 0.0, t0), (at(bx, y1, bz), 0.0, t1)], color);
+            }
+            v = next;
+        }
+        // The cap at the far end.
+        let (wnx, wnz) = ring(rot + PI * 0.75, 0.282);
+        let (enx, enz) = ring(rot + PI * 0.25, 0.282);
+        let (wsx, wsz) = ring(rot + PI * 1.25, 0.282);
+        let (esx, esz) = ring(rot + PI * 1.75, 0.282);
+        let v_base = if (beam.time.floor() as i32) % 2 == 0 { 0.5 } else { 0.0 };
+        quad(models, [(at(wnx, length, wnz), 0.5, v_base + 0.5), (at(enx, length, enz), 1.0, v_base + 0.5), (at(esx, length, esz), 1.0, v_base), (at(wsx, length, wsz), 0.5, v_base)], color);
     }
 }

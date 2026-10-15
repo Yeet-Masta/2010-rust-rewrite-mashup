@@ -236,7 +236,7 @@ fn wrap(angle: f32) -> f32 {
 
 /// `Entity.getInputVector`: the input, no longer than one, at `speed`,
 /// turned to the yaw.
-fn relative(input: DVec3, speed: f32, yaw: f32) -> DVec3 {
+pub(super) fn relative(input: DVec3, speed: f32, yaw: f32) -> DVec3 {
     let length = input.length_squared();
     if length < 1.0e-7 {
         return DVec3::ZERO;
@@ -249,7 +249,7 @@ fn relative(input: DVec3, speed: f32, yaw: f32) -> DVec3 {
 impl MobEntity {
     /// `Entity.move(SELF, deltaMovement)` alone: the motion kept but where
     /// it struck something; returns how far it fell when it landed.
-    fn move_raw(&mut self, world: &impl World) -> Option<f64> {
+    pub(super) fn move_raw(&mut self, world: &impl World) -> Option<f64> {
         let before = self.body.velocity;
         let gravity = self.body.gravity;
         self.body.gravity = 0.0;

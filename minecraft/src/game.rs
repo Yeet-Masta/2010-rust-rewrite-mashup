@@ -1523,6 +1523,29 @@ impl Game {
                     }
                 }
             }
+            // `Guardian.aiStep`: two bubbles behind a swimming guardian,
+            // and bubbles strung along its beam, closer as it charges.
+            let (wakes, beams) = self.entities.guardian_bubbles(self.player.pos + DVec3::new(0.0, self.player.eye_height(), 0.0));
+            for (feet, width, height, view) in wakes {
+                for _ in 0..2 {
+                    let random = &mut self.particles.random;
+                    let at = DVec3::new(feet.x + width * (2.0 * random.next_double() - 1.0) * 0.5 - view.x * 1.5, feet.y + height * random.next_double() - view.y * 1.5, feet.z + width * (2.0 * random.next_double() - 1.0) * 0.5 - view.z * 1.5);
+                    self.particles.spawn(&self.world, &Type::Bubble.into(), at, DVec3::ZERO);
+                }
+            }
+            for (eye, to, scale) in beams {
+                let line = to - eye;
+                let length = line.length();
+                if length <= 0.0 {
+                    continue;
+                }
+                let step = line / length;
+                let mut distance = self.particles.random.next_double();
+                while distance < length {
+                    distance += 1.8 - scale + self.particles.random.next_double() * (1.7 - scale);
+                    self.particles.spawn(&self.world, &Type::Bubble.into(), eye + step * distance, DVec3::ZERO);
+                }
+            }
             // `GlowSquid.aiStep`: a mote somewhere about it every tick.
             for (feet, width, height) in glows {
                 let random = &mut self.particles.random;

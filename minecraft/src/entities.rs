@@ -626,6 +626,39 @@ impl Entities {
         (ink, bubbles, glows)
     }
 
+    /// Where a guardian's beam ends: the middle of its target (a player
+    /// by the camera's height less theirs, near enough).
+    fn beam_target(&self, e: &minecraftoss_entities::world::MobEntity, camera: DVec3) -> Option<DVec3> {
+        use minecraftoss_entities::monster_ai::Target;
+        match e.guardian.attack_target? {
+            Target::Player(_) => Some(camera - DVec3::new(0.0, 0.72, 0.0)),
+            Target::Mob(id) | Target::Villager(id) => self.world.mob_bounds(id).map(|(feet, _, height)| feet + DVec3::new(0.0, f64::from(height) * 0.5, 0.0)),
+        }
+    }
+
+    /// What the guardians bubble this tick: each moving one in water (its
+    /// feet, size and view), and each beam (its eyes, its end, its charge).
+    pub fn guardian_bubbles(&self, camera: DVec3) -> (Vec<(DVec3, f64, f64, DVec3)>, Vec<(DVec3, DVec3, f64)>) {
+        use minecraftoss_entities::species::Kind;
+        let (mut wakes, mut beams) = (Vec::new(), Vec::new());
+        for e in self.world.mobs() {
+            if !matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) || e.health <= 0.0 {
+                continue;
+            }
+            if e.guardian.moving && e.body.touching_water {
+                let (yr, pr) = (e.yaw.to_radians(), e.pitch.to_radians());
+                let view = DVec3::new(f64::from(-yr.sin() * pr.cos()), f64::from(-pr.sin()), f64::from(yr.cos() * pr.cos()));
+                wakes.push((e.body.position, f64::from(e.body.width), f64::from(e.body.height), view));
+            }
+            if let Some(to) = self.beam_target(e, camera) {
+                let eye = e.body.position + DVec3::new(0.0, f64::from(e.eye_height()), 0.0);
+                let scale = f64::from(e.guardian.attack_time as f32 / minecraftoss_entities::world::guardian_attack_duration(e.kind) as f32);
+                beams.push((eye, to, scale));
+            }
+        }
+        (wakes, beams)
+    }
+
     /// The dolphins fast enough in water to leave a trail: where each is,
     /// its yaw and its pitch (`Dolphin.tick`'s client side).
     pub fn dolphin_trails(&self) -> Vec<(DVec3, f32, f32)> {
@@ -1332,6 +1365,20 @@ impl Entities {
             light,
             partial,
         );
+        // `GuardianRenderer`'s beams, to the middle of their targets.
+        let beams: Vec<_> = w
+            .mobs()
+            .iter()
+            .filter_map(|e| {
+                let to = self.beam_target(e, camera)?;
+                let feet = e.previous_position.lerp(e.body.position, f64::from(partial));
+                let from = feet + DVec3::new(0.0, f64::from(e.eye_height()), 0.0);
+                let time = e.guardian.attack_time as f32 + partial;
+                let scale = time / minecraftoss_entities::world::guardian_attack_duration(e.kind) as f32;
+                Some(minecraft_terrain::missile_render::Beam { from, to, time, scale })
+            })
+            .collect();
+        minecraft_terrain::missile_render::append_beams(&mut out.models, beams, atlas);
         witch_render::append_potions(
             &mut out.items,
             w.potions().iter().filter(|p| p.potion.alive).map(|p| {

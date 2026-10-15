@@ -931,10 +931,21 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::Guardian | Kind::ElderGuardian => {
+            // `GuardianModel.setupAnim`: the head looks, the spikes stand
+            // out as it rests and draw in as it swims, and the tail sways.
             posed.look("head", m.head_yaw, m.head_pitch);
-            let tail = age * 0.4;
+            let partial = m.age_in_ticks.fract();
+            let withdrawal = (1.0 - e.guardian.spikes(partial)) * 0.55;
+            const SPIKE_X: [f32; 12] = [0.0, 0.0, 8.0, -8.0, -8.0, 8.0, 8.0, -8.0, 0.0, 0.0, 8.0, -8.0];
+            const SPIKE_Y: [f32; 12] = [-8.0, -8.0, -8.0, -8.0, 0.0, 0.0, 0.0, 0.0, 8.0, 8.0, 8.0, 8.0];
+            const SPIKE_Z: [f32; 12] = [8.0, -8.0, 0.0, 0.0, -8.0, -8.0, 8.0, 8.0, 8.0, -8.0, 0.0, 0.0];
+            for i in 0..12 {
+                let out = 1.0 + cos(age * 1.5 + i as f32) * 0.01 - withdrawal;
+                posed.with(&format!("spike{i}"), |p| p.offset = Vec3::new(SPIKE_X[i] * out, 16.0 + SPIKE_Y[i] * out, SPIKE_Z[i] * out));
+            }
+            let swim = e.guardian.tail(partial);
             for (i, part) in ["tail0", "tail1", "tail2"].into_iter().enumerate() {
-                posed.with(part, |p| p.rotation.y = sin(tail) * PI * 0.05 * (i + 1) as f32);
+                posed.with(part, |p| p.rotation.y = sin(swim) * PI * 0.05 * (i + 1) as f32);
             }
         }
         Kind::Squid | Kind::GlowSquid => {
