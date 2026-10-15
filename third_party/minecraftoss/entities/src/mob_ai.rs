@@ -462,6 +462,8 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
             };
             // The evoker's spells are its own (`illagers.rs`); it keeps its
             // distance from players instead (`AvoidEntityGoal(8, 0.6, 1)`).
+            // `RangedBowAttackGoal(0.5, 20, 15)` for the illusioner.
+            let (interval, speed) = if kind == Kind::Illusioner { (20, 0.5) } else { (interval, speed) };
             if attack == AttackKind::Fangs {
                 selector.add(2, crate::monster_ai::AvoidEntityGoal::new("minecraft:player", 8.0, 0.6, 1.0));
             } else {
@@ -494,7 +496,7 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     match s.motion {
         Motion::Ground | Motion::Amphibious => {
             if kind != Kind::Giant {
-                selector.add(5, StrollGoal::new(if kind == Kind::Evoker { 0.6 } else if s.temper == Temper::Hostile { 1.0 } else { 0.8 }, 0.001));
+                selector.add(5, StrollGoal::new(if matches!(kind, Kind::Evoker | Kind::Illusioner) { 0.6 } else if s.temper == Temper::Hostile { 1.0 } else { 0.8 }, 0.001));
             }
         }
         Motion::Fly => {

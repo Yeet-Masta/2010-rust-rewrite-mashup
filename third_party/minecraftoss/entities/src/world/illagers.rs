@@ -47,16 +47,26 @@ impl Spell {
     }
 }
 
-/// The evoker's `SpellcasterUseSpellGoal`s, in their goal order.
+/// The spellcasters' `SpellcasterUseSpellGoal`s: the evoker's and the
+/// illusioner's (`IllusionerMirrorSpellGoal`, `IllusionerBlindnessSpellGoal`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpellGoal {
     Summon,
     Fangs,
     Wololo,
+    Mirror,
+    Blindness,
 }
 
 impl SpellGoal {
-    const ALL: [SpellGoal; 3] = [SpellGoal::Summon, SpellGoal::Fangs, SpellGoal::Wololo];
+    /// Each caster's use goals, in their goal order.
+    fn of(kind: Kind) -> &'static [SpellGoal] {
+        match kind {
+            Kind::Evoker => &[SpellGoal::Summon, SpellGoal::Fangs, SpellGoal::Wololo],
+            Kind::Illusioner => &[SpellGoal::Mirror, SpellGoal::Blindness],
+            _ => &[],
+        }
+    }
 
     /// `getCastingTime`, `getCastingInterval` and `getCastWarmupTime`.
     fn timings(self) -> (i32, i32, i32) {
@@ -64,6 +74,8 @@ impl SpellGoal {
             SpellGoal::Summon => (100, 340, 20),
             SpellGoal::Fangs => (40, 100, 20),
             SpellGoal::Wololo => (60, 140, 40),
+            SpellGoal::Mirror => (20, 340, 20),
+            SpellGoal::Blindness => (20, 180, 20),
         }
     }
 
@@ -72,6 +84,8 @@ impl SpellGoal {
             SpellGoal::Summon => "entity.evoker.prepare_summon",
             SpellGoal::Fangs => "entity.evoker.prepare_attack",
             SpellGoal::Wololo => "entity.evoker.prepare_wololo",
+            SpellGoal::Mirror => "entity.illusioner.prepare_mirror",
+            SpellGoal::Blindness => "entity.illusioner.prepare_blindness",
         }
     }
 
@@ -80,6 +94,8 @@ impl SpellGoal {
             SpellGoal::Summon => Spell::SummonVex,
             SpellGoal::Fangs => Spell::Fangs,
             SpellGoal::Wololo => Spell::Wololo,
+            SpellGoal::Mirror => Spell::Disappear,
+            SpellGoal::Blindness => Spell::Blindness,
         }
     }
 
@@ -97,8 +113,39 @@ pub struct Spellcaster {
     pub spell: Spell,
     pub casting_ticks: i32,
     running: Option<(SpellGoal, i32)>,
-    next: [i32; 3],
+    next: [i32; 5],
     wololo: Option<u64>,
+    /// `IllusionerBlindnessSpellGoal.lastTargetId`.
+    last_target: Option<crate::monster_ai::Target>,
+}
+
+/// `Illusioner`'s `clientSideIllusionOffsets` and `clientSideIllusionTicks`:
+/// where its four images stand off it while unseen, easing over three
+/// ticks from the last set; `moved` on the tick they jumped (with a puff of
+/// cloud).
+#[derive(Clone, Debug, Default)]
+pub struct Illusion {
+    previous: [[f32; 3]; 4],
+    current: [[f32; 3]; 4],
+    pub ticks: i32,
+    pub moved: bool,
+}
+
+impl Illusion {
+    /// `getIllusionOffsets` between ticks.
+    pub fn offsets(&self, partial: f32) -> [[f32; 3]; 4] {
+        if self.ticks <= 0 {
+            return self.current;
+        }
+        let scale = (self.ticks as f32 - partial) / 3.0;
+        let mut out = self.current;
+        for (i, o) in out.iter_mut().enumerate() {
+            for axis in 0..3 {
+                o[axis] = self.current[i][axis] * (1.0 - scale) + self.previous[i][axis] * scale;
+            }
+        }
+        out
+    }
 }
 
 impl Spellcaster {
@@ -151,13 +198,15 @@ impl EntityWorld {
     /// the cast's count runs down (`customServerAiStep`), the casting goal
     /// ends with it, the use goal at work warms up and works its spell, and
     /// on goal ticks a new one may start.
-    pub(super) fn evoker_spells(&mut self, id: u64, world: &impl World) {
-        let griefing = self.mob_griefing;
+    pub(super) fn spellcaster_step(&mut self, id: u64, world: &impl World, players: &[PlayerCandidate]) {
+        let (griefing, hard) = (self.mob_griefing, self.difficulty >= 3);
         let Some(index) = self.mobs.iter().position(|e| e.id == id) else { return };
         let e = &self.mobs[index];
-        if e.kind != Kind::Evoker || e.health <= 0.0 || e.no_ai {
+        let goals = SpellGoal::of(e.kind);
+        if goals.is_empty() || e.health <= 0.0 || e.no_ai {
             return;
         }
+        let cast_sound = if e.kind == Kind::Illusioner { "entity.illusioner.cast_spell" } else { "entity.evoker.cast_spell" };
         let position = e.body.position;
         let tick = e.tick_count;
         let full = tick <= 1 || (tick + id as i32) % 2 == 0;
@@ -202,11 +251,17 @@ impl EntityWorld {
         }
         let mut prepared = None;
         if full && e.spells.running.is_none() && !e.spells.casting() {
-            for goal in SpellGoal::ALL {
+            for &goal in goals {
                 if tick < e.spells.next[goal.index()] {
                     continue;
                 }
                 let able = match goal {
+                    // `IllusionerMirrorSpellGoal`: not already unseen.
+                    SpellGoal::Mirror => target.is_some() && !e.effects.has(crate::effects::MobEffect::Invisibility),
+                    // `IllusionerBlindnessSpellGoal`: a new target, where the
+                    // local difficulty is above normal's (hard's from the
+                    // start; normal's only after many days, not counted here).
+                    SpellGoal::Blindness => target.is_some_and(|t| e.spells.last_target != Some(t.target)) && hard,
                     SpellGoal::Summon => target.is_some() && e.random.next_int(8) as usize + 1 > vexes,
                     SpellGoal::Fangs => target.is_some(),
                     SpellGoal::Wololo => {
@@ -227,6 +282,9 @@ impl EntityWorld {
                     caster.casting_ticks = casting;
                     caster.next[goal.index()] = tick + interval;
                     caster.spell = goal.spell();
+                    if goal == SpellGoal::Blindness {
+                        caster.last_target = target.map(|t| t.target);
+                    }
                     prepared = Some(goal.prepare_sound());
                     break;
                 }
@@ -244,8 +302,20 @@ impl EntityWorld {
             e.voices.push((Voice::Event(event, 1.0, 1.0), position));
         }
         let Some(goal) = work else { return };
-        e.voices.push((Voice::Event("entity.evoker.cast_spell", 1.0, 1.0), position));
+        e.voices.push((Voice::Event(cast_sound, 1.0, 1.0), position));
         match goal {
+            SpellGoal::Mirror => {
+                let _ = self.mobs[index].effects.add(crate::effects::EffectInstance::new(crate::effects::MobEffect::Invisibility, 1200, 0));
+            }
+            SpellGoal::Blindness => {
+                // Blindness for 400 ticks; mobs carry no blindness here.
+                if let Some(crate::monster_ai::Target::Player(player)) = target.map(|t| t.target) {
+                    if players.iter().any(|p| p.id == player && p.alive) {
+                        let effect = minecraftoss_player::effects::EffectInstance::new(minecraftoss_player::effects::MobEffect::Blindness, 400, 0);
+                        self.player_splashes.push((player, PlayerSplash { effects: vec![effect], instant: Vec::new(), extinguish: false, at: position }));
+                    }
+                }
+            }
             SpellGoal::Summon => self.summon_vexes(index),
             SpellGoal::Fangs => {
                 if let Some(target) = target {
@@ -399,6 +469,43 @@ impl EntityWorld {
 }
 
 impl MobEntity {
+    /// `Illusioner.aiStep`'s images while unseen: they jump to new spots
+    /// when it is hurt or every minute (`mirror_move`), and fold back into
+    /// it as the hurt wears off. Drawn from a random of their own, as the
+    /// client's is.
+    pub(super) fn illusion_step(&mut self) {
+        if self.kind != Kind::Illusioner || !self.effects.has(crate::effects::MobEffect::Invisibility) {
+            return;
+        }
+        let illusion = &mut self.illusion;
+        illusion.moved = false;
+        illusion.ticks = (illusion.ticks - 1).max(0);
+        let hurt = self.damage.hurt_ticks;
+        if hurt == 1 || self.tick_count % 1200 == 0 {
+            illusion.ticks = 3;
+            illusion.moved = true;
+            let mut random = LegacyRandom::new(self.id ^ (self.tick_count as u64) << 16);
+            illusion.previous = illusion.current;
+            for offset in &mut illusion.current {
+                let x = (-6.0 + random.next_int(13) as f32) * 0.5;
+                let y = (random.next_int(6) as i32 - 4).max(0) as f32;
+                let z = (-6.0 + random.next_int(13) as f32) * 0.5;
+                *offset = [x, y, z];
+            }
+            let at = self.body.position;
+            self.voices.push((Voice::Event("entity.illusioner.mirror_move", 1.0, 1.0), at));
+        } else if hurt == 9 {
+            illusion.ticks = 3;
+            illusion.previous = illusion.current;
+            illusion.current = [[0.0; 3]; 4];
+        }
+    }
+
+    /// Unseen (`isInvisible`).
+    pub fn invisible(&self) -> bool {
+        self.effects.has(crate::effects::MobEffect::Invisibility)
+    }
+
     /// `VexMoveControl.tick`: while it wants somewhere it pushes toward it
     /// at a twentieth of its speed modifier a tick, facing the way it
     /// moves (or its target), until it is nearer than its box's size, when

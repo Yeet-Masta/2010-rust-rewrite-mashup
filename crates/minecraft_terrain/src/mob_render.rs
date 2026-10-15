@@ -1083,6 +1083,20 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
             _ => 1.0,
         };
         let scale = Vec3::splat(age_scale * size);
+        // An unseen mob is not drawn, but an illusioner shows its four
+        // images, each wavering (`IllusionerRenderer.submit`).
+        let copies: Vec<Vec3> = if !e.invisible() {
+            vec![Vec3::ZERO]
+        } else if e.kind == Kind::Illusioner {
+            let age = m.age_in_ticks;
+            e.illusion.offsets(partial).iter().enumerate().map(|(i, o)| {
+                let i = i as f32;
+                Vec3::new(o[0] + (i + age * 0.5).cos() * 0.025, o[1] + (i + age * 0.75).cos() * 0.0125, o[2] + (i + age * 0.7).cos() * 0.025)
+            }).collect()
+        } else {
+            continue;
+        };
+        for copy in copies {
         marks.push((mesh.vertices.len(), m.overlay(0.0)));
         for l in &layers {
             let Some(model) = entity_model::model(&l.model) else { continue };
@@ -1092,12 +1106,15 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
             }
             let mut posed = Posed::new(model);
             animate(&mut posed, e, &m);
+            let mut m = m.clone();
+            m.feet += copy.as_dvec3();
             if std::ptr::eq(l, &layers[0]) {
                 held.extend(held_in_hands(e, &posed, &m, rotation, scale));
             }
             let feet = m.feet + rotation.mul_vec3(shift).as_dvec3();
             let placement = Placement { feet, rotation, scale, region: atlas.entity_region(&id), sky, block: if l.glow { 15.0 } else { block }, tint: l.tint };
             entity_model::draw(mesh, &posed, &placement);
+        }
         }
     }
     crate::cow_render::apply_overlays(mesh, &marks);

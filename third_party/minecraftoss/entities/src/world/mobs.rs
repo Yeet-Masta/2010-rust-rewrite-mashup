@@ -73,6 +73,8 @@ pub struct MobEntity {
     pub owner_mob: Option<u64>,
     pub bound_origin: Option<(i32, i32, i32)>,
     pub life_ticks: Option<i32>,
+    /// The illusioner's images.
+    pub illusion: super::illagers::Illusion,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -591,6 +593,7 @@ impl EntityWorld {
             owner_mob: None,
             bound_origin: None,
             life_ticks: None,
+            illusion: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -790,6 +793,9 @@ impl EntityWorld {
                 hazards::blocks_act(e, &*world, old, game_time);
             }
             let bred = e.ai.state.breed_with.take();
+            if !removed {
+                e.illusion_step();
+            }
             if kind == Kind::Vex && !removed {
                 // `VexChargeAttackGoal.start`'s sound, and its limited life.
                 if e.ai.state.charging && !was_charging {
@@ -833,8 +839,8 @@ impl EntityWorld {
         if spawn_blast {
             self.wither_spawn_blast(id, &*world, players);
         }
-        if kind == Kind::Evoker {
-            self.evoker_spells(id, &*world);
+        if matches!(kind, Kind::Evoker | Kind::Illusioner) {
+            self.spellcaster_step(id, &*world, players);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

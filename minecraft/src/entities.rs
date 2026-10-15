@@ -573,8 +573,10 @@ impl Entities {
     /// `SpellcasterIllager.tick` on the client: a mote of the spell's colour
     /// at each hand of every caster casting; and where fangs open their
     /// jaws this tick (`EvokerFangs.tick` at life 14), for their crits.
-    pub fn spell_particles(&self) -> (Vec<(DVec3, [f32; 3])>, Vec<DVec3>) {
+    pub fn spell_particles(&self) -> (Vec<(DVec3, [f32; 3])>, Vec<DVec3>, Vec<(DVec3, f64, f64)>) {
         let mut motes = Vec::new();
+        // An illusioner's images jumping: a puff in its box.
+        let clouds = self.world.mobs().iter().filter(|e| e.illusion.moved).map(|e| (e.body.position, f64::from(e.body.width), f64::from(e.body.height))).collect();
         for e in self.world.mobs() {
             let spell = e.spells.spell;
             if spell == minecraftoss_entities::world::Spell::None {
@@ -588,7 +590,7 @@ impl Entities {
             }
         }
         let crits = self.world.fangs().iter().filter(|f| f.biting && f.life_ticks == 14).map(|f| f.position).collect();
-        (motes, crits)
+        (motes, crits, clouds)
     }
 
     pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {

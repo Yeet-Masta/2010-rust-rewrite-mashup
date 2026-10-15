@@ -39,7 +39,7 @@ mod mobs;
 mod missiles;
 mod withers;
 mod illagers;
-pub use illagers::{FangsEntity, Spell, Spellcaster};
+pub use illagers::{FangsEntity, Illusion, Spell, Spellcaster};
 pub use mobs::MobEntity;
 pub use missiles::{MissileEntity, MissileKind};
 pub use wind::{wind_sound, WindBlast, WindChargeEntity};

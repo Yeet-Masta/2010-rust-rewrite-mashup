@@ -1469,7 +1469,15 @@ impl Game {
         }
         {
             use crate::particles::{Options, Type};
-            let (motes, crits) = self.entities.spell_particles();
+            let (motes, crits, clouds) = self.entities.spell_particles();
+            // `Illusioner.aiStep`: sixteen clouds about it.
+            for (feet, width, height) in clouds {
+                for _ in 0..16 {
+                    let random = &mut self.particles.random;
+                    let at = feet + DVec3::new((2.0 * random.next_double() - 1.0) * 0.5 * width, random.next_double() * height, (2.0 * random.next_double() - 1.0) * 0.5 * width);
+                    self.particles.spawn(&self.world, &Type::Cloud.into(), at, DVec3::ZERO);
+                }
+            }
             for (at, [r, g, b]) in motes {
                 self.particles.spawn(&self.world, &Options::Color(Type::EntityEffect, [1.0, r, g, b]), at, DVec3::ZERO);
             }

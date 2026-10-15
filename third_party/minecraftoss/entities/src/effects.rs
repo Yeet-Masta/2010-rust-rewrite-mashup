@@ -24,10 +24,12 @@ pub enum MobEffect {
     WaterBreathing,
     Weakness,
     Poison,
+    /// The illusioner's mirror spell's.
+    Invisibility,
 }
 
 impl MobEffect {
-    pub const ALL: [MobEffect; 9] = [
+    pub const ALL: [MobEffect; 10] = [
         Self::Speed,
         Self::Slowness,
         Self::InstantHealth,
@@ -37,6 +39,7 @@ impl MobEffect {
         Self::WaterBreathing,
         Self::Weakness,
         Self::Poison,
+        Self::Invisibility,
     ];
 
     /// Its registry ID.
@@ -51,6 +54,7 @@ impl MobEffect {
             Self::WaterBreathing => "minecraft:water_breathing",
             Self::Weakness => "minecraft:weakness",
             Self::Poison => "minecraft:poison",
+            Self::Invisibility => "minecraft:invisibility",
         }
     }
 
