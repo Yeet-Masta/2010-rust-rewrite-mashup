@@ -1242,6 +1242,18 @@ impl Entities {
             light,
             partial,
         );
+        // `ThrownItemRenderer` fireballs, `WitherSkullRenderer`,
+        // `ShulkerBulletRenderer`, `LlamaSpitRenderer`.
+        minecraft_terrain::missile_render::append_missiles(
+            &mut out.models,
+            &mut out.translucent,
+            &mut out.items,
+            w.missiles().iter().filter(|m| m.alive).map(|m| (m, m.previous_position.lerp(m.position, f64::from(partial)))),
+            atlas,
+            forward,
+            light,
+            partial,
+        );
         witch_render::append_potions(
             &mut out.items,
             w.potions().iter().filter(|p| p.potion.alive).map(|p| {

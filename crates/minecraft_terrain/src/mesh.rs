@@ -401,6 +401,9 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(&skin)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
+    for texture in crate::missile_render::TEXTURES {
+        textures.insert(ResourceId::parse(texture)?, ());
+    }
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman_eyes")?, ());
     textures.insert(ResourceId::parse("minecraft:entity/witch/witch")?, ());
@@ -424,7 +427,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
     textures.insert(ResourceId::parse("minecraft:item/splash_potion")?, ());
     textures.insert(ResourceId::parse("minecraft:item/potion_overlay")?, ());
     // And the other thrown items (`ThrownItemRenderer`).
-    for item in ["snowball", "egg", "blue_egg", "brown_egg", "ender_pearl", "experience_bottle"] {
+    for item in ["snowball", "egg", "blue_egg", "brown_egg", "ender_pearl", "experience_bottle", "fire_charge"] {
         textures.insert(ResourceId::parse(&format!("minecraft:item/{item}"))?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/zombie/husk")?, ());

@@ -42,6 +42,7 @@ pub mod spider_render;
 pub mod skeleton_render;
 pub mod villager_render;
 pub mod slime_render;
+pub mod missile_render;
 pub mod enderman_render;
 pub mod witch_render;
 pub mod golem_render;
