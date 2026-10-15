@@ -257,6 +257,18 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    /// `gameplay/turtle_egg_hatch_chance`: certain for a while before dawn
+    /// in the Overworld, otherwise one in five hundred.
+    pub fn turtle_egg_hatch_chance(&self) -> f32 {
+        let Some(sky) = &self.sky else { return 0.002 };
+        let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome: 0 };
+        match sky.environment.value_named("gameplay/turtle_egg_hatch_chance", &sample) {
+            minecraftoss_core::environment::Value::Float(chance) => chance,
+            _ => 0.002,
+        }
+    }
+
     /// `gameplay/piglins_zombify`: whether piglins and hoglins turn here
     /// (everywhere but the Nether).
     pub fn piglins_zombify(&self) -> bool {

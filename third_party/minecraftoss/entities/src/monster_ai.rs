@@ -366,6 +366,22 @@ pub struct GuardianCtx {
     pub home: Option<DVec3>,
 }
 
+/// What a turtle's goals share: its home, its egg and digging, whether it
+/// is going home or travelling (and where), whether it is a baby, the love
+/// laying sets going, and the eggs it laid.
+#[derive(Clone, Debug, Default)]
+pub struct TurtleCtx {
+    pub home: Option<(i32, i32, i32)>,
+    pub has_egg: bool,
+    pub laying_egg: bool,
+    pub lay_egg_counter: i32,
+    pub going_home: bool,
+    pub travel: Option<(i32, i32, i32)>,
+    pub baby: bool,
+    pub love: Option<i32>,
+    pub laid: Option<((i32, i32, i32), u8)>,
+}
+
 /// A target as the goals see it.
 #[derive(Clone, Copy, Debug)]
 pub struct TargetInfo {
@@ -550,6 +566,8 @@ pub struct MonsterGoalContext {
     pub dolphin: DolphinCtx,
     /// A guardian's beam, home and stroll trigger (`world/guardians`).
     pub guardian: GuardianCtx,
+    /// A turtle's home, egg and journeys (`world/turtles`).
+    pub turtle: TurtleCtx,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -946,6 +964,7 @@ impl MonsterAi {
                 squid_bubble: false,
                 dolphin: DolphinCtx::default(),
                 guardian: GuardianCtx::default(),
+                turtle: TurtleCtx::default(),
                 fly_target: None,
                 charging: false,
                 in_love: false,

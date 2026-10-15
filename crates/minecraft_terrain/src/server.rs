@@ -543,7 +543,10 @@ impl ServerSim {
         }
         // `globalLevelEvent`s (a wither's arrival) go out with the level's.
         for (event, (x, y, z), data) in spawned.global_events {
-            self.level.level_event(event, minecraftoss_core::BlockPos::new(x, y, z), data);
+            let pos = minecraftoss_core::BlockPos::new(x, y, z);
+            // A 2001 with no state names the block below (a turtle digging).
+            let data = if event == 2001 && data == -1 { i32::from(self.level.block(pos.below()).0) } else { data };
+            self.level.level_event(event, pos, data);
         }
         // `PiglinAi.throwItems`: each bartered stack thrown from the
         // piglin's eyes toward its mark (`BehaviorUtils.throwItem`).

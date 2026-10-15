@@ -296,6 +296,8 @@ impl Level<'_> {
             self.farmland_random_tick(state, pos);
         } else if class("SugarCaneBlock") {
             self.sugar_cane_random_tick(state, pos);
+        } else if class("TurtleEggBlock") {
+            self.turtle_egg_random_tick(state, pos);
         } else if class("CactusBlock") {
             self.cactus_random_tick(state, pos);
         } else if class("SpreadingSnowyBlock") {
@@ -605,6 +607,40 @@ impl Level<'_> {
                 self.set_block(pos, self.with(state, "age", "0"), 260, super::update::LIMIT);
             } else {
                 self.set_block(pos, self.with(state, "age", &(age + 1).to_string()), 260, super::update::LIMIT);
+            }
+        }
+    }
+
+    /// `TurtleEggBlock.randomTick`: on sand, now and then (and surely just
+    /// before dawn) the eggs crack, and at the third crack each hatches a
+    /// baby turtle that calls the spot home.
+    fn turtle_egg_random_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        let chance = self.turtle_egg_hatch_chance();
+        if !(chance > 0.0 && self.random.next_f32() < chance) {
+            return;
+        }
+        let Ok(sand) = self.lib.registries.block_tags.require("minecraft:sand") else { return };
+        if !self.lib.registries.block_in_tag(self.block(pos.below()), sand) {
+            return;
+        }
+        let blocks = &self.registries().blocks;
+        let hatch: i32 = blocks.property(state, "hatch").and_then(|a| a.parse().ok()).unwrap_or(0);
+        let eggs: i32 = blocks.property(state, "eggs").and_then(|a| a.parse().ok()).unwrap_or(1);
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        let pitch = 0.9 + self.random.next_f32() * 0.2;
+        if hatch < 2 {
+            self.play_sound("block.turtle_egg.crack", at, 0.7, pitch);
+            self.set_block(pos, self.with(state, "hatch", &(hatch + 1).to_string()), 2, super::update::LIMIT);
+        } else {
+            self.play_sound("block.turtle_egg.hatch", at, 0.7, pitch);
+            let air = self.registries().blocks.parse_state("minecraft:air").expect("vanilla block");
+            self.set_block_and_update(pos, air);
+            for i in 0..eggs {
+                self.level_event(2001, pos, i32::from(state.0));
+                let feet = [f64::from(pos.x) + 0.3 + f64::from(i) * 0.2, f64::from(pos.y), f64::from(pos.z) + 0.3];
+                let home = minecraftoss_core::nbt::Tag::IntArray(vec![pos.x, pos.y, pos.z]);
+                let tag = self.built_mob_tag("minecraft:turtle", feet, 0.0, vec![("Age", minecraftoss_core::nbt::Tag::Int(-24000)), ("home_pos", home)]);
+                self.spawned.push(tag);
             }
         }
     }

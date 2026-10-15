@@ -80,6 +80,7 @@ pub struct MobEntity {
     pub squid: super::squids::SquidState,
     pub dolphin: super::dolphins::DolphinState,
     pub guardian: super::guardians::GuardianState,
+    pub turtle: super::turtles::TurtleState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -480,7 +481,9 @@ impl MobEntity {
         self.ai.state.tick_count = self.tick_count;
         let eye = self.eye_height();
         self.ai.state.eye_height = eye;
+        self.turtle_prepare();
         let landed = monster_ai_step(&mut self.ai, &mut self.body, self.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
+        self.turtle_settle(world);
         if self.kind == Kind::Strider {
             self.float_strider(world);
         }
@@ -617,6 +620,7 @@ impl EntityWorld {
             squid: Default::default(),
             dolphin: Default::default(),
             guardian: Default::default(),
+            turtle: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -697,7 +701,8 @@ impl EntityWorld {
             if kind == Kind::Dolphin {
                 e.ai.state.vitals = vitals;
             }
-            e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0;
+            // A turtle with an egg is in no mood (`canFallInLove`, `TurtleBreedGoal`).
+            e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0 && !e.turtle.has_egg;
             e.ai.state.mates = mates;
             e.ai.state.parent = parent;
             e.previous_position = e.body.position;
@@ -707,6 +712,7 @@ impl EntityWorld {
             let was_baby = e.baby();
             e.age.tick(e.health > 0.0);
             if was_baby && !e.baby() {
+                e.turtle.grew = kind == Kind::Turtle;
                 let (w, h) = s.dimensions(false);
                 e.body.width = w;
                 e.body.height = h;
@@ -899,6 +905,9 @@ impl EntityWorld {
         if matches!(kind, Kind::Guardian | Kind::ElderGuardian) {
             self.guardian_step(id, kind, players);
         }
+        if kind == Kind::Turtle {
+            self.turtle_step(id, world);
+        }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
         let (stung, puff, at) = sting;
@@ -969,6 +978,12 @@ impl EntityWorld {
         for i in [a, b] {
             self.mobs[i].age.set(6000);
             self.mobs[i].in_love = 0;
+        }
+        // `TurtleBreedGoal.breed`: an egg to carry home, not a baby.
+        if kind == Kind::Turtle {
+            self.mobs[a].turtle.has_egg = true;
+            self.spawned.experience.push((position, xp));
+            return;
         }
         let child = self.spawn_mob(kind, position, yaw, crate::age::Age::BABY_START, false);
         if let Some(c) = self.mob_mut(child) {

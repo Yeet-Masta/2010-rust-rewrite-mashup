@@ -142,6 +142,12 @@ pub(crate) struct BreedGoal {
     love_time: i32,
 }
 
+impl BreedGoal {
+    pub(crate) fn new() -> Self {
+        Self { partner: None, love_time: 0 }
+    }
+}
+
 impl Goal<MonsterGoalContext> for BreedGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Move, Control::Look])
@@ -434,6 +440,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if matches!(kind, Kind::Guardian | Kind::ElderGuardian) {
         return crate::world::guardian_goals(kind);
+    }
+    if kind == Kind::Turtle {
+        return crate::world::turtle_goals();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

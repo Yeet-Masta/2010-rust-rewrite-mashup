@@ -231,7 +231,7 @@ impl Level<'_> {
 
     /// `EntityType.create(level, TRIGGERED)` then `snapTo`: a fresh mob's
     /// saved tag at a point, facing `y_rot` (no `finalizeSpawn`).
-    fn built_mob_tag(&mut self, kind: &str, at: [f64; 3], y_rot: f32, fields: Vec<(&str, Tag)>) -> Tag {
+    pub(super) fn built_mob_tag(&mut self, kind: &str, at: [f64; 3], y_rot: f32, fields: Vec<(&str, Tag)>) -> Tag {
         let mut tag = self.lib.registries.entities.as_ref().and_then(|c| c.default_tag(kind)).unwrap_or_else(|| Tag::Compound(Default::default()));
         let uuid = SpawnLevel::next_uuid(self);
         minecraftoss_core::entity_data::place(&mut tag, at, y_rot, 0.0, uuid);
