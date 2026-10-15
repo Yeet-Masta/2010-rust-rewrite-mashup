@@ -133,6 +133,92 @@ impl Goal<MonsterGoalContext> for TemptGoal {
     }
 }
 
+/// `BreedGoal(animal, 1.0)`: in love, it seeks the nearest of its kind in
+/// love within eight blocks, walks to it, and after three seconds together
+/// within three blocks they breed.
+#[derive(Clone)]
+pub(crate) struct BreedGoal {
+    partner: Option<u64>,
+    love_time: i32,
+}
+
+impl Goal<MonsterGoalContext> for BreedGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move, Control::Look])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        if !ctx.in_love {
+            return false;
+        }
+        let p = ctx.body.position;
+        self.partner = ctx.mates.iter().filter(|(_, at)| at.distance_squared(p) <= 64.0).min_by(|a, b| a.1.distance_squared(p).total_cmp(&b.1.distance_squared(p))).map(|(id, _)| *id);
+        self.partner.is_some()
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.in_love && self.love_time < 60 && self.partner.is_some_and(|id| ctx.mates.iter().any(|(m, _)| *m == id))
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        self.partner = None;
+        self.love_time = 0;
+        ctx.fly_target = None;
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(at) = self.partner.and_then(|id| ctx.mates.iter().find(|(m, _)| *m == id)).map(|(_, at)| *at) else { return };
+        ctx.look_control.set_look_at_with_limits(at + DVec3::new(0.0, 0.5, 0.0), 10.0, ctx.max_head_x_rot());
+        if matches!(ctx.mob_motion(), Motion::Ground | Motion::Amphibious) {
+            let profile = ctx.profile();
+            let _ = navigate_walk_to(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, at, 1.0, 0);
+        } else {
+            ctx.fly_target = Some((at, 1.0));
+        }
+        self.love_time += 1;
+        // `adjustedTickDelay(60)`: the goal ticks every other tick.
+        if self.love_time >= 30 && ctx.body.position.distance_squared(at) < 9.0 {
+            ctx.breed_with = self.partner;
+        }
+    }
+}
+
+/// `FollowParentGoal(animal, speed)`: a baby keeps within three blocks of
+/// the nearest grown-up of its kind (eight blocks out).
+#[derive(Clone)]
+pub(crate) struct FollowParentGoal {
+    speed: f64,
+    time_to_recalc: i32,
+}
+
+impl Goal<MonsterGoalContext> for FollowParentGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.parent.is_some_and(|at| at.distance_squared(ctx.body.position) >= 9.0)
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        ctx.parent.is_some_and(|at| (9.0..=256.0).contains(&at.distance_squared(ctx.body.position)))
+    }
+    fn start(&mut self, _ctx: &mut MonsterGoalContext) {
+        self.time_to_recalc = 0;
+    }
+    fn stop(&mut self, ctx: &mut MonsterGoalContext) {
+        ctx.fly_target = None;
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        self.time_to_recalc -= 1;
+        if self.time_to_recalc > 0 {
+            return;
+        }
+        self.time_to_recalc = 10;
+        let Some(at) = ctx.parent else { return };
+        if matches!(ctx.mob_motion(), Motion::Ground | Motion::Amphibious) {
+            let profile = ctx.profile();
+            let _ = navigate_walk_to(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, at, self.speed, 0);
+        } else {
+            ctx.fly_target = Some((at, self.speed));
+        }
+    }
+}
+
 /// A random open spot about the mob: air for a flier, water for a swimmer
 /// (`AirAndWaterRandomPos`, `BehaviorUtils.getRandomSwimmablePos`): up to
 /// `horizontal` out and `vertical` up or down, ten tries.
@@ -377,6 +463,11 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if s.temper != Temper::Hostile && !matches!(kind, Kind::Giant) {
         selector.add(3, TemptGoal::new(if flies { 1.0 } else { 1.1 }));
+    }
+    // `BreedGoal` and `FollowParentGoal` for those that breed.
+    if s.breeding_food().is_some() {
+        selector.add(2, BreedGoal { partner: None, love_time: 0 });
+        selector.add(4, FollowParentGoal { speed: 1.1, time_to_recalc: 0 });
     }
     // Wandering.
     match s.motion {

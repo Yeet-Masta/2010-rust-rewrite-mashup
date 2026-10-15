@@ -278,6 +278,19 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 minecraftoss_entities::animal::consume_one(actor.inventory, selected);
             }
         }
+        // The generic kinds' `Animal.mobInteract`: feeding and breeding.
+        MobHit::Mob(id) => {
+            let Some((used, events)) = world.feed_mob(id, actor.inventory, selected, infinite) else { return outcome };
+            if !used {
+                return outcome;
+            }
+            outcome.inventory_changed = true;
+            if events.contains(&AnimalEvent::Hearts) {
+                outcome.events.push((id, 18));
+            }
+            let position = world.mobs().iter().find(|e| e.id == id).map_or(DVec3::ZERO, |e| e.body.position);
+            age_lock_sound(&mut outcome, animal_lock(&events), position);
+        }
         _ => return outcome,
     }
     outcome.handled = true;

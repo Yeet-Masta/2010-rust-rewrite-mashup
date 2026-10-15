@@ -486,6 +486,14 @@ pub struct MonsterGoalContext {
     pub fly_target: Option<(DVec3, f64)>,
     /// A shooter taking aim (the blaze's fire, the ghast's open mouth).
     pub charging: bool,
+    /// `Animal.isInLove`.
+    pub in_love: bool,
+    /// The others of its kind in love about it, for `BreedGoal`.
+    pub mates: Vec<(u64, DVec3)>,
+    /// A baby's nearest grown-up of its kind, for `FollowParentGoal`.
+    pub parent: Option<DVec3>,
+    /// The mate `BreedGoal` bred with this tick (`breed`).
+    pub breed_with: Option<u64>,
 }
 
 impl MonsterGoalContext {
@@ -860,6 +868,10 @@ impl MonsterAi {
                 tempters: Vec::new(),
                 fly_target: None,
                 charging: false,
+                in_love: false,
+                mates: Vec::new(),
+                parent: None,
+                breed_with: None,
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),

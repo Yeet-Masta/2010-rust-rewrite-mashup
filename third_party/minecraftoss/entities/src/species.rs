@@ -277,6 +277,58 @@ impl Species {
         }
     }
 
+    /// The items that tempt it (`TemptGoal`'s, usually its `isFood` tag).
+    pub fn tempt_tag(&self) -> Option<&'static str> {
+        Some(match self.kind {
+            Kind::Armadillo => "minecraft:armadillo_food",
+            Kind::Axolotl => "minecraft:axolotl_food",
+            Kind::Bee => "minecraft:bee_food",
+            Kind::Camel | Kind::CamelHusk => "minecraft:camel_food",
+            Kind::Cat => "minecraft:cat_food",
+            Kind::Fox => "minecraft:fox_food",
+            Kind::Frog => "minecraft:frog_food",
+            Kind::Goat => "minecraft:goat_food",
+            Kind::Hoglin => "minecraft:hoglin_food",
+            Kind::Llama | Kind::TraderLlama => "minecraft:llama_tempt_items",
+            Kind::Ocelot => "minecraft:ocelot_food",
+            Kind::Panda => "minecraft:panda_food",
+            Kind::Parrot => "minecraft:parrot_food",
+            Kind::Rabbit => "minecraft:rabbit_food",
+            Kind::Sniffer => "minecraft:sniffer_food",
+            Kind::Strider => "minecraft:strider_tempt_items",
+            Kind::Turtle => "minecraft:turtle_food",
+            Kind::Mule | Kind::SkeletonHorse | Kind::ZombieHorse => "minecraft:horse_tempt_items",
+            Kind::HappyGhast => "minecraft:happy_ghast_tempt_items",
+            Kind::Nautilus => "minecraft:nautilus_taming_items",
+            _ => return None,
+        })
+    }
+
+    /// `Animal.isFood`: what puts it in love and grows its babies; none for
+    /// those that never breed (mules, the undead horses, polar bears,
+    /// parrots, the sea creatures but axolotls and turtles).
+    pub fn breeding_food(&self) -> Option<&'static str> {
+        Some(match self.kind {
+            Kind::Armadillo => "minecraft:armadillo_food",
+            Kind::Axolotl => "minecraft:axolotl_food",
+            Kind::Bee => "minecraft:bee_food",
+            Kind::Camel => "minecraft:camel_food",
+            Kind::Cat => "minecraft:cat_food",
+            Kind::Fox => "minecraft:fox_food",
+            Kind::Frog => "minecraft:frog_food",
+            Kind::Goat => "minecraft:goat_food",
+            Kind::Hoglin => "minecraft:hoglin_food",
+            Kind::Llama | Kind::TraderLlama => "minecraft:llama_food",
+            Kind::Ocelot => "minecraft:ocelot_food",
+            Kind::Panda => "minecraft:panda_food",
+            Kind::Rabbit => "minecraft:rabbit_food",
+            Kind::Sniffer => "minecraft:sniffer_food",
+            Kind::Strider => "minecraft:strider_food",
+            Kind::Turtle => "minecraft:turtle_food",
+            _ => return None,
+        })
+    }
+
     /// Damage after its armor (`CombatRules.getDamageAfterAbsorb`, no
     /// toughness).
     pub fn after_armor(&self, damage: f32) -> f32 {

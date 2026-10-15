@@ -32,8 +32,11 @@ pub struct MobEntity {
     /// Its body's facing (`yRot`) and pitch (`xRot`).
     pub yaw: f32,
     pub pitch: f32,
-    /// `AgeableMob.age`: below zero, a baby growing up.
-    pub age: i32,
+    /// `AgeableMob`'s age: below zero, a baby growing up; above, an adult
+    /// resting after breeding.
+    pub age: crate::age::Age,
+    /// `Animal.inLove`: ticks of love left.
+    pub in_love: i32,
     /// Its look (`Variant`, a texture's name), where it has one.
     pub variant: String,
     pub no_ai: bool,
@@ -58,7 +61,7 @@ impl MobEntity {
     }
 
     pub fn baby(&self) -> bool {
-        self.age < 0
+        self.age.baby()
     }
 
     /// Where it stands (its feet).
@@ -256,7 +259,7 @@ impl MobEntity {
             let _ = damage;
         }
         play_movement(body, self.tick_count, &mut self.random, &mut self.voices, sounds);
-        let eye = s.eye_height(self.age < 0);
+        let eye = s.eye_height(self.age.baby());
         ai.state.look_control.tick(body.position, eye, ai.body_rotation.body_yaw, steering);
         ai.body_rotation.tick(ai.yaw, &mut ai.state.look_control, self.previous_position, body.position);
         self.yaw = ai.yaw;
@@ -363,7 +366,8 @@ impl EntityWorld {
             persistence_required: false,
             yaw,
             pitch: 0.0,
-            age: if baby { age } else { 0 },
+            age: crate::age::Age { ticks: if baby { age } else { 0 }, ..Default::default() },
+            in_love: 0,
             variant: String::new(),
             no_ai,
             tick_count: 0,
@@ -389,32 +393,9 @@ impl EntityWorld {
         self.mobs.iter_mut().find(|e| e.id == id)
     }
 
-    /// The players holding what tempts a kind (`isFood`, its tempt tag).
+    /// The players holding what tempts a kind (its tempt tag).
     fn tempters(&self, kind: Kind) -> Vec<u64> {
-        let tag = match kind {
-            Kind::Armadillo => "minecraft:armadillo_food",
-            Kind::Axolotl => "minecraft:axolotl_food",
-            Kind::Bee => "minecraft:bee_food",
-            Kind::Camel | Kind::CamelHusk => "minecraft:camel_food",
-            Kind::Cat => "minecraft:cat_food",
-            Kind::Fox => "minecraft:fox_food",
-            Kind::Frog => "minecraft:frog_food",
-            Kind::Goat => "minecraft:goat_food",
-            Kind::Hoglin => "minecraft:hoglin_food",
-            Kind::Llama | Kind::TraderLlama => "minecraft:llama_tempt_items",
-            Kind::Ocelot => "minecraft:ocelot_food",
-            Kind::Panda => "minecraft:panda_food",
-            Kind::Parrot => "minecraft:parrot_food",
-            Kind::Rabbit => "minecraft:rabbit_food",
-            Kind::Sniffer => "minecraft:sniffer_food",
-            Kind::Strider => "minecraft:strider_tempt_items",
-            Kind::Turtle => "minecraft:turtle_food",
-            Kind::Mule | Kind::SkeletonHorse | Kind::ZombieHorse => "minecraft:horse_tempt_items",
-            Kind::HappyGhast => "minecraft:happy_ghast_tempt_items",
-            Kind::Nautilus => "minecraft:nautilus_taming_items",
-            Kind::Allay => return Vec::new(),
-            _ => return Vec::new(),
-        };
+        let Some(tag) = kind.species().tempt_tag() else { return Vec::new() };
         let Some(recipes) = self.recipes.as_ref() else { return Vec::new() };
         self.player_main_hands.iter().filter(|(_, item)| recipes.item_in_tag(tag, item)).map(|(&id, _)| id).collect()
     }
@@ -431,19 +412,36 @@ impl EntityWorld {
             .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.villager.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager" })
             .collect();
         let s = kind.species();
-        let (melee, shot, stepped) = {
+        // Its kind about it: those in love (for `BreedGoal`) and, for a
+        // baby, the nearest grown-up (`FollowParentGoal`).
+        let (position, baby) = self.mobs.iter().find(|e| e.id == id).map(|e| (e.body.position, e.baby())).unwrap();
+        let mates: Vec<(u64, DVec3)> = self.mobs.iter().filter(|o| o.id != id && o.kind == kind && o.health > 0.0 && o.in_love > 0 && o.age.ticks == 0).map(|o| (o.id, o.body.position)).collect();
+        let parent = baby
+            .then(|| self.mobs.iter().filter(|o| o.kind == kind && !o.baby() && o.health > 0.0 && o.body.position.distance_squared(position) <= 64.0).map(|o| o.body.position).min_by(|a, b| a.distance_squared(position).total_cmp(&b.distance_squared(position))))
+            .flatten();
+        let (melee, shot, stepped, bred) = {
             let e = self.mob_mut(id).unwrap();
             e.ai.state.mobs = mobs;
             e.ai.state.tempters = tempters;
+            e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0;
+            e.ai.state.mates = mates;
+            e.ai.state.parent = parent;
             e.previous_position = e.body.position;
             e.tick_count += 1;
-            if e.age < 0 {
-                e.age += 1;
-                if e.age == 0 {
-                    let (w, h) = s.dimensions(false);
-                    e.body.width = w;
-                    e.body.height = h;
-                }
+            // `AgeableMob.aiStep`: the age runs towards zero; a baby grown
+            // up takes its full size.
+            let was_baby = e.baby();
+            e.age.tick(e.health > 0.0);
+            if was_baby && !e.baby() {
+                let (w, h) = s.dimensions(false);
+                e.body.width = w;
+                e.body.height = h;
+            }
+            // `Animal.aiStep`: love runs out, and never lasts past the age.
+            if e.age.ticks != 0 {
+                e.in_love = 0;
+            } else if e.in_love > 0 {
+                e.in_love -= 1;
             }
             let sounds = e.movement_sounds();
             base_tick_fluid(&mut e.body, &*world, e.tick_count == 1, &mut e.random, &mut e.voices, sounds);
@@ -541,7 +539,8 @@ impl EntityWorld {
                 let old = e.previous_position;
                 hazards::blocks_act(e, &*world, old, game_time);
             }
-            (melee, shot, !removed)
+            let bred = e.ai.state.breed_with.take();
+            (melee, shot, !removed, bred)
         };
         if stepped && s.motion != Motion::Stationary {
             self.push_entities(EntityKey::Mob(id), &*world, game_time, ticks);
@@ -557,6 +556,60 @@ impl EntityWorld {
         if let Some(target) = shot {
             self.mob_shoot(id, kind, target, players);
         }
+        if let Some(partner) = bred {
+            self.breed_mobs(id, partner);
+        }
+    }
+
+    /// `Animal.spawnChildFromBreeding`: both parents rest five minutes and
+    /// lose their love, a baby of their kind appears where the first stands
+    /// with one parent's look, and experience is left (1 to 7).
+    fn breed_mobs(&mut self, first: u64, second: u64) {
+        let Some(a) = self.mobs.iter().position(|e| e.id == first) else { return };
+        let Some(b) = self.mobs.iter().position(|e| e.id == second) else { return };
+        if self.mobs[b].in_love <= 0 || self.mobs[a].in_love <= 0 {
+            return;
+        }
+        let kind = self.mobs[a].kind;
+        let (position, yaw) = (self.mobs[a].body.position, self.mobs[a].yaw);
+        let pick_first = self.mobs[a].random.next_boolean();
+        let variant = if pick_first { self.mobs[a].variant.clone() } else { self.mobs[b].variant.clone() };
+        let xp = self.mobs[a].random.next_int(7) as i32 + 1;
+        for i in [a, b] {
+            self.mobs[i].age.set(6000);
+            self.mobs[i].in_love = 0;
+        }
+        let child = self.spawn_mob(kind, position, yaw, crate::age::Age::BABY_START, false);
+        if let Some(c) = self.mob_mut(child) {
+            c.variant = variant;
+        }
+        self.spawned.experience.push((position, xp));
+        self.entity_events.push((first, 18));
+    }
+
+    /// `Animal.mobInteract` with the held item: its food puts an adult in
+    /// love or grows a baby by a tenth (`ageUp`); a golden dandelion locks or
+    /// unlocks a baby's age. Returns whether the item was used, and the
+    /// events (hearts) to show. An axolotl's bucket of tropical fish leaves
+    /// a water bucket.
+    pub fn feed_mob(&mut self, id: u64, inventory: &mut minecraftoss_player::inventory::Inventory, hand: usize, infinite: bool) -> Option<(bool, Vec<crate::animal::AnimalEvent>)> {
+        let recipes = self.recipes.clone();
+        let e = self.mobs.iter_mut().find(|e| e.id == id)?;
+        let tag = e.species().breeding_food()?;
+        let is_food = |item: &str| recipes.as_ref().is_some_and(|r| r.item_in_tag(tag, item));
+        let held = inventory.slots.get(hand).and_then(Option::as_ref).map(|s| s.id.clone());
+        let was_baby = e.baby();
+        let (result, events) = crate::animal::interact(&mut e.age, &mut e.in_love, &mut e.persistence_required, inventory, hand, infinite, is_food, false);
+        let used = result != crate::cow::InteractionResult::Pass;
+        if used && was_baby && !e.baby() {
+            let (w, h) = e.species().dimensions(false);
+            e.body.width = w;
+            e.body.height = h;
+        }
+        if used && !infinite && e.kind == Kind::Axolotl && held.as_deref() == Some("minecraft:tropical_fish_bucket") && inventory.slots[hand].is_none() {
+            inventory.slots[hand] = Some(minecraftoss_player::inventory::ItemStack::new("minecraft:water_bucket", 1));
+        }
+        Some((used, events))
     }
 
     /// `Mob.doHurtTarget` for a generic mob, with its kind's extra.

@@ -898,6 +898,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.random = random;
             entity.persistence_required = persistent;
             entity.head_item = head_item(tag);
+            entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
+            entity.age.locked = int(tag, "AgeLocked").unwrap_or(0) != 0;
+            entity.in_love = int(tag, "InLove").unwrap_or(0);
             if let Some(health) = health {
                 entity.health = health;
             }
@@ -1180,7 +1183,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     // among it).
     for e in world.mobs() {
         let s = e.species();
-        let fields = if s.ageable { vec![("Age", Tag::Int(e.age))] } else { Vec::new() };
+        let mut fields = if s.ageable { vec![("Age", Tag::Int(e.age.ticks)), ("ForcedAge", Tag::Int(e.age.forced)), ("AgeLocked", Tag::Byte(i8::from(e.age.locked)))] } else { Vec::new() };
+        if s.breeding_food().is_some() {
+            fields.push(("InLove", Tag::Int(e.in_love)));
+        }
         add(e.id, s.id, &e.body, e.yaw, e.health, e.persistence_required, fields);
     }
     for e in world.villagers() {

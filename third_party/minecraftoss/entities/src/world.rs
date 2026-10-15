@@ -3690,7 +3690,7 @@ impl EntityWorld {
         }
         for e in &mut self.mobs {
             let s = e.kind.species();
-            let baby = e.age < 0;
+            let baby = e.baby();
             let monster = s.category == crate::species::Category::Monster;
             let table = s.loot_table().and_then(|t| if monster { Some(t) } else { adult(baby, t) });
             let Some((order, mut death)) = death_of(e.id, &mut e.damage, s.id, table, EntityLootContext { baby, ..plain }) else { continue };
@@ -3929,7 +3929,8 @@ impl EntityWorld {
         }
         for e in &mut self.mobs {
             let s = e.kind.species();
-            resolve_voices(&mut out, &mut e.voices, s.sound_family(e.age < 0), s.sound_volume(), s.sound_category());
+            let family = s.sound_family(e.baby());
+            resolve_voices(&mut out, &mut e.voices, family, s.sound_volume(), s.sound_category());
         }
         for e in &mut self.villagers {
             resolve_voices(&mut out, &mut e.voices, "villager", 1.0, "friendly_volume");
