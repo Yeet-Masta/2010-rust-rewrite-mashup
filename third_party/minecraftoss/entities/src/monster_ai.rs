@@ -486,6 +486,10 @@ pub struct MonsterGoalContext {
     pub tempters: Vec<u64>,
     /// The players wearing gold, whom piglins leave be.
     pub gilded: Vec<u64>,
+    /// A vex's `boundOrigin`: where it was summoned to stay about.
+    pub bound_origin: Option<(i32, i32, i32)>,
+    /// A vex's owner's target (`VexCopyOwnerTargetGoal`).
+    pub owner_target: Option<Target>,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -872,6 +876,8 @@ impl MonsterAi {
                 can_break_doors: false,
                 tempters: Vec::new(),
                 gilded: Vec::new(),
+                bound_origin: None,
+                owner_target: None,
                 fly_target: None,
                 charging: false,
                 in_love: false,
@@ -1259,17 +1265,19 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         // `getNearestEntity`: the first of the nearest.
         let range = self.max_dist.max(2.0);
         let mut best: Option<(f64, TargetInfo)> = None;
-        for m in ctx.mobs.clone() {
-            if m.kind != self.kind {
-                continue;
-            }
-            let mh = f64::from(m.width / 2.0);
-            let q = m.position;
-            let inside = q.x - mh < max.x && q.x + mh > min.x && q.y < max.y && q.y + f64::from(m.height) > min.y && q.z - mh < max.z && q.z + mh > min.z;
+        // Players too, for those that flee them (the evoker's `Player`).
+        let candidates: Vec<(Target, DVec3, f32, f32)> = if self.kind == "minecraft:player" {
+            ctx.players.iter().map(|p| (Target::Player(p.id), p.position, 0.6, 1.8)).collect()
+        } else {
+            ctx.mobs.iter().filter(|m| m.kind == self.kind).map(|m| (Target::Mob(m.id), m.position, m.width, m.height)).collect()
+        };
+        for (candidate, q, width, height) in candidates {
+            let mh = f64::from(width / 2.0);
+            let inside = q.x - mh < max.x && q.x + mh > min.x && q.y < max.y && q.y + f64::from(height) > min.y && q.z - mh < max.z && q.z + mh > min.z;
             if !inside {
                 continue;
             }
-            let Some(info) = ctx.info(Target::Mob(m.id)) else { continue };
+            let Some(info) = ctx.info(candidate) else { continue };
             let distance = p.distance_squared(info.position);
             if !ctx.can_attack(info) || distance > range * range || !ctx.sees(world, info) {
                 continue;

@@ -922,6 +922,13 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if kind == Kind::Wither {
                 entity.invulnerable_ticks = int(tag, "Invul").unwrap_or(0);
             }
+            // `SpellcasterIllager`'s `SpellTicks`; a vex's `bound_pos` and
+            // `life_ticks` (its owner is not kept across a reload here).
+            entity.spells.casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
+            if kind == Kind::Vex {
+                entity.bound_origin = tag.get("bound_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
+                entity.life_ticks = int(tag, "life_ticks");
+            }
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
             entity.age.locked = flagged_baby || int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
@@ -1246,6 +1253,15 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if e.kind == minecraftoss_entities::species::Kind::Wither {
             fields.push(("Invul", Tag::Int(e.invulnerable_ticks)));
+        }
+        if matches!(e.kind, minecraftoss_entities::species::Kind::Evoker | minecraftoss_entities::species::Kind::Illusioner) {
+            fields.push(("SpellTicks", Tag::Int(e.spells.casting_ticks)));
+        }
+        if let Some((x, y, z)) = e.bound_origin {
+            fields.push(("bound_pos", Tag::IntArray(vec![x, y, z])));
+        }
+        if let Some(life) = e.life_ticks {
+            fields.push(("life_ticks", Tag::Int(life)));
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Piglin | minecraftoss_entities::species::Kind::PiglinBrute | minecraftoss_entities::species::Kind::Hoglin) {
             fields.push(("TimeInOverworld", Tag::Int(e.time_in_overworld)));

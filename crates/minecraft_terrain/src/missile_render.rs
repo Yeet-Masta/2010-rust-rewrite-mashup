@@ -13,10 +13,10 @@ use crate::{
     pack::ResourceId,
 };
 use glam::{DVec3, Quat, Vec2, Vec3};
-use minecraftoss_entities::world::{MissileEntity, MissileKind};
+use minecraftoss_entities::world::{FangsEntity, MissileEntity, MissileKind};
 
 /// The textures these draw, for the atlas.
-pub const TEXTURES: [&str; 3] = ["minecraft:entity/shulker/spark", "minecraft:entity/llama/llama_spit", "minecraft:entity/wither/wither"];
+pub const TEXTURES: [&str; 4] = ["minecraft:entity/shulker/spark", "minecraft:entity/llama/llama_spit", "minecraft:entity/wither/wither", "minecraft:entity/illager/evoker_fangs"];
 
 /// `ProjectileUtil.rotateTowardsMovement`'s heading, in degrees: its yaw
 /// and pitch along the motion.
@@ -107,5 +107,36 @@ pub fn append_missiles<'a>(
                 entity_model::draw(models, &posed, &Placement { feet, rotation, scale: Vec3::ONE, region: atlas.entity_region(&texture), sky, block, tint: [1.0; 4] });
             }
         }
+    }
+}
+
+/// `EvokerFangsRenderer` with `EvokerFangsModel.setupAnim`: nothing until
+/// they bite, then the jaws rise out of the ground snapping shut, and shrink
+/// away over their last tenth.
+pub fn append_fangs<'a>(models: &mut ChunkMesh, fangs: impl IntoIterator<Item = &'a FangsEntity>, atlas: &Atlas, light: &SkyLight, partial: f32) {
+    let (Some(model), Ok(texture)) = (entity_model::model("minecraft:evoker_fangs#main"), ResourceId::parse("minecraft:entity/illager/evoker_fangs")) else { return };
+    if !atlas.contains(&texture) {
+        return;
+    }
+    let region = atlas.entity_region(&texture);
+    for f in fangs {
+        let bite = f.bite_progress(partial);
+        if bite == 0.0 {
+            continue;
+        }
+        let mut posed = Posed::new(model);
+        let shut = 1.0 - (bite * 2.0).min(1.0).powi(3);
+        posed.with("upper_jaw", |p| p.rotation.z = std::f32::consts::PI - shut * 0.35 * std::f32::consts::PI);
+        posed.with("lower_jaw", |p| p.rotation.z = std::f32::consts::PI + shut * 0.35 * std::f32::consts::PI);
+        posed.with("base", |p| p.offset.y -= (bite + (bite * 2.7).sin()) * 7.2);
+        let shrink = if bite > 0.9 { (1.0 - bite) / 0.1 } else { 1.0 };
+        posed.with("root", |p| {
+            p.offset.y = 24.0 - 20.0 * shrink;
+            p.scale = Vec3::splat(shrink);
+        });
+        let cell = (f.position.x.floor() as i32, f.position.y.floor() as i32, f.position.z.floor() as i32);
+        let (sky, block) = (light.get(cell) as f32, light.get_block(cell) as f32);
+        let rotation = Quat::from_rotation_y((90.0 - f.yaw).to_radians());
+        entity_model::draw(models, &posed, &Placement { feet: f.position, rotation, scale: Vec3::ONE, region, sky, block, tint: [1.0; 4] });
     }
 }

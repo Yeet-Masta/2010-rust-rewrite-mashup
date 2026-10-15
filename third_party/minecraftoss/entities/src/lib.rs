@@ -61,5 +61,6 @@ pub mod walk_path;
 pub mod witch;
 pub mod wolf;
 pub mod wolf_ai;
+pub mod vex_ai;
 pub mod world;
 pub mod zombie;

@@ -570,6 +570,27 @@ impl Entities {
     }
 
     /// A mob's feet, width and height, as of the last server tick.
+    /// `SpellcasterIllager.tick` on the client: a mote of the spell's colour
+    /// at each hand of every caster casting; and where fangs open their
+    /// jaws this tick (`EvokerFangs.tick` at life 14), for their crits.
+    pub fn spell_particles(&self) -> (Vec<(DVec3, [f32; 3])>, Vec<DVec3>) {
+        let mut motes = Vec::new();
+        for e in self.world.mobs() {
+            let spell = e.spells.spell;
+            if spell == minecraftoss_entities::world::Spell::None {
+                continue;
+            }
+            let angle = e.yaw.to_radians() + (e.tick_count as f32 * 0.6662).cos() * 0.25;
+            let (cos, sin) = (f64::from(angle.cos()), f64::from(angle.sin()));
+            let p = e.body.position;
+            for side in [1.0, -1.0] {
+                motes.push((p + DVec3::new(cos * 0.6 * side, 1.8, sin * 0.6 * side), spell.color()));
+            }
+        }
+        let crits = self.world.fangs().iter().filter(|f| f.biting && f.life_ticks == 14).map(|f| f.position).collect();
+        (motes, crits)
+    }
+
     pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {
         self.world.mob_bounds(id)
     }
@@ -1245,6 +1266,7 @@ impl Entities {
             light,
             partial,
         );
+        minecraft_terrain::missile_render::append_fangs(&mut out.models, w.fangs().iter(), atlas, light, partial);
         // `ThrownItemRenderer` fireballs, `WitherSkullRenderer`,
         // `ShulkerBulletRenderer`, `LlamaSpitRenderer`.
         minecraft_terrain::missile_render::append_missiles(

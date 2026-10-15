@@ -66,6 +66,13 @@ pub struct MobEntity {
     pub cold: bool,
     /// `WitherBoss.getInvulnerableTicks` (`Invul`): its spawn-in.
     pub invulnerable_ticks: i32,
+    /// A spellcaster's casting (`SpellcasterIllager`).
+    pub spells: super::illagers::Spellcaster,
+    /// A vex's evoker (`Vex.owner`), its `boundOrigin` and its limited
+    /// life (`life_ticks`).
+    pub owner_mob: Option<u64>,
+    pub bound_origin: Option<(i32, i32, i32)>,
+    pub life_ticks: Option<i32>,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -327,6 +334,9 @@ impl MobEntity {
     /// `aiStep` for a flier, floater or swimmer: the goals, then the steer
     /// at the wanted position, the move with its drag, the body turn.
     fn tick_free(&mut self, world: &impl World, players: &[PlayerCandidate], villagers: &[MobCandidate], game_time: i64, difficulty: i32) {
+        if self.kind == Kind::Vex {
+            return self.tick_vex(world, players, villagers, game_time, difficulty);
+        }
         let s = self.species();
         let sounds = self.movement_sounds();
         let ai = &mut self.ai;
@@ -577,6 +587,10 @@ impl EntityWorld {
             deflate: 0,
             cold: false,
             invulnerable_ticks: 0,
+            spells: Default::default(),
+            owner_mob: None,
+            bound_origin: None,
+            life_ticks: None,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -637,8 +651,13 @@ impl EntityWorld {
         let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
         let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
         let piglins_zombify = self.piglins_zombify;
+        // A vex's owner's target (`VexCopyOwnerTargetGoal`).
+        let owner_target = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner_mob).and_then(|o| self.mobs.iter().find(|m| m.id == o && m.health > 0.0)).and_then(|m| m.ai.state.target);
         let (melee, shot, stepped, bred, barter, convert, sting, spawn_blast) = {
             let e = self.mob_mut(id).unwrap();
+            e.ai.state.owner_target = owner_target;
+            e.ai.state.bound_origin = e.bound_origin;
+            let was_charging = e.ai.state.charging;
             e.ai.state.wolf.tame = e.owner.is_some();
             e.ai.state.wolf.owner = owner;
             e.ai.state.wolf.ordered_to_sit = e.ordered_to_sit;
@@ -669,7 +688,10 @@ impl EntityWorld {
             base_tick_fluid(&mut e.body, &*world, e.tick_count == 1, &mut e.random, &mut e.voices, sounds);
             hazards::burn(e, &*world, game_time);
             let eye = e.eye_height();
-            hazards::suffocate(e, &*world, eye, game_time);
+            // A vex passes through blocks (`noPhysics`: `isInWall` is false).
+            if kind != Kind::Vex {
+                hazards::suffocate(e, &*world, eye, game_time);
+            }
             if e.health > 0.0 {
                 if e.dries_out() {
                     // `WaterAnimal.handleAirSupply`: out of water it dries.
@@ -730,8 +752,9 @@ impl EntityWorld {
                     spawn_blast = e.wither_spawn_in(&*world);
                 } else if e.health > 0.0 && !e.no_ai {
                     let position = e.body.position;
-                    // A piglin admiring its gold stands still (`stopWalking`).
-                    let motion = if e.admire_ticks > 0 { Motion::Stationary } else { s.motion };
+                    // A piglin admiring its gold stands still (`stopWalking`),
+                    // as a spellcaster does while it casts.
+                    let motion = if e.admire_ticks > 0 || e.spells.casting() { Motion::Stationary } else { s.motion };
                     match motion {
                         Motion::Ground | Motion::Amphibious => {
                             if let Some(damage) = e.tick_walk(&*world, players, &villagers, game_time, difficulty) {
@@ -767,6 +790,16 @@ impl EntityWorld {
                 hazards::blocks_act(e, &*world, old, game_time);
             }
             let bred = e.ai.state.breed_with.take();
+            if kind == Kind::Vex && !removed {
+                // `VexChargeAttackGoal.start`'s sound, and its limited life.
+                if e.ai.state.charging && !was_charging {
+                    let at = e.position();
+                    e.voices.push((Voice::Event("entity.vex.charge", 1.0, 1.0), at));
+                }
+                if e.health > 0.0 {
+                    e.vex_life();
+                }
+            }
             let (barter, convert) = if removed { (None, None) } else { e.piglin_step(piglins_zombify, players) };
             let stung = if removed { Vec::new() } else { e.puff_step(players) };
             if !stung.is_empty() {
@@ -799,6 +832,9 @@ impl EntityWorld {
         }
         if spawn_blast {
             self.wither_spawn_blast(id, &*world, players);
+        }
+        if kind == Kind::Evoker {
+            self.evoker_spells(id, &*world);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
@@ -1157,22 +1193,8 @@ impl EntityWorld {
                 self.direct_hit(id, target, damage, "minecraft:indirect_magic", None, feet);
                 sound = Some(("entity.guardian.attack", 1.0));
             }
-            AttackKind::Fangs => {
-                // `Evoker.EvokerAttackSpellGoal`: the fangs snap at the target (6 magic);
-                // now and then it summons three vexes instead.
-                let summon = self.mob_mut(id).is_some_and(|e| e.random.next_int(3) == 0) && self.mobs.iter().filter(|m| m.kind == Kind::Vex).count() < 8;
-                if summon {
-                    for i in 0..3 {
-                        let offset = DVec3::new(f64::from(i) - 1.0, 1.0, 0.5);
-                        self.spawned.mobs.push(("minecraft:vex".to_owned(), feet + offset, yaw, String::new()));
-                    }
-                    sound = Some(("entity.evoker.prepare_summon", 1.0));
-                } else {
-                    self.direct_hit(id, target, 6.0, "minecraft:magic", None, feet);
-                    self.sounds.push(MobSound { event: "entity.evoker_fangs.attack".into(), position: target_feet, volume: 1.0, pitch: 1.0, category: "hostile_volume" });
-                    sound = Some(("entity.evoker.prepare_attack", 1.0));
-                }
-            }
+            // The evoker casts its fangs as a spell (`illagers.rs`).
+            AttackKind::Fangs => {}
             AttackKind::Melee | AttackKind::None => {}
         }
         if let (Some((event, volume)), Some(e)) = (sound, self.mob_mut(id)) {

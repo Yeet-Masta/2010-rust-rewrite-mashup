@@ -405,6 +405,9 @@ fn hunts_villagers(kind: Kind) -> bool {
 
 /// `registerGoals` for a kind on the generic mob: its goal selector.
 pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
+    if kind == Kind::Vex {
+        return crate::vex_ai::goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -455,10 +458,15 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
                 AttackKind::Spit => (20.0, 40, 1, 1.25),
                 AttackKind::Snowball => (10.0, 20, 1, 1.25),
                 AttackKind::Beam => (15.0, 80, 1, 0.5),
-                AttackKind::Fangs => (12.0, 100, 20, 0.6),
                 _ => (16.0, 40, 20, 1.0),
             };
-            selector.add(4, ShootGoal::new(range, interval, warmup, speed));
+            // The evoker's spells are its own (`illagers.rs`); it keeps its
+            // distance from players instead (`AvoidEntityGoal(8, 0.6, 1)`).
+            if attack == AttackKind::Fangs {
+                selector.add(2, crate::monster_ai::AvoidEntityGoal::new("minecraft:player", 8.0, 0.6, 1.0));
+            } else {
+                selector.add(4, ShootGoal::new(range, interval, warmup, speed));
+            }
         }
     }
     if s.temper != Temper::Hostile && !matches!(kind, Kind::Giant) {
@@ -486,7 +494,7 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     match s.motion {
         Motion::Ground | Motion::Amphibious => {
             if kind != Kind::Giant {
-                selector.add(5, StrollGoal::new(if s.temper == Temper::Hostile { 1.0 } else { 0.8 }, 0.001));
+                selector.add(5, StrollGoal::new(if kind == Kind::Evoker { 0.6 } else if s.temper == Temper::Hostile { 1.0 } else { 0.8 }, 0.001));
             }
         }
         Motion::Fly => {
@@ -509,6 +517,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
 
 /// `registerGoals`' target selector for a kind.
 pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
+    if kind == Kind::Vex {
+        return crate::vex_ai::targets();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     if s.attack_kind == AttackKind::None || s.temper == Temper::Passive && !matches!(kind, Kind::Fox | Kind::Ocelot | Kind::Cat | Kind::Axolotl) {

@@ -1467,6 +1467,22 @@ impl Game {
         if self.alive() {
             self.effect_particles();
         }
+        {
+            use crate::particles::{Options, Type};
+            let (motes, crits) = self.entities.spell_particles();
+            for (at, [r, g, b]) in motes {
+                self.particles.spawn(&self.world, &Options::Color(Type::EntityEffect, [1.0, r, g, b]), at, DVec3::ZERO);
+            }
+            // `EvokerFangs.tick`: twelve crits flying up out of the jaws.
+            for at in crits {
+                for _ in 0..12 {
+                    let random = &mut self.particles.random;
+                    let (x, y, z) = (at.x + (random.next_double() * 2.0 - 1.0) * 0.25, at.y + 0.05 + random.next_double(), at.z + (random.next_double() * 2.0 - 1.0) * 0.25);
+                    let motion = DVec3::new((random.next_double() * 2.0 - 1.0) * 0.3, 0.3 + random.next_double() * 0.3, (random.next_double() * 2.0 - 1.0) * 0.3);
+                    self.particles.spawn(&self.world, &Type::Crit.into(), DVec3::new(x, y + 1.0, z), motion);
+                }
+            }
+        }
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
         let entities = &self.entities;
         self.emitters

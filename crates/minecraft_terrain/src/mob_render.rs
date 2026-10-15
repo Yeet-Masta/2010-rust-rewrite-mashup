@@ -301,7 +301,8 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
             baby_model = own_baby("turtle");
             add("turtle", format!("turtle/turtle{b}"), &mut out);
         }
-        Kind::Vex => out.push(Layer { glow: true, ..layer("vex", if e.charging() || e.aggressive() { "illager/vex_charging" } else { "illager/vex" }) }),
+        // `VexRenderer`: the charging face while it charges.
+        Kind::Vex => out.push(Layer { glow: true, ..layer("vex", if e.charging() { "illager/vex_charging" } else { "illager/vex" }) }),
         Kind::Vindicator => out.push(layer("vindicator", "illager/vindicator")),
         Kind::WanderingTrader => out.push(layer("wandering_trader", "wandering_trader/wandering_trader")),
         Kind::Warden => out.push(layer("warden", "warden/warden")),
@@ -796,14 +797,16 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         Kind::Pillager | Kind::Vindicator | Kind::Evoker | Kind::Illusioner | Kind::WanderingTrader => {
             // `Pillager.getArmPose`: a crossbow is always held ready.
             let ready = e.kind == Kind::Pillager && e.hand.as_deref() == Some("minecraft:crossbow");
-            illager(posed, m, e.kind, aggressive || ready, e.charging());
+            // `SpellcasterIllager.isCastingSpell` on the client: a spell shows.
+            let casting = e.spells.spell != minecraftoss_entities::world::Spell::None;
+            illager(posed, m, e.kind, aggressive || ready, e.charging() || casting);
         }
         Kind::Vex => {
             posed.look("head", m.head_yaw, m.head_pitch);
             let bob = cos(age * 5.5 * PI / 180.0) * 0.1;
             posed.with("right_arm", |p| p.rotation.z = PI / 5.0 + bob);
             posed.with("left_arm", |p| p.rotation.z = -(PI / 5.0 + bob));
-            if aggressive {
+            if e.charging() {
                 posed.with("body", |p| p.rotation.x = 0.0);
                 posed.with("right_arm", |p| {
                     p.rotation.x = -1.2;

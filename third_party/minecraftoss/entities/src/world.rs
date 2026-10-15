@@ -38,6 +38,8 @@ mod wind;
 mod mobs;
 mod missiles;
 mod withers;
+mod illagers;
+pub use illagers::{FangsEntity, Spell, Spellcaster};
 pub use mobs::MobEntity;
 pub use missiles::{MissileEntity, MissileKind};
 pub use wind::{wind_sound, WindBlast, WindChargeEntity};
@@ -2406,6 +2408,8 @@ pub struct EntityWorld {
     mobs: Vec<MobEntity>,
     /// The mobs' fireballs, skulls, bullets and spit.
     missiles: Vec<MissileEntity>,
+    /// Evoker fangs (`EvokerFangs`).
+    fangs: Vec<FangsEntity>,
     order: Vec<EntityKey>,
     next_id: u64,
     game_time: i64,
@@ -2523,6 +2527,7 @@ impl Default for EntityWorld {
             chickens: Vec::new(),
             mobs: Vec::new(),
             missiles: Vec::new(),
+            fangs: Vec::new(),
             order: Vec::new(),
             next_id: 0,
             game_time: 0,
@@ -4474,6 +4479,7 @@ impl EntityWorld {
         let chickens: Vec<ChickenEntity> = self.chickens.iter().filter(|e| keep(e.chicken.body.position)).cloned().collect();
         let mobs: Vec<MobEntity> = self.mobs.iter().filter(|e| keep(e.body.position)).cloned().collect();
         let missiles: Vec<MissileEntity> = self.missiles.iter().filter(|e| keep(e.position)).cloned().collect();
+        let fangs: Vec<FangsEntity> = self.fangs.iter().filter(|e| keep(e.position)).cloned().collect();
         let mut copy = Self {
             bats,
             zombies,
@@ -4499,6 +4505,7 @@ impl EntityWorld {
             chickens,
             mobs,
             missiles,
+            fangs,
             order: Vec::new(),
             next_id: self.next_id,
             game_time: self.game_time,
@@ -4693,6 +4700,7 @@ impl EntityWorld {
         self.chickens.retain(|e| !remove(e.chicken.body.position));
         self.mobs.retain(|e| !remove(e.body.position));
         self.missiles.retain(|e| !remove(e.position));
+        self.fangs.retain(|e| !remove(e.position));
         let alive: HashSet<u64> = self.positions().map(|(id, _)| id).collect();
         self.order.retain(|key| alive.contains(&key.id()));
         before - self.order.len()
@@ -6563,6 +6571,7 @@ impl EntityWorld {
         self.wolves.retain(|entity| entity.wolf.damage.death_ticks < 20);
         self.potions.retain(|entity| entity.potion.alive);
         self.tick_missiles(&*world, players);
+        self.tick_fangs(players);
         self.tick_clouds(players);
         self.villagers
             .retain(|entity| entity.villager.damage.death_ticks < 20);
