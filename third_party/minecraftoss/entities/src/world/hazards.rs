@@ -199,7 +199,8 @@ impl Exposed for super::mobs::MobEntity {
         if resists(&self.effects, hazard) || (hazard.is_fire() && self.kind.species().fire_immune) {
             return false;
         }
-        let amount = if hazard.bypasses_armor() { amount } else { self.kind.species().after_armor(amount) };
+        let worn = self.kind.species().armor + self.shulker_armor();
+        let amount = if hazard.bypasses_armor() || worn <= 0.0 { amount } else { crate::health::damage_after_armor(amount, worn, 0.0) };
         self.hurt(amount).applied
     }
     fn random(&mut self) -> &mut LegacyRandom {

@@ -408,6 +408,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Vex {
         return crate::vex_ai::goals();
     }
+    if kind == Kind::Shulker {
+        return crate::world::shulker_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -521,6 +524,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
 pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Vex {
         return crate::vex_ai::targets();
+    }
+    if kind == Kind::Shulker {
+        return crate::world::shulker_targets();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

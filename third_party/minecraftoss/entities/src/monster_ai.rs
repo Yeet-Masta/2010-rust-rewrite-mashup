@@ -490,6 +490,11 @@ pub struct MonsterGoalContext {
     pub bound_origin: Option<(i32, i32, i32)>,
     /// A vex's owner's target (`VexCopyOwnerTargetGoal`).
     pub owner_target: Option<Target>,
+    /// A shulker's raw peek its goals ask for, whether it may stay where it
+    /// clings (`canStayAt`), and the face it clings by.
+    pub peek: i32,
+    pub can_stay: bool,
+    pub attach_face: u8,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -878,6 +883,9 @@ impl MonsterAi {
                 gilded: Vec::new(),
                 bound_origin: None,
                 owner_target: None,
+                peek: 0,
+                can_stay: true,
+                attach_face: 0,
                 fly_target: None,
                 charging: false,
                 in_love: false,

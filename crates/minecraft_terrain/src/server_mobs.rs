@@ -925,6 +925,13 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // `SpellcasterIllager`'s `SpellTicks`; a vex's `bound_pos` and
             // `life_ticks` (its owner is not kept across a reload here).
             entity.spells.casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
+            // `Shulker.readAdditionalSaveData` (its colour is its variant).
+            if kind == Kind::Shulker {
+                entity.shulker.face = int(tag, "AttachFace").unwrap_or(0).clamp(0, 5) as u8;
+                entity.shulker.peek = int(tag, "Peek").unwrap_or(0).clamp(0, 100);
+                entity.shulker.amount = entity.shulker.peek as f32 * 0.01;
+                entity.shulker.amount_o = entity.shulker.amount;
+            }
             if kind == Kind::Ravager {
                 entity.ravager.attack = int(tag, "AttackTick").unwrap_or(0);
                 entity.ravager.stun = int(tag, "StunTick").unwrap_or(0);
@@ -1261,6 +1268,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Evoker | minecraftoss_entities::species::Kind::Illusioner) {
             fields.push(("SpellTicks", Tag::Int(e.spells.casting_ticks)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Shulker {
+            fields.push(("AttachFace", Tag::Byte(e.shulker.face as i8)));
+            fields.push(("Peek", Tag::Byte(e.shulker.peek as i8)));
         }
         if e.kind == minecraftoss_entities::species::Kind::Ravager {
             fields.push(("AttackTick", Tag::Int(e.ravager.attack)));

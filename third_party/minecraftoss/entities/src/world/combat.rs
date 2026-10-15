@@ -560,7 +560,9 @@ impl EntityWorld {
             e.hurt(amount)
         } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
             let s = e.kind.species();
-            let amount = if s.armor > 0.0 { armor(amount, s.armor, 0.0) } else { amount };
+            // A shut shulker's shell (`COVERED_ARMOR_MODIFIER`).
+            let worn = s.armor + e.shulker_armor();
+            let amount = if worn > 0.0 { armor(amount, worn, 0.0) } else { amount };
             let hit = e.hurt(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));

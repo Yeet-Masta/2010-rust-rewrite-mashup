@@ -76,6 +76,7 @@ pub struct MobEntity {
     /// The illusioner's images.
     pub illusion: super::illagers::Illusion,
     pub ravager: super::illagers::RavagerState,
+    pub shulker: super::shulkers::ShulkerState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -302,6 +303,9 @@ impl MobEntity {
             let baby = self.baby();
             let voice = hurt_voice(&mut self.random, result.died, baby);
             self.voices.push((voice, position));
+        }
+        if result.applied {
+            self.shulker_hurt();
         }
         result
     }
@@ -596,6 +600,7 @@ impl EntityWorld {
             life_ticks: None,
             illusion: Default::default(),
             ravager: Default::default(),
+            shulker: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -656,6 +661,9 @@ impl EntityWorld {
         let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
         let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
         let piglins_zombify = self.piglins_zombify;
+        if kind == Kind::Shulker {
+            self.shulker_prepare(id, &*world);
+        }
         // A vex's owner's target (`VexCopyOwnerTargetGoal`).
         let owner_target = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner_mob).and_then(|o| self.mobs.iter().find(|m| m.id == o && m.health > 0.0)).and_then(|m| m.ai.state.target);
         let (melee, shot, stepped, bred, barter, convert, sting, spawn_blast) = {
@@ -846,6 +854,9 @@ impl EntityWorld {
         }
         if kind == Kind::Ravager {
             self.ravager_step(id, world, players);
+        }
+        if kind == Kind::Shulker {
+            self.shulker_step(id, &*world);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

@@ -39,6 +39,8 @@ mod mobs;
 mod missiles;
 mod withers;
 mod illagers;
+mod shulkers;
+pub use shulkers::{goals as shulker_goals, targets as shulker_targets, ShulkerState};
 pub use illagers::{FangsEntity, Illusion, RavagerState, Spell, Spellcaster};
 pub use mobs::MobEntity;
 pub use missiles::{MissileEntity, MissileKind};
@@ -3019,6 +3021,10 @@ impl EntityWorld {
             if result.applied {
                 projectile_knockback(&mut entity.creeper.body, &mut entity.random, hit.velocity);
             }
+        } else if let Some(entity) = self.mobs.iter_mut().find(|entity| entity.id == id && entity.deflects_arrows()) {
+            // A shut shulker: the arrow glances off (`Shulker.hurtServer`).
+            let _ = entity;
+            outcome = Some(withers::UNHURT);
         } else if let Some(entity) = self.mobs.iter_mut().find(|entity| entity.id == id) {
             let by = if owner >= PLAYER_TARGET { crate::monster_ai::Target::Player(owner - PLAYER_TARGET) } else { crate::monster_ai::Target::Mob(owner) };
             let result = entity.hurt_by(hit.damage, Some(by));

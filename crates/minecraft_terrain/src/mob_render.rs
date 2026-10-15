@@ -1000,7 +1000,7 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         }
         Kind::Shulker => {
             // `ShulkerModel`: the lid rises as it peeks.
-            let peek = if e.charging() || aggressive { 1.0 } else { 0.0 };
+            let peek = e.shulker.peek_amount(age.fract());
             let bs = (0.5 + peek) * PI;
             let q = -1.0 + sin(bs);
             let extra = if bs > PI { sin(age * 0.1) * 0.7 } else { 0.0 };
@@ -1008,7 +1008,8 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
                 p.offset = Vec3::new(0.0, 16.0 + sin(bs) * 8.0 + extra, 0.0);
                 p.rotation.y = if peek > 0.3 { q * q * q * q * PI * 0.125 } else { 0.0 };
             });
-            posed.look("head", m.head_yaw, m.head_pitch);
+            // `head.yRot = yHeadRot - 180 - yBodyRot`.
+            posed.look("head", m.head_yaw - 180.0, m.head_pitch);
         }
         Kind::SnowGolem => {
             posed.look("head", m.head_yaw, m.head_pitch);
@@ -1053,6 +1054,23 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     }
     if matches!(e.kind, Kind::Phantom) {
         return (Quat::from_rotation_x(e.pitch.to_radians()), Vec3::ZERO);
+    }
+    // `ShulkerRenderer.setupRotations`: its body turned half round more,
+    // then the whole of it about its middle to the face it clings by
+    // (`Direction.getRotation` of the opposite face).
+    if e.kind == Kind::Shulker {
+        use std::f32::consts::PI;
+        let q = match e.shulker.face {
+            // Clinging by the floor, it stands upright.
+            0 => Quat::IDENTITY,
+            1 => Quat::from_rotation_x(PI),
+            2 => Quat::from_rotation_x(PI / 2.0),
+            3 => Quat::from_euler(glam::EulerRot::XYZ, PI / 2.0, 0.0, PI),
+            4 => Quat::from_euler(glam::EulerRot::XYZ, PI / 2.0, 0.0, -PI / 2.0),
+            _ => Quat::from_euler(glam::EulerRot::XYZ, PI / 2.0, 0.0, PI / 2.0),
+        };
+        let pivot = Vec3::new(0.0, 0.5, 0.0);
+        return (Quat::from_rotation_y(PI) * q, q.inverse() * pivot - pivot);
     }
     // `isShaking`: a cold strider's turn jitters (`setupRotations`).
     if e.kind == Kind::Strider && e.cold {

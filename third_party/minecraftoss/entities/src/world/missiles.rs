@@ -217,6 +217,9 @@ impl EntityWorld {
                 } else {
                     let from = at - missile.velocity;
                     let attacker = missile.owner.unwrap_or(missile.id);
+                    if missile.kind == MissileKind::ShulkerBullet {
+                        self.shulker_bullet_hit(target);
+                    }
                     if self.mob_hits_mob(attacker, target, damage, from, 0.0).is_some_and(|hit| hit.applied) && fire > 0.0 {
                         if let Some(body) = self.body_mut(target) {
                             body.fire_ticks = body.fire_ticks.max((fire * 20.0) as i32);
