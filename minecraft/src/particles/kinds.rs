@@ -55,6 +55,7 @@ pub enum Type {
     Fishing,
     Flame,
     Glow,
+    GlowSquidInk,
     Gust,
     GustEmitterLarge,
     GustEmitterSmall,
@@ -88,6 +89,7 @@ pub enum Type {
     SoulFireFlame,
     Splash,
     SporeBlossomAir,
+    SquidInk,
     SweepAttack,
     TintedLeaves,
     Totem,
@@ -152,6 +154,7 @@ impl Type {
             Fishing => "fishing",
             Flame => "flame",
             Glow => "glow",
+            GlowSquidInk => "glow_squid_ink",
             Gust => "gust",
             GustEmitterLarge => "gust_emitter_large",
             GustEmitterSmall => "gust_emitter_small",
@@ -185,6 +188,7 @@ impl Type {
             SoulFireFlame => "soul_fire_flame",
             Splash => "splash",
             SporeBlossomAir => "spore_blossom_air",
+            SquidInk => "squid_ink",
             SweepAttack => "sweep_attack",
             TintedLeaves => "tinted_leaves",
             Totem => "totem_of_undying",
@@ -308,6 +312,8 @@ pub enum Kind {
         fade: Option<[f32; 3]>,
         free: bool,
     },
+    /// `SquidInkParticle`: drifts, fading out, and sinks through air.
+    Ink { set: Type },
     /// `FallingParticle` (leaves).
     Leaves(Leaves),
     /// `FallingDustParticle`.
@@ -1001,6 +1007,17 @@ pub fn create(
             p.lifetime = (random.next_float() * 10.0) as i32 + 40;
             p
         }
+        SquidInk | GlowSquidInk => {
+            let mut p = Particle::at(Kind::Ink { set: kind }, pos, set.first(), random);
+            p.layer = Layer::Translucent;
+            p.friction = 0.92;
+            p.quad_size = 0.5;
+            p.rgb = if kind == GlowSquidInk { [0.2, 0.8, 0.6] } else { [0.0; 3] };
+            p.lifetime = (p.quad_size * 12.0 / (random.next_float() * 0.8 + 0.2)) as i32;
+            p.has_physics = false;
+            p.velocity = motion;
+            p
+        }
         EndRod | Totem => {
             let mut p = Particle::at(
                 Kind::Fading {
@@ -1530,7 +1547,7 @@ fn full_block(light: Light) -> Light {
 pub fn light(p: &Particle, world: &World, partial: f32) -> Light {
     let progress = (p.age as f32 + partial) / p.lifetime.max(1) as f32;
     match &p.kind {
-        Kind::Flash { .. } | Kind::Fading { .. } => FULL_BRIGHT,
+        Kind::Flash { .. } | Kind::Fading { .. } | Kind::Ink { .. } => FULL_BRIGHT,
         Kind::Flame | Kind::Glow { .. } => emission(p.world_light(world), progress),
         Kind::EmissiveRising { glowing: true, .. }
         | Kind::Drip { glowing: true, .. }
@@ -1948,6 +1965,20 @@ pub fn tick(p: &mut Particle, engine: &mut Particles, world: &World) {
                 .sprites
                 .get(Type::Fishing.name())
                 .by_age(life_used % 4, 4);
+        }
+        Kind::Ink { set } => {
+            p.base_tick(world);
+            if p.removed {
+                return;
+            }
+            p.set_sprite_from_age(engine.sprites.get(set.name()));
+            if p.age > p.lifetime / 2 {
+                p.alpha = 1.0 - (p.age as f32 - (p.lifetime / 2) as f32) / p.lifetime as f32;
+            }
+            let air = world.block(block_pos(p.pos)).is_none_or(|b| matches!(b.id.path.as_str(), "air" | "cave_air" | "void_air"));
+            if air {
+                p.velocity.y -= f64::from(0.0074f32);
+            }
         }
         Kind::Firefly => {
             p.base_tick(world);

@@ -603,6 +603,27 @@ impl Entities {
         (motes, crits, clouds)
     }
 
+    /// What the squids shed this tick: ink puffs (start, motion, glowing),
+    /// fleeing bubbles, and the glow squids' boxes for their motes.
+    pub fn squid_particles(&self) -> (Vec<(DVec3, DVec3, bool)>, Vec<DVec3>, Vec<(DVec3, f64, f64)>) {
+        use minecraftoss_entities::species::Kind;
+        let (mut ink, mut bubbles, mut glows) = (Vec::new(), Vec::new(), Vec::new());
+        for e in self.world.mobs() {
+            if !matches!(e.kind, Kind::Squid | Kind::GlowSquid) {
+                continue;
+            }
+            let glow = e.kind == Kind::GlowSquid;
+            ink.extend(e.squid.ink.iter().map(|&(at, motion)| (at, motion, glow)));
+            if e.squid.bubble {
+                bubbles.push(e.body.position);
+            }
+            if glow && e.health > 0.0 {
+                glows.push((e.body.position, f64::from(e.body.width), f64::from(e.body.height)));
+            }
+        }
+        (ink, bubbles, glows)
+    }
+
     pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {
         self.world.mob_bounds(id)
     }

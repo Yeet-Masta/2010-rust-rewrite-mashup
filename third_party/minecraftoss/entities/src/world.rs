@@ -41,6 +41,8 @@ mod withers;
 mod illagers;
 mod shulkers;
 mod phantoms;
+mod squids;
+pub use squids::{goals as squid_goals, targets as squid_targets, SquidState};
 pub use phantoms::{goals as phantom_goals, targets as phantom_targets};
 pub use shulkers::{goals as shulker_goals, targets as shulker_targets, ShulkerState};
 pub use illagers::{FangsEntity, Illusion, RavagerState, Spell, Spellcaster};

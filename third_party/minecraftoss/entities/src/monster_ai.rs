@@ -516,6 +516,9 @@ pub struct MonsterGoalContext {
     pub attach_face: u8,
     /// A phantom's attack phase, anchor and move target (`world/phantoms`).
     pub phantom: PhantomCtx,
+    /// A squid's `movementVector`, and a bubble its flight blew.
+    pub squid_vector: DVec3,
+    pub squid_bubble: bool,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -908,6 +911,8 @@ impl MonsterAi {
                 can_stay: true,
                 attach_face: 0,
                 phantom: PhantomCtx::default(),
+                squid_vector: DVec3::ZERO,
+                squid_bubble: false,
                 fly_target: None,
                 charging: false,
                 in_love: false,

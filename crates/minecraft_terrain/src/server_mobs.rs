@@ -934,6 +934,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.body.height = height * scale;
                 entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
             }
+            // `GlowSquid.readAdditionalSaveData`.
+            if kind == Kind::GlowSquid {
+                entity.squid.dark_ticks = int(tag, "DarkTicksRemaining").unwrap_or(0).max(0);
+            }
             // `Shulker.readAdditionalSaveData` (its colour is its variant).
             if kind == Kind::Shulker {
                 entity.shulker.face = int(tag, "AttachFace").unwrap_or(0).clamp(0, 5) as u8;
@@ -1285,6 +1289,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::GlowSquid {
+            fields.push(("DarkTicksRemaining", Tag::Int(e.squid.dark_ticks)));
         }
         if e.kind == minecraftoss_entities::species::Kind::Shulker {
             fields.push(("AttachFace", Tag::Byte(e.shulker.face as i8)));

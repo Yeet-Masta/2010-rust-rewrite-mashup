@@ -414,6 +414,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Phantom {
         return crate::world::phantom_goals();
     }
+    if matches!(kind, Kind::Squid | Kind::GlowSquid) {
+        return crate::world::squid_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;

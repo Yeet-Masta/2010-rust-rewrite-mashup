@@ -938,8 +938,8 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::Squid | Kind::GlowSquid => {
-            // `Squid.tentacleAngle` swings with its swim.
-            let angle = (sin(age * 0.2) * 0.5 + 0.5).powi(2) * PI * 0.25 + if in_water { 0.0 } else { PI * 0.1 };
+            // `SquidModel.setupAnim`: every tentacle at its stroke's angle.
+            let angle = e.squid.tentacle_angle(m.age_in_ticks.fract());
             for i in 0..8 {
                 posed.with(&format!("tentacle{i}"), |p| p.rotation.x = angle);
             }
@@ -1055,6 +1055,14 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     if matches!(e.kind, Kind::Phantom) {
         return (Quat::from_rotation_x(e.pitch.to_radians()), Vec3::ZERO);
     }
+    // `SquidRenderer.setupRotations`: tilted and spun about a point half a
+    // block up (a baby's quarter), the model hung 1.2 below it (0.6).
+    if matches!(e.kind, Kind::Squid | Kind::GlowSquid) {
+        let (x_rot, z_rot) = e.squid.body_rot(m.age_in_ticks.fract());
+        let q = Quat::from_rotation_x(x_rot.to_radians()) * Quat::from_rotation_y(z_rot.to_radians());
+        let (up, down) = if e.baby() { (0.25, 0.6) } else { (0.5, 1.2) };
+        return (q, q.inverse() * Vec3::new(0.0, up, 0.0) - Vec3::new(0.0, down, 0.0));
+    }
     // `ShulkerRenderer.setupRotations`: its body turned half round more,
     // then the whole of it about its middle to the face it clings by
     // (`Direction.getRotation` of the opposite face).
@@ -1159,7 +1167,8 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
                 held.extend(held_in_hands(e, &posed, &m, rotation, scale));
             }
             let feet = m.feet + rotation.mul_vec3(shift).as_dvec3();
-            let placement = Placement { feet, rotation, scale, region: atlas.entity_region(&id), sky, block: if l.glow { 15.0 } else { block }, tint: l.tint };
+            let glow = if e.kind == Kind::GlowSquid { e.squid.glow_light(block) } else { 15.0 };
+            let placement = Placement { feet, rotation, scale, region: atlas.entity_region(&id), sky, block: if l.glow { glow } else { block }, tint: l.tint };
             entity_model::draw(mesh, &posed, &placement);
         }
         }

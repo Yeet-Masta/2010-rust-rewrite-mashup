@@ -77,6 +77,7 @@ pub struct MobEntity {
     pub illusion: super::illagers::Illusion,
     pub ravager: super::illagers::RavagerState,
     pub shulker: super::shulkers::ShulkerState,
+    pub squid: super::squids::SquidState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -306,6 +307,8 @@ impl MobEntity {
         }
         if result.applied {
             self.shulker_hurt();
+            let by_something = self.ai.state.hurt_by.is_some();
+            self.squid_hurt(by_something);
         }
         result
     }
@@ -313,11 +316,15 @@ impl MobEntity {
     /// A hit after its armor that remembers who dealt it.
     pub(super) fn hurt_by(&mut self, amount: f32, by: Option<Target>) -> DamageResult {
         let amount = self.species().after_armor(amount);
+        // `setLastHurtByMob` comes before the hit's own reactions (a
+        // squid's ink), and only for a hit that lands.
+        let had = self.ai.state.hurt_by;
+        if let Some(by) = by {
+            self.ai.state.hurt_by = Some((by, self.tick_count));
+        }
         let hit = self.hurt(amount);
-        if hit.applied {
-            if let Some(by) = by {
-                self.ai.state.hurt_by = Some((by, self.tick_count));
-            }
+        if !hit.applied {
+            self.ai.state.hurt_by = had;
         }
         hit
     }
@@ -604,6 +611,7 @@ impl EntityWorld {
             illusion: Default::default(),
             ravager: Default::default(),
             shulker: Default::default(),
+            squid: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -772,6 +780,11 @@ impl EntityWorld {
                     // as a spellcaster does while it casts.
                     let motion = if e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
                     match motion {
+                        _ if matches!(e.kind, Kind::Squid | Kind::GlowSquid) => {
+                            if let Some(damage) = e.tick_squid(&*world, players, &villagers, game_time, difficulty) {
+                                e.hurt(damage);
+                            }
+                        }
                         Motion::Ground | Motion::Amphibious => {
                             if let Some(damage) = e.tick_walk(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);

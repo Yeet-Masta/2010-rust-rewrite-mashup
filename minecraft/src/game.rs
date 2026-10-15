@@ -1497,6 +1497,24 @@ impl Game {
                 }
             }
         }
+        {
+            use crate::particles::Type;
+            let (ink, bubbles, glows) = self.entities.squid_particles();
+            // `Squid.spawnInk`'s thirty puffs, sent with no spread.
+            for (at, motion, glow) in ink {
+                let kind = if glow { Type::GlowSquidInk } else { Type::SquidInk };
+                self.particles.spawn(&self.world, &kind.into(), at, motion);
+            }
+            for at in bubbles {
+                self.particles.spawn(&self.world, &Type::Bubble.into(), at, DVec3::ZERO);
+            }
+            // `GlowSquid.aiStep`: a mote somewhere about it every tick.
+            for (feet, width, height) in glows {
+                let random = &mut self.particles.random;
+                let at = feet + DVec3::new(width * (2.0 * random.next_double() - 1.0) * 0.6, height * random.next_double(), width * (2.0 * random.next_double() - 1.0) * 0.6);
+                self.particles.spawn(&self.world, &Type::Glow.into(), at, DVec3::ZERO);
+            }
+        }
         self.particles.player = Some((self.player.pos, self.player.velocity.y));
         let entities = &self.entities;
         self.emitters
