@@ -970,7 +970,7 @@ impl ItemVisuals {
         for item in items {
             let key = if item.state == crate::held_model::HeldState::default() { item.id.clone() } else { self.model_key(packs, &item.id, "thirdperson_righthand", &item.state, None) };
             let Some((display, mut tints)) = self.model(&key, packs)?.map(|visual| {
-                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::Ground => visual.ground }, visual.tints.clone())
+                (match item.display { HeldDisplay::RightHand => visual.right_hand, HeldDisplay::LeftHand => visual.left_hand, HeldDisplay::Ground => visual.ground }, visual.tints.clone())
             }) else {
                 continue;
             };
@@ -1208,6 +1208,8 @@ pub fn append_moving_blocks<S: Scene>(
 pub enum HeldDisplay {
     /// `THIRD_PERSON_RIGHT_HAND` (`ItemInHandLayer`).
     RightHand,
+    /// `THIRD_PERSON_LEFT_HAND`: what an off hand holds.
+    LeftHand,
     /// `GROUND` (`CrossedArmsItemLayer`, a witch's potion).
     Ground,
 }

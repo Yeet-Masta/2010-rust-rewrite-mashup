@@ -518,7 +518,9 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: matches!(kind, Kind::ZombifiedPiglin | Kind::Bee | Kind::Piglin | Kind::Hoglin | Kind::PolarBear) });
     }
     if s.temper == Temper::Hostile {
-        selector.add(2, NearestTargetGoal::every(Prey::Player, true, 10));
+        // A piglin spares players in gold (a brute does not).
+        let players = if kind == Kind::Piglin { Prey::UngildedPlayer } else { Prey::Player };
+        selector.add(2, NearestTargetGoal::every(players, true, 10));
         if hunts_villagers(kind) {
             selector.add(3, NearestTargetGoal::every(Prey::Villager, false, 10));
         }

@@ -277,6 +277,12 @@ impl Species {
         }
     }
 
+    /// Babies kept as `IsBaby` that never grow up (piglins, zombified
+    /// piglins and zoglins are no `AgeableMob`).
+    pub fn flag_baby(&self) -> bool {
+        matches!(self.kind, Kind::Piglin | Kind::ZombifiedPiglin | Kind::Zoglin)
+    }
+
     /// The items that tempt it (`TemptGoal`'s, usually its `isFood` tag).
     pub fn tempt_tag(&self) -> Option<&'static str> {
         Some(match self.kind {

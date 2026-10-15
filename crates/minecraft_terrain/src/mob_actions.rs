@@ -307,6 +307,12 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.drops.push((rest, mob.body.position));
             }
         }
+        MobHit::Mob(id) if held.as_deref() == Some("minecraft:gold_ingot") && world.piglin_take_gold(id, "minecraft:gold_ingot") => {
+            // `PiglinAi.mobInteract`: one ingot goes to be admired.
+            if !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
+        }
         MobHit::Mob(id) => {
             // Taming and orders first (`TamableAnimal`s, the ocelot's trust).
             if let Some(events) = world.tame_mob(id, 0, actor.inventory, selected, infinite) {

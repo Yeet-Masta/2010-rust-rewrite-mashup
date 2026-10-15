@@ -346,6 +346,9 @@ pub struct Spawned {
     pub wind: Vec<WindBlast>,
     /// Blocks a small fireball set alight (`SmallFireball.onHitBlock`).
     pub fires: Vec<(i32, i32, i32)>,
+    /// Piglins done admiring their gold: where each throws from and
+    /// toward, for the bartering loot (`getBarterResponseItems`).
+    pub barters: Vec<(DVec3, DVec3)>,
 }
 
 #[derive(Clone)]
@@ -2417,6 +2420,8 @@ pub struct EntityWorld {
     players_pickable: bool,
     /// The `gameplay/monsters_burn` attribute (daytime in the Overworld).
     monsters_burn: bool,
+    /// `gameplay/piglins_zombify` where the mobs are.
+    piglins_zombify: bool,
     /// `Difficulty.getId`: 0 peaceful to 3 hard.
     difficulty: i32,
     /// Sounds not tied to a living mob (a creeper's blast, gone with it).
@@ -2463,6 +2468,8 @@ pub struct EntityWorld {
     trade_experience: Vec<(DVec3, i32)>,
     /// Players' main-hand items, as villagers see them.
     player_main_hands: HashMap<u64, String>,
+    /// The players wearing a piece of `#piglin_safe_armor`.
+    gilded_players: Vec<u64>,
     /// The weapon of the player's hit that killed a mob, by mob: its
     /// looting and fire reach the loot (`ATTACKING_ENTITY`'s equipment).
     kill_weapons: HashMap<u64, Option<ItemStack>>,
@@ -2525,6 +2532,7 @@ impl Default for EntityWorld {
             player_fights: HashMap::new(),
             players_pickable: false,
             monsters_burn: false,
+            piglins_zombify: false,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: true,
@@ -2547,6 +2555,7 @@ impl Default for EntityWorld {
             player_heroes: HashMap::new(),
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
+            gilded_players: Vec::new(),
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
@@ -2900,6 +2909,11 @@ impl EntityWorld {
     }
 
     /// Whether monsters that burn in daylight burn now.
+    /// Whether piglins and hoglins zombify here (out of the Nether).
+    pub fn set_piglins_zombify(&mut self, zombify: bool) {
+        self.piglins_zombify = zombify;
+    }
+
     pub fn set_monsters_burn(&mut self, burn: bool) {
         self.monsters_burn = burn;
     }
@@ -3334,6 +3348,16 @@ impl EntityWorld {
             if entity.villager.health > 0.0 && attacker >= PLAYER_TARGET {
                 self.entity_events.push((villager, 13));
             }
+        }
+    }
+
+    /// A player's worn armour, as piglins see it: whether any of it is
+    /// `#piglin_safe_armor`.
+    pub fn set_player_armor(&mut self, player: u64, armor: &[&str]) {
+        let gilded = self.recipes.as_ref().is_some_and(|recipes| armor.iter().any(|item| recipes.item_in_tag("minecraft:piglin_safe_armor", item)));
+        self.gilded_players.retain(|&p| p != player);
+        if gilded {
+            self.gilded_players.push(player);
         }
     }
 
@@ -4484,6 +4508,7 @@ impl EntityWorld {
             player_fights: HashMap::new(),
             players_pickable: false,
             monsters_burn: false,
+            piglins_zombify: self.piglins_zombify,
             difficulty: 2,
             sounds: Vec::new(),
             mob_drops: self.mob_drops,
@@ -4506,6 +4531,7 @@ impl EntityWorld {
             player_heroes: self.player_heroes.clone(),
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
+            gilded_players: self.gilded_players.clone(),
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),

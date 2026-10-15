@@ -337,6 +337,8 @@ pub struct TargetInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Prey {
     Player,
+    /// A piglin's: players wearing no gold (`PiglinAi.isWearingSafeArmor`).
+    UngildedPlayer,
     Villager,
     /// Baby turtles on land (and endermites): none live here, so the goals
     /// only roll their interval.
@@ -482,6 +484,8 @@ pub struct MonsterGoalContext {
     pub can_break_doors: bool,
     /// The players holding what tempts it (`TemptGoal`'s items).
     pub tempters: Vec<u64>,
+    /// The players wearing gold, whom piglins leave be.
+    pub gilded: Vec<u64>,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -867,6 +871,7 @@ impl MonsterAi {
                 level_random: None,
                 can_break_doors: false,
                 tempters: Vec::new(),
+                gilded: Vec::new(),
                 fly_target: None,
                 charging: false,
                 in_love: false,
@@ -2338,6 +2343,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
         let (range, eye) = (ctx.follow_range.max(2.0), ctx.eye());
         let candidates: Vec<Target> = match self.prey {
             Prey::Player => ctx.players.iter().map(|p| Target::Player(p.id)).collect(),
+            Prey::UngildedPlayer => ctx.players.iter().filter(|p| !ctx.gilded.contains(&p.id)).map(|p| Target::Player(p.id)).collect(),
             Prey::Villager => ctx.villagers.iter().map(|v| Target::Villager(v.id)).collect(),
             Prey::Absent => Vec::new(),
             Prey::Golem => ctx.mobs.iter().filter(|m| m.kind == "minecraft:iron_golem").map(|m| Target::Mob(m.id)).collect(),

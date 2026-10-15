@@ -898,14 +898,23 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let kind = Kind::of_id(other)?;
             // Piglins, zombified piglins and zoglins keep a baby as `IsBaby`;
             // they never grow up.
-            let flagged_baby = !kind.species().ageable && int(tag, "IsBaby").unwrap_or(0) != 0;
-            let age = if flagged_baby { minecraftoss_entities::age::Age::BABY_START } else if kind.species().ageable { age } else { 0 };
+            let flagged_baby = kind.species().flag_baby() && int(tag, "IsBaby").unwrap_or(0) != 0;
+            let age = if flagged_baby {
+                minecraftoss_entities::age::Age::BABY_START
+            } else if kind.species().ageable && !kind.species().flag_baby() {
+                age
+            } else {
+                0
+            };
             let id = world.spawn_mob(kind, pos, yaw, age, no_ai);
             let entity = world.mob_mut(id)?;
             entity.random = random;
             entity.persistence_required = persistent;
             entity.head_item = head_item(tag);
             entity.hand = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            entity.off_hand = tag.get("equipment").and_then(|e| e.get("offhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
+            entity.time_in_overworld = int(tag, "TimeInOverworld").unwrap_or(0);
+            entity.zombify_immune = int(tag, "IsImmuneToZombification").unwrap_or(0) != 0;
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
             entity.age.locked = flagged_baby || int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
@@ -1197,7 +1206,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
     // among it).
     for e in world.mobs() {
         let s = e.species();
-        let mut fields = if s.ageable { vec![("Age", Tag::Int(e.age.ticks)), ("ForcedAge", Tag::Int(e.age.forced)), ("AgeLocked", Tag::Byte(i8::from(e.age.locked)))] } else { Vec::new() };
+        let mut fields = if s.ageable && !s.flag_baby() { vec![("Age", Tag::Int(e.age.ticks)), ("ForcedAge", Tag::Int(e.age.forced)), ("AgeLocked", Tag::Byte(i8::from(e.age.locked)))] } else { Vec::new() };
         if s.breeding_food().is_some() {
             fields.push(("InLove", Tag::Int(e.in_love)));
         }
@@ -1208,16 +1217,26 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         if e.kind == minecraftoss_entities::species::Kind::Ocelot {
             fields.push(("Trusting", Tag::Byte(i8::from(e.trusting))));
         }
-        if !s.ageable && e.baby() {
-            fields.push(("IsBaby", Tag::Byte(1)));
+        if s.flag_baby() {
+            fields.push(("IsBaby", Tag::Byte(i8::from(e.baby()))));
         }
         // Its look, under the key it came by.
         if let Some((key, number)) = e.variant_key {
             fields.push((key, if number { Tag::Int(e.variant.parse().unwrap_or(0)) } else { text_tag(&e.variant) }));
         }
-        if let Some(item) = &e.hand {
-            let stack = [("id".to_owned(), text_tag(item)), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
-            fields.push(("equipment", Tag::Compound([("mainhand".to_owned(), Tag::Compound(stack))].into_iter().collect())));
+        let mut equipment = std::collections::BTreeMap::new();
+        for (slot, item) in [("mainhand", &e.hand), ("offhand", &e.off_hand)] {
+            if let Some(item) = item {
+                let stack = [("id".to_owned(), text_tag(item)), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+                equipment.insert(slot.to_owned(), Tag::Compound(stack));
+            }
+        }
+        if !equipment.is_empty() {
+            fields.push(("equipment", Tag::Compound(equipment)));
+        }
+        if matches!(e.kind, minecraftoss_entities::species::Kind::Piglin | minecraftoss_entities::species::Kind::PiglinBrute | minecraftoss_entities::species::Kind::Hoglin) {
+            fields.push(("TimeInOverworld", Tag::Int(e.time_in_overworld)));
+            fields.push(("IsImmuneToZombification", Tag::Byte(i8::from(e.zombify_immune))));
         }
         add(e.id, s.id, &e.body, e.yaw, e.health, e.persistence_required, fields);
     }

@@ -257,6 +257,18 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    /// `gameplay/piglins_zombify`: whether piglins and hoglins turn here
+    /// (everywhere but the Nether).
+    pub fn piglins_zombify(&self) -> bool {
+        let Some(sky) = &self.sky else { return false };
+        let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome: 0 };
+        match sky.environment.value_named("gameplay/piglins_zombify", &sample) {
+            minecraftoss_core::environment::Value::Bool(zombify) => zombify,
+            _ => self.dimension.as_deref() != Some("minecraft:the_nether"),
+        }
+    }
+
     /// A float attribute's value in a biome.
     pub(super) fn biome_value(&self, name: &str, biome: u16) -> f32 {
         self.environment_value(name, biome)

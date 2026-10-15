@@ -158,6 +158,7 @@ impl EntityLootBook {
             let name = entry.name().to_owned();
             let wanted = name.starts_with("data/minecraft/loot_table/entities/")
                 || name.starts_with("data/minecraft/loot_table/charged_creeper/")
+                || name == "data/minecraft/loot_table/gameplay/piglin_bartering.json"
                 || name.starts_with("data/minecraft/tags/item/")
                 || name.starts_with("data/minecraft/tags/entity_type/")
                 || name.starts_with("data/minecraft/recipe/");
@@ -230,8 +231,17 @@ impl EntityLootBook {
     /// Returns None if the table has a context, condition or modifier this
     /// evaluator cannot yet reproduce. Named RNG persists across kills.
     pub fn roll(&mut self, entity_id: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
+        self.roll_typed(entity_id, "minecraft:entity", context)
+    }
+
+    /// `getBarterResponseItems`: one roll of the bartering table.
+    pub fn roll_barter(&mut self) -> Option<Vec<ItemStack>> {
+        self.roll_typed("minecraft:gameplay/piglin_bartering", "minecraft:barter", EntityLootContext::default())
+    }
+
+    fn roll_typed(&mut self, entity_id: &str, kind: &str, context: EntityLootContext) -> Option<Vec<ItemStack>> {
         let table = self.tables.get(entity_id)?;
-        if table["type"].as_str()? != "minecraft:entity" {
+        if table["type"].as_str()? != kind {
             return None;
         }
         let id = table["random_sequence"].as_str()?;
@@ -400,6 +410,7 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
             let mut item = leaf["name"].as_str()?.to_owned();
             let mut count: i64 = 1;
             let mut potion = None;
+            let mut enchantment: Option<(String, i32)> = None;
             let functions: Vec<&Value> = match leaf.get("modifier").or_else(|| leaf.get("functions")) {
                 Some(Value::Array(list)) => list.iter().collect(),
                 Some(single) => vec![single],
@@ -428,6 +439,19 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                     "minecraft:furnace_smelt" => item = data.smelting.get(&item)?.clone(),
                     // `SetPotionFunction`: the potion contents component.
                     "minecraft:set_potion" => potion = Some(function["id"].as_str()?.to_owned()),
+                    // `EnchantRandomlyFunction` over one named enchantment:
+                    // the pick (`getRandomElement`) still draws, then the
+                    // level; a book becomes an enchanted book.
+                    "minecraft:enchant_randomly" => {
+                        let id = function["options"].as_str()?;
+                        let max = match id {
+                            "minecraft:soul_speed" => 3,
+                            _ => return None,
+                        };
+                        let _ = random.next_int(1);
+                        let level = 1 + random.next_int(max) as i32;
+                        enchantment = Some((id.to_owned(), level));
+                    }
                     _ => return None,
                 }
             }
@@ -436,6 +460,14 @@ fn create(data: &LootData, leaf: &Value, context: EntityLootContext, random: &mu
                 let mut stack = ItemStack::new(item, u8::try_from(count).ok()?);
                 if let Some(potion) = potion {
                     stack.components = Some(serde_json::json!({ "minecraft:potion_contents": { "potion": potion } }));
+                }
+                if let Some((id, level)) = enchantment {
+                    if stack.id == "minecraft:book" {
+                        stack.id = "minecraft:enchanted_book".to_owned();
+                        stack.components = Some(serde_json::json!({ "minecraft:stored_enchantments": { id: level } }));
+                    } else {
+                        stack.components = Some(serde_json::json!({ "minecraft:enchantments": { id: level } }));
+                    }
                 }
                 out.push(stack);
             }

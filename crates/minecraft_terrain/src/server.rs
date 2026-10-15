@@ -487,6 +487,7 @@ impl ServerSim {
         let ticking: std::collections::HashSet<ChunkPos> = self.level.ticking_chunks.iter().flatten().copied().collect();
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
+        self.mobs.set_piglins_zombify(self.level.piglins_zombify());
         let Self { level, states, mobs, mob_tables, .. } = self;
         let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
         let ticks = |p: glam::DVec3| ticking.contains(&ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4));
@@ -535,6 +536,16 @@ impl ServerSim {
         }
         for (x, y, z) in spawned.fires {
             self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
+        }
+        // `PiglinAi.throwItems`: each bartered stack thrown from the
+        // piglin's eyes toward its mark (`BehaviorUtils.throwItem`).
+        for (from, toward) in spawned.barters {
+            let Some(loot) = self.entity_loot.as_mut() else { continue };
+            let velocity = (toward - from).normalize_or_zero() * 0.3;
+            for stack in loot.roll_barter().unwrap_or_default() {
+                let components = stack.components.as_ref().map(|c| c.to_string());
+                self.spawn_item(&stack.id, i32::from(stack.count), components.as_deref(), from.to_array(), velocity.to_array(), 10, 0);
+            }
         }
         // The wind's blasts in the level: the blocks they work, the items
         // they push, the clients' gusts (`TRIGGER`, no harm).
@@ -1594,6 +1605,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // (`ShowTradesToPlayer`).
                     let held = input.pickup.as_ref().and_then(|(_, inventory, selected)| inventory.slots.get(*selected).and_then(Option::as_ref).map(|s| s.id.clone()));
                     sim.mobs.set_player_main_hand(0, held.as_deref());
+                    // What it wears, as piglins see it (slots 36 to 39).
+                    let armor: Vec<String> = input.pickup.as_ref().map(|(_, inventory, _)| inventory.slots.iter().skip(36).take(4).flatten().map(|s| s.id.clone()).collect()).unwrap_or_default();
+                    sim.mobs.set_player_armor(0, &armor.iter().map(String::as_str).collect::<Vec<_>>());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
                     sim.spawn_trade_experience();
                     out.menu.extend(sim.menu_tick(&input.mob_players));

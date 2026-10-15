@@ -49,6 +49,14 @@ pub struct MobEntity {
     pub variant_key: Option<(&'static str, bool)>,
     /// What it holds in its main hand (`equipment.mainhand`).
     pub hand: Option<String>,
+    /// And in its off hand: the gold a piglin admires.
+    pub off_hand: Option<String>,
+    /// `ADMIRING_ITEM`: ticks a piglin has left looking at its gold.
+    pub admire_ticks: i32,
+    /// `AbstractPiglin`/`Hoglin.timeInOverworld`: ticks spent where
+    /// piglins zombify, and `IsImmuneToZombification`.
+    pub time_in_overworld: i32,
+    pub zombify_immune: bool,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -72,6 +80,49 @@ impl MobEntity {
 
     pub fn baby(&self) -> bool {
         self.age.baby()
+    }
+
+    /// `AbstractPiglin.customServerAiStep` and `Hoglin`'s: the clock to
+    /// zombification where piglins zombify (past 300 ticks it converts),
+    /// then the end of admiring (`StopHoldingItemIfNoLongerAdmiring`): a
+    /// grown piglin barters its gold ingot, throwing what it gives toward
+    /// the nearest player, or about itself (`throwItems`).
+    fn piglin_step(&mut self, zombify: bool, players: &[PlayerCandidate]) -> (Option<(DVec3, DVec3)>, Option<Kind>) {
+        let into = match self.kind {
+            Kind::Piglin | Kind::PiglinBrute => Kind::ZombifiedPiglin,
+            Kind::Hoglin => Kind::Zoglin,
+            _ => return (None, None),
+        };
+        let mut convert = None;
+        if zombify && !self.zombify_immune && !self.no_ai {
+            self.time_in_overworld += 1;
+            if self.time_in_overworld > 300 {
+                convert = Some(into);
+            }
+        } else {
+            self.time_in_overworld = 0;
+        }
+        let mut barter = None;
+        if self.admire_ticks > 0 {
+            self.admire_ticks -= 1;
+            if self.admire_ticks == 0 {
+                let item = self.off_hand.take();
+                if item.as_deref() == Some("minecraft:gold_ingot") && !self.baby() {
+                    let position = self.position();
+                    let nearest = players.iter().filter(|p| p.alive && !p.spectator && p.position.distance_squared(position) < 16.0 * 16.0).min_by(|a, b| a.position.distance_squared(position).total_cmp(&b.position.distance_squared(position)));
+                    let toward = match nearest {
+                        Some(player) => player.position + DVec3::Y,
+                        None => {
+                            let (dx, dz) = (self.random.next_int(9) as f64 - 4.0, self.random.next_int(9) as f64 - 4.0);
+                            position + DVec3::new(dx, 1.0, dz)
+                        }
+                    };
+                    let from = position + DVec3::Y * (f64::from(self.eye_height()) - 0.3);
+                    barter = Some((from, toward));
+                }
+            }
+        }
+        (barter, convert)
     }
 
     /// Where it stands (its feet).
@@ -405,6 +456,10 @@ impl EntityWorld {
             variant: String::new(),
             variant_key: None,
             hand: None,
+            off_hand: None,
+            admire_ticks: 0,
+            time_in_overworld: 0,
+            zombify_immune: false,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -442,6 +497,7 @@ impl EntityWorld {
         let Some(kind) = self.mobs.iter().find(|e| e.id == id).map(|e| e.kind) else { return };
         let mobs = self.mob_candidates();
         let tempters = self.tempters(kind);
+        let gilded = self.gilded_players.clone();
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
@@ -458,13 +514,15 @@ impl EntityWorld {
         // Its owner, while that player is in the level.
         let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
         let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
-        let (melee, shot, stepped, bred) = {
+        let piglins_zombify = self.piglins_zombify;
+        let (melee, shot, stepped, bred, barter, convert) = {
             let e = self.mob_mut(id).unwrap();
             e.ai.state.wolf.tame = e.owner.is_some();
             e.ai.state.wolf.owner = owner;
             e.ai.state.wolf.ordered_to_sit = e.ordered_to_sit;
             e.ai.state.mobs = mobs;
             e.ai.state.tempters = tempters;
+            e.ai.state.gilded = gilded.clone();
             e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0;
             e.ai.state.mates = mates;
             e.ai.state.parent = parent;
@@ -547,7 +605,9 @@ impl EntityWorld {
                     let _ = dying_travel(&mut e.body, &*world, e.yaw, e.tick_count, &mut e.random, &mut e.voices, sounds, Some(s.category == crate::species::Category::Monster));
                 } else if e.health > 0.0 && !e.no_ai {
                     let position = e.body.position;
-                    match s.motion {
+                    // A piglin admiring its gold stands still (`stopWalking`).
+                    let motion = if e.admire_ticks > 0 { Motion::Stationary } else { s.motion };
+                    match motion {
                         Motion::Ground | Motion::Amphibious => {
                             if let Some(damage) = e.tick_walk(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);
@@ -582,7 +642,8 @@ impl EntityWorld {
                 hazards::blocks_act(e, &*world, old, game_time);
             }
             let bred = e.ai.state.breed_with.take();
-            (melee, shot, !removed, bred)
+            let (barter, convert) = if removed { (None, None) } else { e.piglin_step(piglins_zombify, players) };
+            (melee, shot, !removed, bred, barter, convert)
         };
         if stepped && s.motion != Motion::Stationary {
             self.push_entities(EntityKey::Mob(id), &*world, game_time, ticks);
@@ -601,6 +662,52 @@ impl EntityWorld {
         if let Some(partner) = bred {
             self.breed_mobs(id, partner);
         }
+        if let Some(barter) = barter {
+            self.spawned.barters.push(barter);
+        }
+        if let Some(into) = convert {
+            self.zombify_mob(id, into);
+        }
+    }
+
+    /// `AbstractPiglin.finishConversion`, `Hoglin.finishConversion`: the
+    /// mob becomes its zombified kind where it stands, keeping its age,
+    /// equipment and persistence, with the converted sound.
+    fn zombify_mob(&mut self, id: u64, into: Kind) {
+        let Some(old) = self.discard_mob(id) else { return };
+        let event = match old.kind {
+            Kind::PiglinBrute => "entity.piglin_brute.converted_to_zombified",
+            Kind::Hoglin => "entity.hoglin.converted_to_zombified",
+            _ => "entity.piglin.converted_to_zombified",
+        };
+        let new = self.spawn_mob(into, old.body.position, old.yaw, old.age.ticks, old.no_ai);
+        if let Some(e) = self.mob_mut(new) {
+            e.hand = old.hand;
+            e.head_item = old.head_item;
+            e.persistence_required = old.persistence_required;
+            e.age.locked = old.age.locked;
+            e.body.velocity = old.body.velocity;
+            e.body.on_ground = old.body.on_ground;
+            e.random = old.random;
+            let baby = e.baby();
+            let pitch = voice_pitch(&mut e.random, baby);
+            let at = e.position();
+            e.voices.push((Voice::Event(event, 1.0, pitch), at));
+        }
+    }
+
+    /// `PiglinAi.mobInteract`: a grown piglin not already admiring takes
+    /// one gold ingot from the hand into its off hand and admires it for
+    /// 119 ticks. Whether it took it.
+    pub fn piglin_take_gold(&mut self, id: u64, item: &str) -> bool {
+        let Some(e) = self.mob_mut(id) else { return false };
+        if e.kind != Kind::Piglin || e.baby() || e.admire_ticks > 0 || e.health <= 0.0 || item != "minecraft:gold_ingot" {
+            return false;
+        }
+        e.off_hand = Some(item.to_owned());
+        e.admire_ticks = 119;
+        e.ai.state.target = None;
+        true
     }
 
     /// `Animal.spawnChildFromBreeding`: both parents rest five minutes and
