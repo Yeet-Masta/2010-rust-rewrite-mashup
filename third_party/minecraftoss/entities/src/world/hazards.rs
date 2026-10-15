@@ -179,6 +179,29 @@ exposed!(super::endermen::EndermanEntity, enderman, |e, h, a, w, t| e.hurt_by_en
 exposed!(super::golems::IronGolemEntity, golem, |e, h, a, w, t| e.hurt(a).applied);
 exposed!(super::wolves::WolfEntity, wolf, |e, h, a, w, t| e.hurt_from(a, h.damage_type(), None, t).applied);
 
+impl Exposed for super::mobs::MobEntity {
+    fn body(&mut self) -> &mut Body {
+        &mut self.body
+    }
+    fn alive(&self) -> bool {
+        self.health > 0.0
+    }
+    fn hurt_hazard(&mut self, hazard: Hazard, amount: f32, _world: &dyn World, _game_time: i64) -> bool {
+        // `fireImmune` types and fire resistance shrug off fire.
+        if resists(&self.effects, hazard) || (hazard.is_fire() && self.kind.species().fire_immune) {
+            return false;
+        }
+        let amount = if hazard.bypasses_armor() { amount } else { self.kind.species().after_armor(amount) };
+        self.hurt(amount).applied
+    }
+    fn random(&mut self) -> &mut LegacyRandom {
+        &mut self.random
+    }
+    fn voices(&mut self) -> &mut Vec<(Voice, DVec3)> {
+        &mut self.voices
+    }
+}
+
 impl Exposed for SheepEntity {
     fn body(&mut self) -> &mut Body {
         &mut self.body

@@ -345,7 +345,7 @@ impl EntityWorld {
             self.file_in_section(EntityKey::Enderman(id));
         }
         if let Some((crate::monster_ai::Target::Player(player_id), attacker)) = hit {
-            self.player_hits.push(PlayerHit { player_id, damage: crate::enderman::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, weapon: Default::default() }, source: Some(id) });
+            self.player_hits.push(PlayerHit { player_id, damage: crate::enderman::ATTACK_DAMAGE, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, weapon: Default::default(), effect: None }, source: Some(id) });
         }
         if let Some((crate::monster_ai::Target::Mob(victim), attacker)) = hit {
             self.mob_hits_mob(id, victim, crate::enderman::ATTACK_DAMAGE, attacker, 0.0);

@@ -109,6 +109,7 @@ impl EntityWorld {
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage)),
             EntityKey::Creeper(id) => self.creepers.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage)),
             EntityKey::Spider(id) => self.spiders.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage)),
+            EntityKey::Mob(id) => self.mobs.iter_mut().find(|e| e.id == id).map(|e| e.hurt_by(damage, None)),
             EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage)),
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| e.hurt(damage, false, false)),

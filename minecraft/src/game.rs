@@ -2793,10 +2793,14 @@ impl Game {
         let mut after = None;
         let mut melee_weapon = None;
         let (from, kind) = match hit.kind {
-            PlayerHitKind::Melee { attacker, lift, hunger_ticks, weapon } => {
+            PlayerHitKind::Melee { attacker, lift, hunger_ticks, weapon, effect } => {
                 self.player.velocity.y += f64::from(lift);
                 if hunger_ticks > 0 {
                     after = Some(EffectInstance::new(MobEffect::Hunger, hunger_ticks, 0));
+                }
+                // A cave spider's poison, a wither skeleton's wither.
+                if let Some((kind, ticks)) = effect {
+                    after = Some(EffectInstance::new(kind, ticks as i32, 0));
                 }
                 melee_weapon = Some(weapon);
                 (HitFrom::Position(attacker), "mob_attack")
@@ -2804,6 +2808,13 @@ impl Game {
             PlayerHitKind::Arrow { velocity, effect, .. } => {
                 after = effect.map(|(kind, ticks)| EffectInstance::new(kind, ticks as i32, 0));
                 (HitFrom::Projectile(velocity), "arrow")
+            }
+            PlayerHitKind::Projectile { velocity, damage_type, effect, fire_seconds } => {
+                after = effect.map(|(kind, ticks)| EffectInstance::new(kind, ticks as i32, 0));
+                if fire_seconds > 0.0 {
+                    self.player.survival.ignite_for_ticks((fire_seconds * 20.0) as i32);
+                }
+                (HitFrom::Projectile(velocity), damage_type.strip_prefix("minecraft:").unwrap_or(damage_type))
             }
             PlayerHitKind::Explosion { knockback, .. } => {
                 // `EXPLOSION_KNOCKBACK_RESISTANCE` (blast protection).

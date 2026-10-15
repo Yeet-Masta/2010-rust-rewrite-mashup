@@ -284,6 +284,10 @@ impl EntityWorld {
         for e in &self.spiders {
             out.push(seen_of("minecraft:spider", "monster", &e.spider.body, e.spider.eye_height(), e.spider.health > 0.0, false, e.id));
         }
+        for e in &self.mobs {
+            let s = e.species();
+            out.push(seen_of(s.id, s.category.name(), &e.body, e.eye_height(), e.health > 0.0, e.age < 0, e.id));
+        }
         for e in &self.slimes {
             out.push(seen_of("minecraft:slime", "monster", &e.slime.body, e.slime.eye_height(), e.slime.health > 0.0, false, e.id));
         }

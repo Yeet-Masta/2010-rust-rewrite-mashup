@@ -774,6 +774,10 @@ impl EntityWorld {
         if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, true));
         }
+        if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
+            let s = e.kind.species();
+            return Some((&mut e.effects, s.undead, s.arthropod));
+        }
         if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             return Some((&mut e.effects, false, false));
         }
@@ -814,6 +818,7 @@ impl EntityWorld {
             .or_else(|| self.skeletons.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.creepers.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.spiders.iter().find(|e| e.id == id).map(|e| &e.effects))
+            .or_else(|| self.mobs.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.slimes.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.endermen.iter().find(|e| e.id == id).map(|e| &e.effects))
             .or_else(|| self.villagers.iter().find(|e| e.id == id).map(|e| &e.effects))
@@ -866,6 +871,9 @@ impl EntityWorld {
             (&mut e.creeper.health, 20.0)
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
             (&mut e.spider.health, crate::spider::MAX_HEALTH)
+        } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
+            let max = e.max_health();
+            (&mut e.health, max)
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             let max = e.slime.max_health();
             (&mut e.slime.health, max)
@@ -907,6 +915,8 @@ impl EntityWorld {
         } else if let Some(e) = self.creepers.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.spiders.iter_mut().find(|e| e.id == id) {
+            e.hurt(amount)
+        } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
         } else if let Some(e) = self.slimes.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)

@@ -8,6 +8,8 @@ pub struct CreeperExplosion {
     pub position: DVec3,
     pub radius: f32,
     pub powered: bool,
+    /// Whether it sets fires (a ghast's fireball where mobs may grief).
+    pub fire: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +67,7 @@ impl Creeper {
                 position: self.body.position,
                 radius: self.explosion_radius as f32 * if self.powered { 2.0 } else { 1.0 },
                 powered: self.powered,
+                fire: false,
             });
         }
         None

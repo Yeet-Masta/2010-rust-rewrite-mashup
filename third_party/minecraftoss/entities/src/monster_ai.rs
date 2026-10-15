@@ -48,6 +48,8 @@ pub enum MonsterKind {
     IronGolem,
     /// `Wolf`: a tamable animal that hunts (`wolf_ai`).
     Wolf,
+    /// A mob on the generic mob entity (`mob_ai`).
+    Mob(crate::species::Kind),
 }
 
 impl MonsterKind {
@@ -63,6 +65,7 @@ impl MonsterKind {
             Self::Witch => &WITCH_GOAL_NAMES,
             Self::IronGolem => &crate::golem_ai::GOAL_NAMES,
             Self::Wolf => &crate::wolf_ai::GOAL_NAMES,
+            Self::Mob(_) => &[],
         }
     }
 
@@ -77,6 +80,7 @@ impl MonsterKind {
             Self::Witch => &WITCH_TARGET_NAMES,
             Self::IronGolem => &crate::golem_ai::TARGET_NAMES,
             Self::Wolf => &crate::wolf_ai::TARGET_NAMES,
+            Self::Mob(_) => &[],
         }
     }
 }
@@ -346,6 +350,8 @@ pub(crate) enum Prey {
     WolfPrey,
     /// `AbstractSkeleton`s.
     Skeleton,
+    /// Mobs of these types.
+    Kinds(&'static [&'static str]),
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -473,6 +479,13 @@ pub struct MonsterGoalContext {
     /// `Zombie.canBreakDoors`: the doors `MoveThroughVillageGoal` may path
     /// through.
     pub can_break_doors: bool,
+    /// The players holding what tempts it (`TemptGoal`'s items).
+    pub tempters: Vec<u64>,
+    /// Where a flier or swimmer steers, and at what speed modifier: its
+    /// move control's wanted position (`mob_ai`'s goals set it).
+    pub fly_target: Option<(DVec3, f64)>,
+    /// A shooter taking aim (the blaze's fire, the ghast's open mouth).
+    pub charging: bool,
 }
 
 impl MonsterGoalContext {
@@ -668,13 +681,21 @@ impl MonsterGoalContext {
         let allowed = match (self.kind, self.target().is_some()) {
             (_, false) => 0.0,
             (MonsterKind::Creeper, true) => self.health - 1.0,
-            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf, true) => {
+            (MonsterKind::Zombie | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::IronGolem | MonsterKind::Wolf | MonsterKind::Mob(_), true) => {
                 let sacrifice = (self.health - self.max_health * 0.33) as i32 - (3 - self.difficulty) * 4;
                 sacrifice.max(0) as f32
             }
         };
         profile.max_fall_distance = (allowed + 3.0).floor() as i32;
         profile
+    }
+
+    /// How a generic mob gets about (others walk).
+    pub(crate) fn mob_motion(&self) -> crate::species::Motion {
+        match self.kind {
+            MonsterKind::Mob(k) => k.species().motion,
+            _ => crate::species::Motion::Ground,
+        }
     }
 
     /// `Mob.isWithinMeleeAttackRange`: the reach-inflated box meets the
@@ -733,17 +754,21 @@ impl MonsterAi {
             walk.clear_malus(PathType::Fire);
         }
         // `FloatGoal` lets the navigation float.
-        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf);
+        walk.can_float = matches!(kind, MonsterKind::Creeper | MonsterKind::Spider | MonsterKind::Enderman | MonsterKind::Witch | MonsterKind::Wolf | MonsterKind::Mob(_));
         let follow_range = match kind {
             MonsterKind::Creeper | MonsterKind::Skeleton | MonsterKind::Spider | MonsterKind::Slime | MonsterKind::Witch | MonsterKind::IronGolem => FOLLOW_RANGE,
             MonsterKind::Zombie => ZOMBIE_FOLLOW_RANGE,
             MonsterKind::Enderman => crate::enderman::FOLLOW_RANGE,
             MonsterKind::Wolf => crate::wolf::FOLLOW_RANGE,
+            MonsterKind::Mob(kind) => kind.species().follow_range,
         };
         walk.follow_range = follow_range as f32;
         // An `Animal` keeps its own walk values (grass is best).
-        if kind != MonsterKind::Wolf {
+        if kind != MonsterKind::Wolf && !matches!(kind, MonsterKind::Mob(k) if k.species().temper != crate::species::Temper::Hostile) {
             walk.walk_target = WalkTarget::Monster;
+        }
+        if let MonsterKind::Mob(k) = kind {
+            walk.max_up_step = k.species().step_height as f32;
         }
         if kind == MonsterKind::Wolf {
             // `Wolf`: powder snow is out of bounds.
@@ -773,9 +798,10 @@ impl MonsterAi {
             MonsterKind::Witch => (witch_goals(), witch_targets(), crate::witch::EYE_HEIGHT),
             MonsterKind::IronGolem => (crate::golem_ai::golem_goals(), crate::golem_ai::golem_targets(), crate::iron_golem::EYE_HEIGHT),
             MonsterKind::Wolf => (crate::wolf_ai::wolf_goals(), crate::wolf_ai::wolf_targets(), crate::wolf::EYE_HEIGHT),
+            MonsterKind::Mob(k) => (crate::mob_ai::goals(k), crate::mob_ai::targets(k), k.species().size[2]),
         };
         let mut navigation = GroundNavigation::default();
-        navigation.wall_climber = kind == MonsterKind::Spider;
+        navigation.wall_climber = kind == MonsterKind::Spider || kind == MonsterKind::Mob(crate::species::Kind::CaveSpider);
         Self {
             goals,
             targets,
@@ -831,6 +857,9 @@ impl MonsterAi {
                 pois: None,
                 level_random: None,
                 can_break_doors: false,
+                tempters: Vec::new(),
+                fly_target: None,
+                charging: false,
             },
             move_control: MoveControl::default(),
             body_rotation: BodyRotation::new(yaw),
@@ -2302,6 +2331,7 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::Enemy => ctx.mobs.iter().filter(|m| is_enemy(m.kind) && m.kind != "minecraft:creeper").map(|m| Target::Mob(m.id)).collect(),
             Prey::AngryPlayer => ctx.players.iter().map(|p| Target::Player(p.id)).filter(|&t| ctx.enderman.anger_target == Some(t)).collect(),
             Prey::WolfPrey => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:sheep" | "minecraft:rabbit" | "minecraft:fox")).map(|m| Target::Mob(m.id)).collect(),
+            Prey::Kinds(kinds) => ctx.mobs.iter().filter(|m| kinds.contains(&m.kind)).map(|m| Target::Mob(m.id)).collect(),
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;

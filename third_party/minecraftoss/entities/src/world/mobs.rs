@@ -1,0 +1,732 @@
+//! The generic mob entity: every kind in `species` ticks here as the mobs
+//! on the goal framework do (`Entity.baseTick`'s fluids, fire and walls,
+//! `LivingEntity.baseTick`'s air, the hurt and death clocks, effects, the
+//! ambient roll, then `aiStep`), over the goal sets of `mob_ai`. Walkers
+//! move as the monsters do (`monster_ai_step`); fliers and swimmers steer
+//! at their goals' wanted position through the air or water
+//! (`FlyingMoveControl`, a `FlyingMob`'s and the fish's move controls) and
+//! a fish out of water flops. Melee hits land with each kind's extra
+//! (`CaveSpider`'s poison, `WitherSkeleton`'s wither, a hoglin's toss), and
+//! the shooters loose their projectiles (a blaze's volley of three, the
+//! ghast's fireball, a breeze's wind charge, arrows, shulker bullets,
+//! spit, snowballs, the guardian's beam, the evoker's fangs).
+use super::emissions::{base_tick_fluid, play_movement, MovementSounds};
+use super::living::{breathe, dying_travel, fall_damage};
+use super::missiles::MissileKind;
+use super::*;
+use crate::monster_ai::{MobCandidate, MonsterKind, Target};
+use crate::species::{AttackKind, Kind, Motion, Species};
+use minecraftoss_player::survival::EffectKind;
+
+/// A mob of one of the generic kinds.
+#[derive(Clone)]
+pub struct MobEntity {
+    pub id: u64,
+    pub kind: Kind,
+    pub body: Body,
+    pub health: f32,
+    pub damage: DamageState,
+    /// Its status effects (`activeEffects`).
+    pub effects: crate::effects::MobEffects,
+    pub persistence_required: bool,
+    /// Its body's facing (`yRot`) and pitch (`xRot`).
+    pub yaw: f32,
+    pub pitch: f32,
+    /// `AgeableMob.age`: below zero, a baby growing up.
+    pub age: i32,
+    /// Its look (`Variant`, a texture's name), where it has one.
+    pub variant: String,
+    pub no_ai: bool,
+    pub tick_count: i32,
+    pub ambient_sound_time: i32,
+    /// Sounds it made since the world last collected them.
+    pub voices: Vec<(Voice, DVec3)>,
+    pub no_action_time: i32,
+    pub random: LegacyRandom,
+    pub previous_position: DVec3,
+    pub ai: Box<MonsterAi>,
+    /// A blaze's volley: shots left, ticks to the next, and at whom.
+    burst: (i32, i32, Option<Target>),
+}
+
+impl MobEntity {
+    pub fn species(&self) -> &'static Species {
+        self.kind.species()
+    }
+
+    pub fn baby(&self) -> bool {
+        self.age < 0
+    }
+
+    /// Where it stands (its feet).
+    pub fn position(&self) -> DVec3 {
+        self.body.position
+    }
+
+    pub fn eye_height(&self) -> f32 {
+        self.species().eye_height(self.baby())
+    }
+
+    pub fn max_health(&self) -> f32 {
+        self.species().health
+    }
+
+    pub fn set_random_seed(&mut self, seed: u64) {
+        self.random = LegacyRandom::new(seed);
+    }
+
+    /// Its shooter is taking aim (the blaze alight, the ghast's open mouth,
+    /// the shulker open).
+    pub fn charging(&self) -> bool {
+        self.ai.state.charging
+    }
+
+    /// `MeleeAttackGoal`'s swings so far, for the arm swing.
+    pub fn swings(&self) -> u32 {
+        self.ai.state.melee.swings
+    }
+
+    /// Chasing a target (`isAggressive`).
+    pub fn aggressive(&self) -> bool {
+        self.ai.state.melee.aggressive || self.ai.state.target.is_some()
+    }
+
+    /// Its head's look (yaw, pitch) as its look control keeps it.
+    pub fn look_control(&self) -> &crate::look::LookControl {
+        &self.ai.state.look_control
+    }
+
+    /// `LivingEntity.hurtServer` for the generic mob: the idle clock, the
+    /// damage cooldown, the hurt or death sound on a full hit.
+    pub fn hurt(&mut self, amount: f32) -> DamageResult {
+        if self.health > 0.0 && !self.damage.dead {
+            self.no_action_time = 0;
+        }
+        let max = self.max_health();
+        let result = self.damage.hurt_generic(&mut self.health, max, amount);
+        let position = self.position();
+        self.damage.place_death(result, position, self.body.fire_ticks > 0);
+        if result.applied && result.full {
+            if !result.died {
+                self.ambient_sound_time = -self.species().ambient_interval();
+            }
+            let baby = self.baby();
+            let voice = hurt_voice(&mut self.random, result.died, baby);
+            self.voices.push((voice, position));
+        }
+        result
+    }
+
+    /// A hit after its armor that remembers who dealt it.
+    pub(super) fn hurt_by(&mut self, amount: f32, by: Option<Target>) -> DamageResult {
+        let amount = self.species().after_armor(amount);
+        let hit = self.hurt(amount);
+        if hit.applied {
+            if let Some(by) = by {
+                self.ai.state.hurt_by = Some((by, self.tick_count));
+            }
+        }
+        hit
+    }
+
+    fn movement_sounds(&self) -> MovementSounds {
+        let s = self.species();
+        let step = s.step_sound();
+        if s.category == crate::species::Category::Monster {
+            MovementSounds::monster(step)
+        } else {
+            MovementSounds::creature(step)
+        }
+    }
+
+    /// Whether it breathes water and dries out in air.
+    fn dries_out(&self) -> bool {
+        let s = self.species();
+        s.aquatic && !matches!(self.kind, Kind::Axolotl | Kind::Turtle | Kind::ZombieNautilus | Kind::ElderGuardian | Kind::Guardian)
+    }
+
+    /// `aiStep` for a flier, floater or swimmer: the goals, then the steer
+    /// at the wanted position, the move with its drag, the body turn.
+    fn tick_free(&mut self, world: &impl World, players: &[PlayerCandidate], villagers: &[MobCandidate], game_time: i64, difficulty: i32) {
+        let s = self.species();
+        let sounds = self.movement_sounds();
+        let ai = &mut self.ai;
+        let body = &mut self.body;
+        let position = body.position;
+        if players.iter().any(|p| p.alive && !p.spectator && p.position.distance_squared(position) < 32.0 * 32.0) {
+            self.no_action_time = 0;
+        }
+        body.trim_small_velocity();
+        self.no_action_time += 1;
+        let fluid = FluidFrame::sample(world, position, body.width, body.height);
+        ai.state.body = body.clone();
+        ai.state.health = self.health;
+        ai.state.game_time = game_time;
+        ai.state.difficulty = difficulty;
+        ai.state.players = players.to_vec();
+        ai.state.villagers = villagers.to_vec();
+        ai.state.fluid = fluid;
+        ai.state.no_action_time = self.no_action_time;
+        ai.state.tick_count = self.tick_count;
+        ai.state.on_fire = body.fire_ticks > 0;
+        ai.state.random = std::mem::take(&mut self.random);
+        let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
+        ai.tick_goals(world, full);
+        self.random = std::mem::take(&mut ai.state.random);
+        let in_water = fluid.in_water();
+        let swims = s.motion == Motion::Swim;
+        // How hard it pushes towards its goal each tick, by its move control.
+        let push = match self.kind {
+            _ if swims => 0.01 * s.speed,
+            Kind::Ghast | Kind::HappyGhast => 0.025,
+            Kind::Phantom => 0.06,
+            Kind::Wither => 0.04,
+            Kind::EnderDragon => 0.06,
+            _ => 0.02 * s.flying_speed.max(0.1) * 2.0,
+        };
+        let mut steering = false;
+        if let Some((target, modifier)) = ai.state.fly_target {
+            let delta = target - body.position;
+            let reach = if matches!(self.kind, Kind::Ghast | Kind::HappyGhast | Kind::EnderDragon) { 4.0 } else { 1.0 };
+            if delta.length_squared() < reach || (swims && !in_water) {
+                ai.state.fly_target = None;
+            } else {
+                steering = true;
+                let direction = delta.normalize_or_zero();
+                body.velocity += direction * (push * modifier);
+                // `MoveControl.rotlerp` towards its heading, 90 degrees a tick
+                // (a fish's 10).
+                let heading = (delta.z.atan2(delta.x).to_degrees() as f32) - 90.0;
+                let turn = if swims { 10.0 } else { 90.0 };
+                ai.yaw = rotlerp(ai.yaw, heading, turn);
+                let horizontal = (delta.x * delta.x + delta.z * delta.z).sqrt();
+                self.pitch = -(delta.y.atan2(horizontal).to_degrees() as f32);
+            }
+        }
+        // A floater faces where it drifts; one with a target faces it.
+        if matches!(s.motion, Motion::Hover) {
+            if let Some(info) = ai.state.target() {
+                let d = info.position - body.position;
+                ai.yaw = (d.z.atan2(d.x).to_degrees() as f32) - 90.0;
+            } else if body.velocity.x.abs() + body.velocity.z.abs() > 1.0e-3 {
+                ai.yaw = (-body.velocity.x.atan2(body.velocity.z).to_degrees()) as f32;
+            }
+        }
+        // Weightless while it flies or swims; a parrot or fish at rest falls.
+        let weightless = match s.motion {
+            Motion::Hover => true,
+            Motion::Fly => steering || matches!(self.kind, Kind::Bee | Kind::Allay | Kind::Vex),
+            Motion::Swim => in_water,
+            _ => false,
+        };
+        let gravity = body.gravity;
+        if weightless {
+            body.gravity = 0.0;
+        }
+        // `AbstractFish.aiStep`: stranded, it flops.
+        if swims && !in_water && body.on_ground && body.vertical_collision && s.fish {
+            let (a, b) = (self.random.next_float(), self.random.next_float());
+            body.velocity += DVec3::new(f64::from(a * 2.0 - 1.0) * 0.05, 0.4, f64::from(b * 2.0 - 1.0) * 0.05);
+            body.on_ground = false;
+            body.needs_sync = true;
+            let pitch = voice_pitch(&mut self.random, false);
+            let flop = match self.kind {
+                Kind::Cod => "entity.cod.flop",
+                Kind::Salmon => "entity.salmon.flop",
+                Kind::Pufferfish => "entity.puffer_fish.flop",
+                Kind::TropicalFish => "entity.tropical_fish.flop",
+                _ => "entity.tadpole.flop",
+            };
+            self.voices.push((Voice::Event(flop, s.sound_volume(), pitch), body.position));
+        }
+        let landed = body.travel_air_jumping(world, DVec3::ZERO, 0.0, ai.yaw, false);
+        body.gravity = gravity;
+        // The water and air drag the free movers feel past the plain air's.
+        if swims && in_water {
+            body.velocity *= 0.9 / 0.91;
+        } else if s.motion == Motion::Hover {
+            body.velocity.y *= 0.91 / 0.98;
+        }
+        if weightless {
+            body.fall_distance = 0.0;
+        } else if let Some(damage) = landed.and_then(|fallen| fall_damage(body, world, fallen, s.category == crate::species::Category::Monster, &mut self.voices)) {
+            let _ = damage;
+        }
+        play_movement(body, self.tick_count, &mut self.random, &mut self.voices, sounds);
+        let eye = s.eye_height(self.age < 0);
+        ai.state.look_control.tick(body.position, eye, ai.body_rotation.body_yaw, steering);
+        ai.body_rotation.tick(ai.yaw, &mut ai.state.look_control, self.previous_position, body.position);
+        self.yaw = ai.yaw;
+    }
+
+    /// `aiStep` for a walker on the monster step; returns the fall damage
+    /// a landing deals.
+    fn tick_walk(&mut self, world: &impl World, players: &[PlayerCandidate], villagers: &[MobCandidate], game_time: i64, difficulty: i32) -> Option<f32> {
+        let s = self.species();
+        let speed = self.effects.movement_speed(s.speed * if self.baby() && matches!(self.kind, Kind::ZombifiedPiglin | Kind::Piglin) { 1.5 } else { 1.0 });
+        let step = MonsterStep { players, villagers, game_time, difficulty, movement_speed: speed, sounds: self.movement_sounds() };
+        self.ai.state.on_fire = self.body.fire_ticks > 0;
+        self.ai.state.tick_count = self.tick_count;
+        let eye = self.eye_height();
+        self.ai.state.eye_height = eye;
+        let landed = monster_ai_step(&mut self.ai, &mut self.body, self.health, &mut self.random, &mut self.voices, &mut self.no_action_time, self.previous_position, self.tick_count, self.id, world, &step);
+        self.yaw = self.ai.yaw;
+        self.pitch = 0.0;
+        // `Blaze.aiStep`: it falls slowly, and rises towards a target above.
+        if self.kind == Kind::Blaze {
+            if !self.body.on_ground && self.body.velocity.y < 0.0 {
+                self.body.velocity.y *= 0.6;
+            }
+            if let Some(info) = self.ai.state.target() {
+                if info.position.y + f64::from(info.eye_height) > self.body.position.y + f64::from(eye) {
+                    self.body.velocity.y += (0.3 - self.body.velocity.y) * 0.3;
+                    self.body.needs_sync = true;
+                }
+            }
+        }
+        let hostile = s.category == crate::species::Category::Monster;
+        // Blazes, magma cubes and the like never take a fall (`#fall_damage_immune` and slow fallers).
+        if matches!(self.kind, Kind::Blaze | Kind::MagmaCube | Kind::SulfurCube | Kind::SnowGolem | Kind::Cat | Kind::Ocelot | Kind::CopperGolem | Kind::Strider | Kind::Camel | Kind::CamelHusk) {
+            return None;
+        }
+        landed.and_then(|fallen| fall_damage(&self.body, world, fallen, hostile, &mut self.voices))
+    }
+
+    /// A stationary mob's step: goals and its look, nothing else.
+    fn tick_still(&mut self, world: &impl World, players: &[PlayerCandidate], game_time: i64, difficulty: i32) {
+        let eye = self.species().eye_height(false);
+        let ai = &mut self.ai;
+        ai.state.body = self.body.clone();
+        ai.state.health = self.health;
+        ai.state.game_time = game_time;
+        ai.state.difficulty = difficulty;
+        ai.state.players = players.to_vec();
+        ai.state.tick_count = self.tick_count;
+        ai.state.random = std::mem::take(&mut self.random);
+        let full = self.tick_count <= 1 || (self.tick_count + self.id as i32) % 2 == 0;
+        ai.tick_goals(world, full);
+        self.random = std::mem::take(&mut ai.state.random);
+        self.body.velocity = DVec3::ZERO;
+        ai.state.look_control.tick(self.body.position, eye, ai.body_rotation.body_yaw, false);
+        self.no_action_time += 1;
+    }
+}
+
+/// `MoveControl.rotlerp`: from `from` towards `to`, at most `max` degrees.
+fn rotlerp(from: f32, to: f32, max: f32) -> f32 {
+    let mut delta = (to - from) % 360.0;
+    if delta >= 180.0 {
+        delta -= 360.0;
+    }
+    if delta < -180.0 {
+        delta += 360.0;
+    }
+    let mut out = from + delta.clamp(-max, max);
+    if out < 0.0 {
+        out += 360.0;
+    } else if out > 360.0 {
+        out -= 360.0;
+    }
+    out
+}
+
+impl EntityWorld {
+    /// A generic mob of `kind` at `position`, facing `yaw`, full of health;
+    /// a baby when `age` is below zero.
+    pub fn spawn_mob(&mut self, kind: Kind, position: DVec3, yaw: f32, age: i32, no_ai: bool) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        let s = kind.species();
+        let baby = age < 0 && s.ageable;
+        let (width, height) = s.dimensions(baby);
+        let mut body = Body::new(position, width, height);
+        body.step_height = s.step_height as f32;
+        if s.motion == Motion::Hover {
+            body.gravity = 0.0;
+        }
+        let mut ai = MonsterAi::of_kind(MonsterKind::Mob(kind), &body, yaw);
+        ai.state.eye_height = s.eye_height(baby);
+        ai.state.max_health = s.health;
+        ai.state.health = s.health;
+        let random = LegacyRandom::new(self.seed_uniquifier ^ id.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        self.mobs.push(MobEntity {
+            id,
+            kind,
+            previous_position: position,
+            body,
+            health: s.health,
+            damage: DamageState::default(),
+            effects: Default::default(),
+            persistence_required: false,
+            yaw,
+            pitch: 0.0,
+            age: if baby { age } else { 0 },
+            variant: String::new(),
+            no_ai,
+            tick_count: 0,
+            ambient_sound_time: 0,
+            voices: Vec::new(),
+            no_action_time: 0,
+            random,
+            ai: Box::new(ai),
+            burst: (0, 0, None),
+        });
+        self.order.push(EntityKey::Mob(id));
+        self.file_in_section(EntityKey::Mob(id));
+        id
+    }
+
+    /// The generic mobs.
+    pub fn mobs(&self) -> &[MobEntity] {
+        &self.mobs
+    }
+
+    pub fn mob_mut(&mut self, id: u64) -> Option<&mut MobEntity> {
+        self.mobs.iter_mut().find(|e| e.id == id)
+    }
+
+    /// The players holding what tempts a kind (`isFood`, its tempt tag).
+    fn tempters(&self, kind: Kind) -> Vec<u64> {
+        let tag = match kind {
+            Kind::Armadillo => "minecraft:armadillo_food",
+            Kind::Axolotl => "minecraft:axolotl_food",
+            Kind::Bee => "minecraft:bee_food",
+            Kind::Camel | Kind::CamelHusk => "minecraft:camel_food",
+            Kind::Cat => "minecraft:cat_food",
+            Kind::Fox => "minecraft:fox_food",
+            Kind::Frog => "minecraft:frog_food",
+            Kind::Goat => "minecraft:goat_food",
+            Kind::Hoglin => "minecraft:hoglin_food",
+            Kind::Llama | Kind::TraderLlama => "minecraft:llama_tempt_items",
+            Kind::Ocelot => "minecraft:ocelot_food",
+            Kind::Panda => "minecraft:panda_food",
+            Kind::Parrot => "minecraft:parrot_food",
+            Kind::Rabbit => "minecraft:rabbit_food",
+            Kind::Sniffer => "minecraft:sniffer_food",
+            Kind::Strider => "minecraft:strider_tempt_items",
+            Kind::Turtle => "minecraft:turtle_food",
+            Kind::Mule | Kind::SkeletonHorse | Kind::ZombieHorse => "minecraft:horse_tempt_items",
+            Kind::HappyGhast => "minecraft:happy_ghast_tempt_items",
+            Kind::Nautilus => "minecraft:nautilus_taming_items",
+            Kind::Allay => return Vec::new(),
+            _ => return Vec::new(),
+        };
+        let Some(recipes) = self.recipes.as_ref() else { return Vec::new() };
+        self.player_main_hands.iter().filter(|(_, item)| recipes.item_in_tag(tag, item)).map(|(&id, _)| id).collect()
+    }
+
+    /// One generic mob's tick, as the spider's (`LivingEntity.tick`).
+    pub(super) fn tick_mob(&mut self, id: u64, world: &mut impl World, players: &[PlayerCandidate], ticks: &dyn Fn(DVec3) -> bool) {
+        let (game_time, difficulty, monsters_burn) = (self.game_time, self.difficulty, self.monsters_burn);
+        let Some(kind) = self.mobs.iter().find(|e| e.id == id).map(|e| e.kind) else { return };
+        let mobs = self.mob_candidates();
+        let tempters = self.tempters(kind);
+        let villagers: Vec<MobCandidate> = self
+            .villagers
+            .iter()
+            .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.villager.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager" })
+            .collect();
+        let s = kind.species();
+        let (melee, shot, stepped) = {
+            let e = self.mob_mut(id).unwrap();
+            e.ai.state.mobs = mobs;
+            e.ai.state.tempters = tempters;
+            e.previous_position = e.body.position;
+            e.tick_count += 1;
+            if e.age < 0 {
+                e.age += 1;
+                if e.age == 0 {
+                    let (w, h) = s.dimensions(false);
+                    e.body.width = w;
+                    e.body.height = h;
+                }
+            }
+            let sounds = e.movement_sounds();
+            base_tick_fluid(&mut e.body, &*world, e.tick_count == 1, &mut e.random, &mut e.voices, sounds);
+            hazards::burn(e, &*world, game_time);
+            let eye = e.eye_height();
+            hazards::suffocate(e, &*world, eye, game_time);
+            if e.health > 0.0 {
+                if e.dries_out() {
+                    // `WaterAnimal.handleAirSupply`: out of water it dries.
+                    if FluidFrame::sample(&*world, e.body.position, e.body.width, e.body.height).in_water() {
+                        e.body.air = 300;
+                    } else {
+                        e.body.air -= 1;
+                        if e.body.air <= -20 {
+                            e.body.air = 0;
+                            e.hurt(2.0);
+                        }
+                    }
+                } else if !s.aquatic && !s.undead && !matches!(kind, Kind::Blaze | Kind::Wither | Kind::EnderDragon | Kind::SnowGolem | Kind::CopperGolem | Kind::Creaking) && breathe(&mut e.body, &*world, eye, false) {
+                    e.hurt(2.0);
+                }
+                // `isSensitiveToWater`: blazes, snow golems and striders
+                // hurt in water.
+                if matches!(kind, Kind::Blaze | Kind::SnowGolem | Kind::Strider | Kind::Breeze) && e.body.touching_water {
+                    e.hurt(1.0);
+                }
+                // `Phantom.aiStep`: the sun burns it.
+                if kind == Kind::Phantom {
+                    burn_undead(&*world, &mut e.random, &mut e.body, eye, monsters_burn, None);
+                }
+            }
+            let removed = e.damage.tick();
+            if e.ai.state.hurt_by.is_some_and(|(_, when)| e.tick_count - when > 100) {
+                e.ai.state.hurt_by = None;
+            }
+            let max = e.max_health();
+            for work in e.effects.tick(s.undead) {
+                match work.resolve(e.health, max) {
+                    Some(EffectWork::Heal(amount)) => heal(&mut e.health, max, amount),
+                    Some(EffectWork::HurtMagic(amount)) => {
+                        e.hurt(amount);
+                    }
+                    _ => {}
+                }
+            }
+            if e.health > 0.0 && s.has_ambient() {
+                if (e.random.next_int(1000) as i32) < e.ambient_sound_time {
+                    e.ambient_sound_time = -s.ambient_interval();
+                    let baby = e.baby();
+                    let voice = Voice::Ambient(voice_pitch(&mut e.random, baby));
+                    e.voices.push((voice, e.position()));
+                } else {
+                    e.ambient_sound_time += 1;
+                }
+            }
+            let mut melee = None;
+            let mut shot = None;
+            if !removed {
+                if e.health <= 0.0 && !e.no_ai {
+                    let _ = dying_travel(&mut e.body, &*world, e.yaw, e.tick_count, &mut e.random, &mut e.voices, sounds, Some(s.category == crate::species::Category::Monster));
+                } else if e.health > 0.0 && !e.no_ai {
+                    let position = e.body.position;
+                    match s.motion {
+                        Motion::Ground | Motion::Amphibious => {
+                            if let Some(damage) = e.tick_walk(&*world, players, &villagers, game_time, difficulty) {
+                                e.hurt(damage);
+                            }
+                        }
+                        Motion::Stationary => e.tick_still(&*world, players, game_time, difficulty),
+                        _ => e.tick_free(&*world, players, &villagers, game_time, difficulty),
+                    }
+                    melee = e.ai.state.attack.take().map(|target| (target, position));
+                    // A blaze's volley carries on a shot every six ticks.
+                    if e.burst.0 > 0 {
+                        e.burst.1 -= 1;
+                        if e.burst.1 <= 0 {
+                            e.burst.0 -= 1;
+                            e.burst.1 = 6;
+                            if let Some(target) = e.burst.2 {
+                                shot = Some(target);
+                            }
+                        }
+                    }
+                    if let Some((target, _)) = e.ai.state.shoot.take() {
+                        if kind == Kind::Blaze {
+                            e.burst = (2, 6, Some(target));
+                        }
+                        shot = Some(target);
+                    }
+                } else {
+                    e.body.trim_small_velocity();
+                    monster_idle_without_ai(&*world, players, e.body.position, e.eye_height(), &mut e.no_action_time);
+                }
+                let old = e.previous_position;
+                hazards::blocks_act(e, &*world, old, game_time);
+            }
+            (melee, shot, !removed)
+        };
+        if stepped && s.motion != Motion::Stationary {
+            self.push_entities(EntityKey::Mob(id), &*world, game_time, ticks);
+        }
+        if let Some(e) = self.mob_mut(id) {
+            if s.climber {
+                e.body.climbing = e.body.horizontal_collision;
+            }
+        }
+        if let Some((target, from)) = melee {
+            self.mob_melee(id, kind, target, from);
+        }
+        if let Some(target) = shot {
+            self.mob_shoot(id, kind, target, players);
+        }
+    }
+
+    /// `Mob.doHurtTarget` for a generic mob, with its kind's extra.
+    fn mob_melee(&mut self, id: u64, kind: Kind, target: Target, from: DVec3) {
+        let s = kind.species();
+        let difficulty = self.difficulty;
+        let mut damage = s.attack;
+        let mut lift = 0.0_f32;
+        // `HoglinBase.hurtAndThrowTarget`: half its attack plus up to all
+        // of it for an adult, tossing the target up.
+        if matches!(kind, Kind::Hoglin | Kind::Zoglin) {
+            let baby = self.mobs.iter().find(|e| e.id == id).is_some_and(|e| e.baby());
+            if let Some(e) = self.mob_mut(id) {
+                damage = if baby { 0.5 } else { s.attack / 2.0 + e.random.next_int(s.attack as u32) as f32 };
+            }
+            lift = if baby { 0.0 } else { 0.5 };
+        }
+        let effect = match kind {
+            // `CaveSpider.doHurtTarget`: poison, 7 seconds on normal, 15 on hard.
+            Kind::CaveSpider => match difficulty {
+                2 => Some((EffectKind::Poison, 140)),
+                3 => Some((EffectKind::Poison, 300)),
+                _ => None,
+            },
+            // `WitherSkeleton.doHurtTarget`: ten seconds of wither.
+            Kind::WitherSkeleton => Some((EffectKind::Wither, 200)),
+            // `Bee.doHurtTarget`: poison, 10 seconds on normal, 18 on hard.
+            Kind::Bee => match difficulty {
+                2 => Some((EffectKind::Poison, 200)),
+                3 => Some((EffectKind::Poison, 360)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let yaw = self.mobs.iter().find(|e| e.id == id).map_or(0.0, |e| e.yaw);
+        let weapon = MeleeWeapon { knockback: s.attack_knockback as f32, yaw, ..MeleeWeapon::default() };
+        let sound = match kind {
+            Kind::Hoglin => Some("entity.hoglin.attack"),
+            Kind::Zoglin => Some("entity.zoglin.attack"),
+            Kind::Ravager => Some("entity.ravager.attack"),
+            Kind::Warden => Some("entity.warden.attack_impact"),
+            Kind::PolarBear => Some("entity.polar_bear.warning"),
+            Kind::Bee => Some("entity.bee.sting"),
+            Kind::Creaking => Some("entity.creaking.attack"),
+            Kind::Goat => Some("entity.goat.ram_impact"),
+            _ => None,
+        };
+        if let (Some(sound), Some(e)) = (sound, self.mob_mut(id)) {
+            let position = e.position();
+            e.voices.push((Voice::Event(sound, 1.0, 1.0), position));
+        }
+        match target {
+            Target::Player(player_id) => {
+                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Melee { attacker: from, hunger_ticks: 0, lift, weapon, effect }, source: Some(id) });
+            }
+            Target::Mob(victim) | Target::Villager(victim) => {
+                self.mob_hits_mob(id, victim, damage, from, f64::from(lift));
+            }
+        }
+    }
+
+    /// A generic shooter's projectile at its target.
+    fn mob_shoot(&mut self, id: u64, kind: Kind, target: Target, players: &[PlayerCandidate]) {
+        let s = kind.species();
+        let Some((target_feet, target_height)) = self.target_box(target, players) else { return };
+        let Some(e) = self.mobs.iter().find(|e| e.id == id) else { return };
+        let (feet, eye, yaw) = (e.body.position, f64::from(e.eye_height()), e.yaw);
+        let height = f64::from(e.body.height);
+        let aim = target_feet + DVec3::new(0.0, target_height * 0.5, 0.0);
+        let difficulty = self.difficulty;
+        let mut sound: Option<(&'static str, f32)> = None;
+        match s.attack_kind {
+            AttackKind::SmallFireball => {
+                // `Blaze.BlazeAttackGoal`: from its middle half a block up,
+                // spread by the distance's root.
+                let start = feet + DVec3::new(0.0, height / 2.0 + 0.5, 0.0);
+                let spread = (feet.distance(target_feet)).sqrt().sqrt() * 0.5;
+                let e = self.mob_mut(id).unwrap();
+                let jitter = |r: &mut LegacyRandom| r.next_gaussian() * 2.297 * spread * 0.5;
+                let (jx, jz) = (jitter(&mut e.random), jitter(&mut e.random));
+                let direction = DVec3::new(aim.x - start.x + jx, aim.y - start.y, aim.z - start.z + jz);
+                self.launch_missile(MissileKind::SmallFireball, Some(id), start, direction, 0.1, None);
+                sound = Some(("entity.blaze.shoot", 1.0));
+            }
+            AttackKind::LargeFireball => {
+                // `Ghast.GhastShootFireballGoal`: four blocks ahead along its look.
+                let look = DVec3::new(-f64::from(yaw.to_radians().sin()), 0.0, f64::from(yaw.to_radians().cos()));
+                let start = feet + DVec3::new(0.0, height / 2.0 + 0.5, 0.0) + look * 4.0;
+                self.launch_missile(MissileKind::LargeFireball, Some(id), start, aim - start, 0.1, None);
+                sound = Some(("entity.ghast.shoot", 10.0));
+            }
+            AttackKind::WitherSkull => {
+                let start = feet + DVec3::new(0.0, 3.0, 0.0);
+                self.launch_missile(MissileKind::WitherSkull, Some(id), start, aim - start, 0.1, None);
+                sound = Some(("entity.wither.shoot", 1.0));
+            }
+            AttackKind::ShulkerBullet => {
+                let start = feet + DVec3::new(0.0, 0.5, 0.0);
+                self.launch_missile(MissileKind::ShulkerBullet, Some(id), start, aim - start, 0.15, Some(target));
+                sound = Some(("entity.shulker.shoot", 2.0));
+            }
+            AttackKind::Spit => {
+                // `Llama.spit`: from its mouth, aimed a little high.
+                let start = feet + DVec3::new(0.0, eye - 0.1, 0.0);
+                let d = aim - start;
+                let horizontal = (d.x * d.x + d.z * d.z).sqrt() * 0.2;
+                self.launch_missile(MissileKind::LlamaSpit, Some(id), start, DVec3::new(d.x, d.y + horizontal, d.z), 1.5, None);
+                sound = Some(("entity.llama.spit", 1.0));
+            }
+            AttackKind::WindCharge => {
+                let start = feet + DVec3::new(0.0, eye * 0.5, 0.0);
+                let direction = (aim - start).normalize_or_zero();
+                self.add_wind_charge(start, direction * 0.7);
+                sound = Some(("entity.breeze.shoot", 1.5));
+            }
+            AttackKind::Arrow => {
+                let e = self.mob_mut(id).unwrap();
+                let uncertainty = (14 - difficulty * 4) as f32;
+                let arrow = crate::projectile::Arrow::skeleton_shot(feet, eye as f32, target_feet, target_height as f32, uncertainty, &mut e.random);
+                self.spawn_owned_arrow(id, arrow);
+                sound = Some((if kind == Kind::Pillager { "item.crossbow.shoot" } else { "entity.illusioner.cast_spell" }, 1.0));
+            }
+            AttackKind::Snowball => {
+                // `SnowGolem.performRangedAttack`: aimed a little high, at 1.6 with 12 of spread.
+                let start = feet + DVec3::new(0.0, eye - 0.1, 0.0);
+                let d = aim - start;
+                let horizontal = (d.x * d.x + d.z * d.z).sqrt() * 0.2;
+                let seed = self.projectile_seed_random.next_long();
+                let mut random = LegacyRandom::new(seed);
+                let mut thrown = crate::potion::ThrownPotion::shoot(minecraftoss_player::effects::PotionContents::default(), id, start, DVec3::new(d.x, d.y + horizontal, d.z), 1.6, 12.0, &mut random);
+                thrown.item = crate::potion::ThrownItem::Snowball;
+                self.spawn_potion(thrown);
+                sound = Some(("entity.snow_golem.shoot", 1.0));
+            }
+            AttackKind::Beam => {
+                // `Guardian.GuardianAttackGoal`: magic for 1 (2 more on hard,
+                // 2 more for an elder) and its attack.
+                let damage = s.attack + if difficulty >= 3 { 2.0 } else { 0.0 } + if kind == Kind::ElderGuardian { 2.0 } else { 0.0 };
+                self.direct_hit(id, target, damage, "minecraft:indirect_magic", None, feet);
+                sound = Some(("entity.guardian.attack", 1.0));
+            }
+            AttackKind::Fangs => {
+                // `Evoker.EvokerAttackSpellGoal`: the fangs snap at the target (6 magic);
+                // now and then it summons three vexes instead.
+                let summon = self.mob_mut(id).is_some_and(|e| e.random.next_int(3) == 0) && self.mobs.iter().filter(|m| m.kind == Kind::Vex).count() < 8;
+                if summon {
+                    for i in 0..3 {
+                        let offset = DVec3::new(f64::from(i) - 1.0, 1.0, 0.5);
+                        self.spawned.mobs.push(("minecraft:vex".to_owned(), feet + offset, yaw, String::new()));
+                    }
+                    sound = Some(("entity.evoker.prepare_summon", 1.0));
+                } else {
+                    self.direct_hit(id, target, 6.0, "minecraft:magic", None, feet);
+                    self.sounds.push(MobSound { event: "entity.evoker_fangs.attack".into(), position: target_feet, volume: 1.0, pitch: 1.0, category: "hostile_volume" });
+                    sound = Some(("entity.evoker.prepare_attack", 1.0));
+                }
+            }
+            AttackKind::Melee | AttackKind::None => {}
+        }
+        if let (Some((event, volume)), Some(e)) = (sound, self.mob_mut(id)) {
+            let pitch = (e.random.next_float() - e.random.next_float()) * 0.2 + 1.0;
+            let position = e.position();
+            e.voices.push((Voice::Event(event, volume, pitch), position));
+        }
+    }
+
+    /// A hit with no projectile in between (the guardian's beam, fangs).
+    fn direct_hit(&mut self, id: u64, target: Target, damage: f32, damage_type: &'static str, effect: Option<(EffectKind, u32)>, from: DVec3) {
+        match target {
+            Target::Player(player_id) => {
+                self.player_hits.push(PlayerHit { player_id, damage, kind: PlayerHitKind::Projectile { velocity: DVec3::ZERO, damage_type, effect, fire_seconds: 0.0 }, source: Some(id) });
+            }
+            Target::Mob(victim) | Target::Villager(victim) => {
+                self.mob_hits_mob(id, victim, damage, from, 0.0);
+            }
+        }
+    }
+}

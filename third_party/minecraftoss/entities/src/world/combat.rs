@@ -492,6 +492,9 @@ impl EntityWorld {
         if let Some(e) = self.chickens.iter().find(|e| e.id == id) {
             return Some((e.chicken.body.clone(), e.chicken.health));
         }
+        if let Some(e) = self.mobs.iter().find(|e| e.id == id) {
+            return Some((e.body.clone(), e.health));
+        }
         None
     }
 
@@ -528,6 +531,9 @@ impl EntityWorld {
             Some((&mut e.pig.body, &mut e.random, 0.0))
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             Some((&mut e.chicken.body, &mut e.random, 0.0))
+        } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
+            let resistance = e.kind.species().knockback_resistance;
+            Some((&mut e.body, &mut e.random, resistance))
         } else {
             None
         }
@@ -552,6 +558,14 @@ impl EntityWorld {
         let (zombie_armor, zombie_toughness, zombie_protection) = self.zombie_armor(id, damage_type);
         let hit = if let Some(e) = self.bats.iter_mut().find(|e| e.id == id) {
             e.hurt(amount)
+        } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
+            let s = e.kind.species();
+            let amount = if s.armor > 0.0 { armor(amount, s.armor, 0.0) } else { amount };
+            let hit = e.hurt(amount);
+            if hit.applied {
+                e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));
+            }
+            hit
         } else if let Some(e) = self.zombies.iter_mut().find(|e| e.id == id) {
             // `Zombie.createAttributes`: 2 armor, and what it wears.
             let after_armor = armor(amount, zombie_armor, zombie_toughness);

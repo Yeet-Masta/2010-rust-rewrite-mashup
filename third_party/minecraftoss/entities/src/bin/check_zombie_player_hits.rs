@@ -156,7 +156,7 @@ fn main() {
                     let (_, player, armor) = case.probe.as_mut().unwrap();
                     let from = match hit.kind {
                         PlayerHitKind::Melee { attacker, .. } => HitFrom::Position(attacker),
-                        PlayerHitKind::Arrow { velocity, .. } => HitFrom::Projectile(velocity),
+                        PlayerHitKind::Arrow { velocity, .. } | PlayerHitKind::Projectile { velocity, .. } => HitFrom::Projectile(velocity),
                         PlayerHitKind::Explosion { .. } | PlayerHitKind::Lightning | PlayerHitKind::Wind { .. } => HitFrom::Explosion,
                     };
                     let incoming = IncomingHit { damage: hit.damage, from, scales_with_difficulty: true, exhaustion: 0.1 };

@@ -163,6 +163,8 @@ impl EntityWorld {
                 .find(|e| e.id == id)
                 .map(|e| (&mut e.creeper.body, e.creeper.health > 0.0 && !e.creeper.exploded)),
             EntityKey::Spider(id) => self.spiders.iter_mut().find(|e| e.id == id).map(|e| (&mut e.spider.body, e.spider.health > 0.0)),
+            // A shulker on its block, the dragon and the wither are never pushed.
+            EntityKey::Mob(id) => self.mobs.iter_mut().find(|e| e.id == id && !matches!(e.kind, crate::species::Kind::Shulker | crate::species::Kind::EnderDragon | crate::species::Kind::Wither)).map(|e| (&mut e.body, e.health > 0.0)),
             EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| (&mut e.slime.body, e.slime.health > 0.0)),
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| (&mut e.enderman.body, e.enderman.health > 0.0)),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| (&mut e.witch.body, e.witch.health > 0.0)),
@@ -184,6 +186,7 @@ impl EntityWorld {
             EntityKey::Skeleton(id) => self.skeletons.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Creeper(id) => self.creepers.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Spider(id) => self.spiders.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
+            EntityKey::Mob(id) => self.mobs.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Slime(id) => self.slimes.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Enderman(id) => self.endermen.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
             EntityKey::Witch(id) => self.witches.iter_mut().find(|e| e.id == id).map(|e| e as &mut dyn Exposed),
@@ -313,6 +316,7 @@ impl EntityWorld {
                 EntityKey::Skeleton(id) => self.skeletons.iter().find(|e| e.id == id).map(|e| &e.skeleton.body),
                 EntityKey::Creeper(id) => self.creepers.iter().find(|e| e.id == id && !e.creeper.exploded).map(|e| &e.creeper.body),
                 EntityKey::Spider(id) => self.spiders.iter().find(|e| e.id == id).map(|e| &e.spider.body),
+                EntityKey::Mob(id) => self.mobs.iter().find(|e| e.id == id && !matches!(e.kind, crate::species::Kind::Shulker | crate::species::Kind::EnderDragon | crate::species::Kind::Wither)).map(|e| &e.body),
                 EntityKey::Slime(id) => self.slimes.iter().find(|e| e.id == id).map(|e| &e.slime.body),
                 EntityKey::Enderman(id) => self.endermen.iter().find(|e| e.id == id).map(|e| &e.enderman.body),
                 EntityKey::Witch(id) => self.witches.iter().find(|e| e.id == id).map(|e| &e.witch.body),

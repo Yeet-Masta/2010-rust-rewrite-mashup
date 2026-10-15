@@ -12,6 +12,8 @@ pub mod cow_ai;
 pub mod creeper;
 pub mod crops;
 pub mod monster_ai;
+pub mod mob_ai;
+pub mod species;
 /// The creeper's AI lives with the other monsters'.
 pub use monster_ai as creeper_ai;
 pub mod eat_block;

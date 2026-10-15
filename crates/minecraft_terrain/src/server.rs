@@ -533,6 +533,9 @@ impl ServerSim {
         for (position, amount) in spawned.experience {
             self.level.award_experience(position.to_array(), amount);
         }
+        for (x, y, z) in spawned.fires {
+            self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
+        }
         // The wind's blasts in the level: the blocks they work, the items
         // they push, the clients' gusts (`TRIGGER`, no harm).
         for blast in spawned.wind {
@@ -610,7 +613,9 @@ impl ServerSim {
         use minecraftoss_world::level::explosion::{BlockInteraction, Explosion};
         for blast in self.mobs.take_creeper_explosions() {
             let interaction = if self.mobs.mob_griefing() { BlockInteraction::DestroyWithDecay } else { BlockInteraction::Keep };
-            self.level.explode(Explosion::new(blast.position.to_array(), blast.radius, interaction, None));
+            let mut explosion = Explosion::new(blast.position.to_array(), blast.radius, interaction, None);
+            explosion.fire = blast.fire;
+            self.level.explode(explosion);
         }
     }
 

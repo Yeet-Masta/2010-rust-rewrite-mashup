@@ -340,6 +340,10 @@ impl Game {
             PlayerHitKind::Arrow { pierces: true, .. } | PlayerHitKind::Lightning | PlayerHitKind::Wind { .. } => return false,
             PlayerHitKind::Arrow { position, .. } => (position, 0.0),
             PlayerHitKind::Explosion { center, .. } => (center, 0.0),
+            // `#bypasses_shield`: magic and the warden's boom.
+            PlayerHitKind::Projectile { damage_type, .. } if damage_type.contains("magic") || damage_type.ends_with("sonic_boom") => return false,
+            // A fireball, skull, bullet or spit faces the shield from where it flew.
+            PlayerHitKind::Projectile { velocity, .. } => (self.player.pos - velocity * 4.0, 0.0),
         };
         if !minecraftoss_entities::world::shield_faces(self.player.yaw as f32, self.player.pos, source) {
             return false;

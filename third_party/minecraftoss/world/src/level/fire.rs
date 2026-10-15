@@ -236,6 +236,19 @@ impl Level<'_> {
     /// `canBePlacedAt`'s `isPortal` (fire inside an empty nether portal
     /// frame) is not ported: fire there survives on the frame anyway, and
     /// its `onPlace` reports the portal as unsupported.
+    /// `BaseFireBlock.getState` set where it survives in air
+    /// (`SmallFireball.onHitBlock`'s fire on the struck face).
+    pub fn light_fire(&mut self, at: BlockPos) {
+        if !self.registries().blocks.is_air(self.block(at)) {
+            return;
+        }
+        let lib = self.lib;
+        let fire = minecraftoss_generator::feature::update::base_fire_state(&Ctx { lib, region: &mut *self }, at);
+        if self.can_survive_state(fire, at) {
+            self.set_block_and_update(at, fire);
+        }
+    }
+
     pub fn use_igniter(&mut self, pos: BlockPos, face: Direction, flint_and_steel: bool) -> Option<BlockPos> {
         let flags = if flint_and_steel { update::ALL | 8 } else { update::ALL };
         let state = self.block(pos);

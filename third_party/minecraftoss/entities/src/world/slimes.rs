@@ -322,7 +322,7 @@ impl EntityWorld {
             }
             let Some(info) = entity.ai.state.info(crate::monster_ai::Target::Player(player.id)) else { continue };
             if entity.ai.state.within_melee_range(info) && entity.ai.state.sees(world, info) {
-                hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, weapon: Default::default() }, source: Some(id) });
+                hits.push(PlayerHit { player_id: player.id, damage, kind: PlayerHitKind::Melee { attacker, hunger_ticks: 0, lift: 0.0, weapon: Default::default(), effect: None }, source: Some(id) });
             }
         }
         self.player_hits.extend(hits);
