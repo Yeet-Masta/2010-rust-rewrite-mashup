@@ -668,6 +668,12 @@ impl Entities {
         self.server.summon(format!("minecraft:{kind}"), at, None);
     }
 
+    /// A mob without AI (`NoAI`), for a look at it.
+    pub fn summon_still(&mut self, kind: &str, at: [f64; 3]) {
+        let tag = minecraftoss_core::nbt::Tag::Compound([("NoAI".to_owned(), minecraftoss_core::nbt::Tag::Byte(1))].into_iter().collect());
+        self.server.summon(format!("minecraft:{kind}"), at, Some(tag));
+    }
+
     /// A slime of a size (`Slime.setSize`; its tag's `Size` is one less).
     pub fn summon_slime(&mut self, at: [f64; 3], size: i32) {
         let tag = minecraftoss_core::nbt::Tag::Compound([("Size".to_owned(), minecraftoss_core::nbt::Tag::Int(size - 1))].into_iter().collect());

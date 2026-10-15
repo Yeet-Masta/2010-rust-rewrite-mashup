@@ -1332,8 +1332,24 @@ impl Game {
     /// One 20 Hz tick.
     fn tick(&mut self, input: &Input) {
         self.ticks += 1;
-        if self.screen == Screen::Dead && self.ticks == self.died_at + 20 {
-            self.death_effects();
+        // A developer's look at mobs: `MINECRAFT_SUMMON=blaze,fox,...`
+        // lifts the player into open sky and hangs them, without AI, in a
+        // row at eye level ahead (`MINECRAFT_SUMMON_TICK` picks when).
+        let summon_tick = std::env::var("MINECRAFT_SUMMON_TICK").ok().and_then(|t| t.parse().ok()).unwrap_or(100);
+        if self.ticks == summon_tick
+            && let Ok(list) = std::env::var("MINECRAFT_SUMMON")
+        {
+            self.player.pos.y += 40.0;
+            self.player.velocity = glam::DVec3::ZERO;
+            self.player.flying = self.creative;
+            let yaw = self.player.yaw.to_radians();
+            let (ahead, side) = (glam::DVec3::new(-yaw.sin(), 0.0, yaw.cos()), glam::DVec3::new(yaw.cos(), 0.0, yaw.sin()));
+            let kinds: Vec<&str> = list.split(',').filter(|k| !k.is_empty()).collect();
+            let spacing: f64 = std::env::var("MINECRAFT_SUMMON_SPACING").ok().and_then(|t| t.parse().ok()).unwrap_or(2.0);
+            for (i, kind) in kinds.iter().enumerate() {
+                let at = self.player.pos + glam::DVec3::new(0.0, 0.6, 0.0) + ahead * spacing * 3.0 + side * ((i as f64 - (kinds.len() as f64 - 1.0) / 2.0) * spacing);
+                self.entities.summon_still(kind.trim(), at.to_array());
+            }
         }
         // `MinecraftServer.autoSave`: every five minutes.
         if self.ticks.is_multiple_of(6000) && self.save_dir.is_some() {
