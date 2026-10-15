@@ -344,6 +344,9 @@ impl MobEntity {
         if self.kind == Kind::Vex {
             return self.tick_vex(world, players, villagers, game_time, difficulty);
         }
+        if self.kind == Kind::Phantom {
+            return self.tick_phantom(world, players, villagers, game_time, difficulty);
+        }
         let s = self.species();
         let sounds = self.movement_sounds();
         let ai = &mut self.ai;
@@ -1080,7 +1083,10 @@ impl EntityWorld {
         // The base attack plus the held weapon's (`ATTACK_DAMAGE` with the
         // main hand's modifiers).
         let weapon = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.hand.as_deref()).map_or(0.0, weapon_damage);
-        let mut damage = s.attack + weapon;
+        // `Phantom.updatePhantomSizeInfo`: 6 and its size.
+        let size = self.mobs.iter().find(|e| e.id == id).map_or(0, |e| e.phantom_size());
+        let base = if kind == Kind::Phantom { 6.0 } else { s.attack };
+        let mut damage = base + weapon + size as f32;
         let mut lift = 0.0_f32;
         // `Ravager.doHurtTarget`: it stops to bite.
         if kind == Kind::Ravager {
@@ -1120,6 +1126,8 @@ impl EntityWorld {
             Kind::Hoglin => Some("entity.hoglin.attack"),
             Kind::Zoglin => Some("entity.zoglin.attack"),
             Kind::Ravager => Some("entity.ravager.attack"),
+            // `levelEvent(1039)`: the phantom's bite.
+            Kind::Phantom => Some("entity.phantom.bite"),
             Kind::Warden => Some("entity.warden.attack_impact"),
             Kind::PolarBear => Some("entity.polar_bear.warning"),
             Kind::Bee => Some("entity.bee.sting"),

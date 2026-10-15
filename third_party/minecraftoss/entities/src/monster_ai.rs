@@ -320,6 +320,25 @@ pub fn is_enemy(kind: &str) -> bool {
     )
 }
 
+/// `Phantom`'s `attackPhase` (swooping or circling), `anchorPoint`,
+/// `moveTargetPoint`, its move control's speed, and a swoop just begun
+/// (for its sound).
+#[derive(Clone, Debug)]
+pub struct PhantomCtx {
+    pub swoop: bool,
+    pub anchor: Option<(i32, i32, i32)>,
+    pub move_target: DVec3,
+    pub swooped: bool,
+    pub speed: f32,
+}
+
+impl Default for PhantomCtx {
+    fn default() -> Self {
+        // `PhantomMoveControl.speed`'s first 0.1.
+        Self { swoop: false, anchor: None, move_target: DVec3::ZERO, swooped: false, speed: 0.1 }
+    }
+}
+
 /// A target as the goals see it.
 #[derive(Clone, Copy, Debug)]
 pub struct TargetInfo {
@@ -495,6 +514,8 @@ pub struct MonsterGoalContext {
     pub peek: i32,
     pub can_stay: bool,
     pub attach_face: u8,
+    /// A phantom's attack phase, anchor and move target (`world/phantoms`).
+    pub phantom: PhantomCtx,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -886,6 +907,7 @@ impl MonsterAi {
                 peek: 0,
                 can_stay: true,
                 attach_face: 0,
+                phantom: PhantomCtx::default(),
                 fly_target: None,
                 charging: false,
                 in_love: false,

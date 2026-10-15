@@ -925,6 +925,15 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             // `SpellcasterIllager`'s `SpellTicks`; a vex's `bound_pos` and
             // `life_ticks` (its owner is not kept across a reload here).
             entity.spells.casting_ticks = int(tag, "SpellTicks").unwrap_or(0);
+            // `Phantom.readAdditionalSaveData`: its size (its variant) scales
+            // it, and its anchor.
+            if kind == Kind::Phantom {
+                let scale = 1.0 + 0.15 * entity.phantom_size() as f32;
+                let (width, height) = kind.species().dimensions(false);
+                entity.body.width = width * scale;
+                entity.body.height = height * scale;
+                entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
+            }
             // `Shulker.readAdditionalSaveData` (its colour is its variant).
             if kind == Kind::Shulker {
                 entity.shulker.face = int(tag, "AttachFace").unwrap_or(0).clamp(0, 5) as u8;
@@ -954,7 +963,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             let found = ["variant", "Type", "type", "MainGene", "weather_state"]
                 .iter()
                 .find_map(|key| text(tag, key).map(|v| (v.to_owned(), (*key, false))))
-                .or_else(|| ["Variant", "RabbitType", "Color", "Size"].iter().find_map(|key| int(tag, key).map(|v| (v.to_string(), (*key, true)))));
+                .or_else(|| ["Variant", "RabbitType", "Color", "Size", "size"].iter().find_map(|key| int(tag, key).map(|v| (v.to_string(), (*key, true)))));
             if let Some((variant, key)) = found {
                 entity.variant = variant;
                 entity.variant_key = Some(key);
@@ -1268,6 +1277,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Evoker | minecraftoss_entities::species::Kind::Illusioner) {
             fields.push(("SpellTicks", Tag::Int(e.spells.casting_ticks)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Phantom {
+            if let Some((x, y, z)) = e.ai.state.phantom.anchor {
+                fields.push(("anchor_pos", Tag::IntArray(vec![x, y, z])));
+            }
+            if e.variant_key.is_none() {
+                fields.push(("size", Tag::Int(0)));
+            }
         }
         if e.kind == minecraftoss_entities::species::Kind::Shulker {
             fields.push(("AttachFace", Tag::Byte(e.shulker.face as i8)));

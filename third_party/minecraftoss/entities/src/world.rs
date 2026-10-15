@@ -40,6 +40,8 @@ mod missiles;
 mod withers;
 mod illagers;
 mod shulkers;
+mod phantoms;
+pub use phantoms::{goals as phantom_goals, targets as phantom_targets};
 pub use shulkers::{goals as shulker_goals, targets as shulker_targets, ShulkerState};
 pub use illagers::{FangsEntity, Illusion, RavagerState, Spell, Spellcaster};
 pub use mobs::MobEntity;
