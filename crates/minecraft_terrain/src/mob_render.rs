@@ -232,7 +232,8 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
             baby_model = own_baby("polar_bear");
             add("polar_bear", format!("bear/polarbear{b}"), &mut out);
         }
-        Kind::Pufferfish => out.push(layer("pufferfish_small", "fish/pufferfish")),
+        // `PufferfishRenderer`: a model for each puff state.
+        Kind::Pufferfish => out.push(layer(["pufferfish_small", "pufferfish_medium", "pufferfish_big"][e.puff.clamp(0, 2) as usize], "fish/pufferfish")),
         Kind::Rabbit => {
             let coat = match index(v) {
                 1 => "white",

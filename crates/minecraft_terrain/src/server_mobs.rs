@@ -915,6 +915,9 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.off_hand = tag.get("equipment").and_then(|e| e.get("offhand")).and_then(|i| i.get("id")).and_then(Tag::as_str).map(str::to_owned);
             entity.time_in_overworld = int(tag, "TimeInOverworld").unwrap_or(0);
             entity.zombify_immune = int(tag, "IsImmuneToZombification").unwrap_or(0) != 0;
+            if kind == Kind::Pufferfish {
+                entity.set_puff(int(tag, "PuffState").unwrap_or(0));
+            }
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
             entity.age.locked = flagged_baby || int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
@@ -1233,6 +1236,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if !equipment.is_empty() {
             fields.push(("equipment", Tag::Compound(equipment)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Pufferfish {
+            fields.push(("PuffState", Tag::Int(e.puff)));
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Piglin | minecraftoss_entities::species::Kind::PiglinBrute | minecraftoss_entities::species::Kind::Hoglin) {
             fields.push(("TimeInOverworld", Tag::Int(e.time_in_overworld)));

@@ -57,6 +57,11 @@ pub struct MobEntity {
     /// piglins zombify, and `IsImmuneToZombification`.
     pub time_in_overworld: i32,
     pub zombify_immune: bool,
+    /// `Pufferfish`'s `PUFF_STATE` (0 to 2) and its `inflateCounter` and
+    /// `deflateTimer`.
+    pub puff: i32,
+    inflate: i32,
+    deflate: i32,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -80,6 +85,72 @@ impl MobEntity {
 
     pub fn baby(&self) -> bool {
         self.age.baby()
+    }
+
+    /// `Pufferfish.setPuffState`: its size follows (`getScale`: half, 0.7
+    /// and whole of its full size).
+    pub fn set_puff(&mut self, puff: i32) {
+        self.puff = puff.clamp(0, 2);
+        let scale = [0.5_f32, 0.7, 1.0][self.puff as usize];
+        let (width, height) = self.species().dimensions(false);
+        self.body.width = width * scale;
+        self.body.height = height * scale;
+    }
+
+    /// `PufferfishPuffGoal` (anything scary within two blocks, short of
+    /// creative players and `#not_scary_for_pufferfish`), then
+    /// `Pufferfish.tick`'s puffing up and down with its sounds; returns
+    /// the players it stings (`playerTouch`: their touch box meets it).
+    fn puff_step(&mut self, players: &[PlayerCandidate]) -> Vec<u64> {
+        const NOT_SCARY: [&str; 14] = ["minecraft:turtle", "minecraft:guardian", "minecraft:elder_guardian", "minecraft:cod", "minecraft:pufferfish", "minecraft:salmon", "minecraft:tropical_fish", "minecraft:dolphin", "minecraft:squid", "minecraft:glow_squid", "minecraft:tadpole", "minecraft:nautilus", "minecraft:zombie_nautilus", "minecraft:sulfur_cube"];
+        if self.kind != Kind::Pufferfish || self.health <= 0.0 || self.no_ai {
+            return Vec::new();
+        }
+        let position = self.body.position;
+        let half = f64::from(self.body.width) / 2.0;
+        let (min, max) = (position - DVec3::new(half, 0.0, half), position + DVec3::new(half, f64::from(self.body.height), half));
+        let meets = |at: DVec3, width: f64, height: f64, grow: DVec3| {
+            let (lo, hi) = (min - grow, max + grow);
+            at.x - width / 2.0 < hi.x && at.x + width / 2.0 > lo.x && at.y < hi.y && at.y + height > lo.y && at.z - width / 2.0 < hi.z && at.z + width / 2.0 > lo.z
+        };
+        let scary = players.iter().any(|p| p.alive && !p.spectator && p.attackable && meets(p.position, 0.6, 1.8, DVec3::splat(2.0)))
+            || self.ai.state.mobs.iter().any(|m| m.id != self.id && m.alive && !NOT_SCARY.contains(&m.kind) && meets(m.position, f64::from(m.width), f64::from(m.height), DVec3::splat(2.0)));
+        if scary {
+            if self.inflate == 0 {
+                self.inflate = 1;
+                self.deflate = 0;
+            }
+        } else {
+            self.inflate = 0;
+        }
+        let mut sound = None;
+        if self.inflate > 0 {
+            if self.puff == 0 {
+                sound = Some("entity.puffer_fish.blow_up");
+                self.set_puff(1);
+            } else if self.inflate > 40 && self.puff == 1 {
+                sound = Some("entity.puffer_fish.blow_up");
+                self.set_puff(2);
+            }
+            self.inflate += 1;
+        } else if self.puff != 0 {
+            if self.deflate > 60 && self.puff == 2 {
+                sound = Some("entity.puffer_fish.blow_out");
+                self.set_puff(1);
+            } else if self.deflate > 100 && self.puff == 1 {
+                sound = Some("entity.puffer_fish.blow_out");
+                self.set_puff(0);
+            }
+            self.deflate += 1;
+        }
+        if let Some(event) = sound {
+            let pitch = voice_pitch(&mut self.random, false);
+            self.voices.push((Voice::Event(event, 1.0, pitch), position));
+        }
+        if self.puff == 0 {
+            return Vec::new();
+        }
+        players.iter().filter(|p| p.alive && !p.spectator && p.attackable && meets(p.position, 0.6, 1.8, DVec3::new(1.0, 0.5, 1.0))).map(|p| p.id).collect()
     }
 
     /// `AbstractPiglin.customServerAiStep` and `Hoglin`'s: the clock to
@@ -460,6 +531,9 @@ impl EntityWorld {
             admire_ticks: 0,
             time_in_overworld: 0,
             zombify_immune: false,
+            puff: 0,
+            inflate: 0,
+            deflate: 0,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -470,6 +544,11 @@ impl EntityWorld {
             head_item: None,
             burst: (0, 0, None),
         });
+        if kind == Kind::Pufferfish {
+            if let Some(e) = self.mobs.last_mut() {
+                e.set_puff(0);
+            }
+        }
         self.order.push(EntityKey::Mob(id));
         self.file_in_section(EntityKey::Mob(id));
         id
@@ -515,7 +594,7 @@ impl EntityWorld {
         let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
         let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
         let piglins_zombify = self.piglins_zombify;
-        let (melee, shot, stepped, bred, barter, convert) = {
+        let (melee, shot, stepped, bred, barter, convert, sting) = {
             let e = self.mob_mut(id).unwrap();
             e.ai.state.wolf.tame = e.owner.is_some();
             e.ai.state.wolf.owner = owner;
@@ -643,7 +722,14 @@ impl EntityWorld {
             }
             let bred = e.ai.state.breed_with.take();
             let (barter, convert) = if removed { (None, None) } else { e.piglin_step(piglins_zombify, players) };
-            (melee, shot, !removed, bred, barter, convert)
+            let stung = if removed { Vec::new() } else { e.puff_step(players) };
+            if !stung.is_empty() {
+                let pitch = 1.0;
+                let at = e.position();
+                e.voices.push((Voice::Event("entity.puffer_fish.sting", 1.0, pitch), at));
+            }
+            let sting = (stung, e.puff, e.body.position);
+            (melee, shot, !removed, bred, barter, convert, sting)
         };
         if stepped && s.motion != Motion::Stationary {
             self.push_entities(EntityKey::Mob(id), &*world, game_time, ticks);
@@ -664,6 +750,13 @@ impl EntityWorld {
         }
         if let Some(barter) = barter {
             self.spawned.barters.push(barter);
+        }
+        // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
+        // three seconds a puff step.
+        let (stung, puff, at) = sting;
+        for player_id in stung {
+            let effect = Some((EffectKind::Poison, 60 * puff as u32));
+            self.player_hits.push(PlayerHit { player_id, damage: 1.0 + puff as f32, kind: PlayerHitKind::Melee { attacker: at, hunger_ticks: 0, lift: 0.0, weapon: Default::default(), effect }, source: Some(id) });
         }
         if let Some(into) = convert {
             self.zombify_mob(id, into);
