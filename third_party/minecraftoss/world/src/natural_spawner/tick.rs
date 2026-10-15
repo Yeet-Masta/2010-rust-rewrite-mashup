@@ -21,6 +21,8 @@ const MAGIC_NUMBER: i32 = 289;
 pub struct SpawnPlayer {
     pub pos: [f64; 3],
     pub spectator: bool,
+    /// `Stats.TIME_SINCE_REST`: ticks since it last slept or died.
+    pub time_since_rest: i32,
 }
 
 /// An entity in the level, as `createState` counts it and spawning's

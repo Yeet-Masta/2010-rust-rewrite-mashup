@@ -181,6 +181,8 @@ pub struct Game {
     hide_hud: bool,
     pub screenshot: bool,
     hurts: Vec<(Option<u64>, &'static str)>,
+    /// `Stats.TIME_SINCE_REST`, saved with the player.
+    time_since_rest: i32,
     drag: Option<(bool, Vec<Slot>)>,
     /// The last slot pressed, with which button and when, for double clicks.
     last_click: Option<(Slot, bool, Instant)>,
@@ -357,6 +359,7 @@ impl Game {
             hide_hud: false,
             screenshot: false,
             hurts: Vec::new(),
+            time_since_rest: saved.as_ref().map_or(0, |s| s.time_since_rest),
             drag: None,
             last_click: None,
             score: 0,
@@ -515,6 +518,7 @@ impl Game {
             effects: if dead { Default::default() } else { status.effects.clone() },
             absorption: if dead { 0.0 } else { status.absorption },
             fire: if dead { 0 } else { status.fire_ticks },
+            time_since_rest: if dead { 0 } else { self.time_since_rest },
             flying: self.player.flying,
             selected: self.entities.selected,
             slots: self.entities.inventory.slots.clone(),
@@ -605,6 +609,7 @@ impl Game {
             hurts: std::mem::take(&mut self.hurts),
             creative: self.creative,
             shield: self.blocking_slot().map(|_| self.player.yaw as f32),
+            time_since_rest: self.time_since_rest,
         };
         let bright = self.world.sky_light_level() > 11.0;
         self.entities.hold_pickups = self.pickups_wait();
@@ -612,6 +617,7 @@ impl Game {
             .entities
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
+        self.time_since_rest = view.time_since_rest;
         self.handle_events(events, input.use_item);
         // Forgotten chunks whose last changes from the server are in may
         // drop now.
@@ -3121,6 +3127,8 @@ impl Game {
         self.previous = self.player.pos;
         self.landed = false;
         self.score = 0;
+        // `ServerPlayer.die`: `resetStat(TIME_SINCE_REST)`.
+        self.time_since_rest = 0;
         self.screen = Screen::Playing;
     }
 

@@ -23,6 +23,8 @@ pub struct Saved {
     pub absorption: f32,
     /// `Fire`: the ticks left burning (below zero, the immunity).
     pub fire: i32,
+    /// `Stats.TIME_SINCE_REST`, for the phantom spawner.
+    pub time_since_rest: i32,
     /// A creative player in the air stays there.
     pub flying: bool,
     pub selected: usize,
@@ -70,6 +72,7 @@ pub fn read(dir: &Path) -> Option<Saved> {
         effects: ActiveEffects::from_json(&player["active_effects"]),
         absorption: player["absorption"].as_f64().unwrap_or(0.0) as f32,
         fire: player["fire"].as_i64().unwrap_or(0).clamp(-32768, 32767) as i32,
+        time_since_rest: player["time_since_rest"].as_i64().unwrap_or(0).clamp(0, i64::from(i32::MAX)) as i32,
         flying: player["flying"].as_bool().unwrap_or(false),
         selected: player["selected"].as_u64().unwrap_or(0).min(8) as usize,
         slots,
@@ -142,6 +145,7 @@ pub fn write(dir: &Path, saved: &Saved) -> std::io::Result<()> {
             "health": saved.health,
             "absorption": saved.absorption,
             "fire": saved.fire,
+            "time_since_rest": saved.time_since_rest,
             "active_effects": saved.effects.to_json(),
             "food": saved.food,
             "saturation": saved.saturation,
@@ -181,6 +185,7 @@ mod tests {
             effects: ActiveEffects::default(),
             absorption: 0.0,
             fire: 0,
+            time_since_rest: 0,
             flying: false,
             selected: 0,
             slots: vec![None; 43],

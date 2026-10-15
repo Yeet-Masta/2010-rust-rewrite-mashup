@@ -44,6 +44,8 @@ pub struct Breaker {
 
 pub struct ServerSim {
     pub(crate) level: Level<'static>,
+    /// The player's `TIME_SINCE_REST`, as the client counts it.
+    pub(crate) time_since_rest: i32,
     states: Arc<BlockStates>,
     /// Mobs, ticked after the level each tick.
     pub(crate) mobs: minecraftoss_entities::world::EntityWorld,
@@ -196,6 +198,7 @@ impl ServerSim {
         mobs.pois = minecraftoss_entities::poi::PoiManager::new(range.start >> 4, (range.end - 1) >> 4);
         Self {
             level,
+            time_since_rest: 0,
             states,
             mobs,
             mob_tables,
@@ -412,7 +415,8 @@ impl ServerSim {
     /// area.
     pub fn prepare_spawning(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
         let Some(natural) = &mut self.level.natural_spawning else { return };
-        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator }).collect();
+        let rest = self.time_since_rest;
+        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest }).collect();
         natural.set_players(&spawn_players);
         let mut census: Vec<CensusMob> = self
             .mobs
@@ -1074,6 +1078,8 @@ pub struct TickInput {
     /// The hurts that landed on the player since the last tick: the mob
     /// behind each and the damage type (its tame wolves avenge it).
     pub player_hurts: Vec<(Option<u64>, &'static str)>,
+    /// The player's `TIME_SINCE_REST` (phantoms come for the sleepless).
+    pub time_since_rest: i32,
     /// The `spawn_mobs` game rule.
     pub spawn_mobs: bool,
     /// Whether the player has infinite materials (creative): it takes
@@ -1591,6 +1597,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     if let Some(natural) = &mut sim.level.natural_spawning {
                         natural.spawn_mobs = input.spawn_mobs;
                     }
+                    sim.time_since_rest = input.time_since_rest;
                     sim.prepare_spawning(&input.mob_players);
                     sim.prepare_menus(&input.mob_players);
                     sim.tick();

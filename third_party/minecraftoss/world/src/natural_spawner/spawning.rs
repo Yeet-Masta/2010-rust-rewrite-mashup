@@ -775,6 +775,63 @@ impl CreatureSpawns {
         }
     }
 
+    /// `PhantomSpawner.tick`: every one to two minutes, when the sky is dark
+    /// enough (`getSkyDarken` at least 5), each player at or above the sea
+    /// under open sky, rolling against its local difficulty, may draw
+    /// phantoms: the longer since it rested past three days, the likelier.
+    /// One to difficulty-plus-one phantoms gather 20 to 34 blocks above it,
+    /// within 10 across, where the cell is empty to spawn in.
+    pub fn tick_phantoms(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, players: &[super::tick::SpawnPlayer], spawn_enemies: bool, next_tick: &mut i32) {
+        if !spawn_enemies {
+            return;
+        }
+        *next_tick -= 1;
+        if *next_tick > 0 {
+            return;
+        }
+        *next_tick += (60 + level.random().next_i32_bound(60)) * 20;
+        if level.sky_darken() < 5 {
+            return;
+        }
+        let kind = "minecraft:phantom";
+        let Some(info) = type_info(kind) else { return };
+        for player in players.iter().filter(|p| !p.spectator) {
+            let pos = BlockPos::new(player.pos[0].floor() as i32, player.pos[1].floor() as i32, player.pos[2].floor() as i32);
+            // `canSeeSky`: nothing above it to the surface.
+            if pos.y < level.sea_level() || pos.y < level.height(minecraftoss_core::chunk::HeightmapKind::WorldSurface, pos.x, pos.z) {
+                continue;
+            }
+            let difficulty = Self::difficulty_at(level, context, pos);
+            if !(difficulty.effective > level.random().next_f32() * 3.0) {
+                continue;
+            }
+            let rest = player.time_since_rest.max(1);
+            if level.random().next_i32_bound(rest) < 72000 {
+                continue;
+            }
+            let up = 20 + level.random().next_i32_bound(15);
+            let east = -10 + level.random().next_i32_bound(21);
+            let south = -10 + level.random().next_i32_bound(21);
+            let spawn = BlockPos::new(pos.x + east, pos.y + up, pos.z + south);
+            let state = level.block(spawn);
+            if !self.is_valid_empty_spawn_block(&self.registries, state, kind, &info) {
+                continue;
+            }
+            let count = 1 + level.random().next_i32_bound(difficulty.base + 1);
+            let mut group = MonsterGroup::None;
+            for _ in 0..count {
+                let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag(kind)) else { return };
+                let uuid = level.next_uuid();
+                place(&mut tag, [f64::from(spawn.x) + 0.5, f64::from(spawn.y), f64::from(spawn.z) + 0.5], 0.0, 0.0, uuid);
+                // `Phantom.finalizeSpawn`: anchored five above where it came.
+                set(&mut tag, "anchor_pos", Tag::IntArray(vec![spawn.x, spawn.y + 5, spawn.z]));
+                set(&mut tag, "size", Tag::Int(0));
+                let tag = self.finalize_monster(level, context, kind, tag, spawn, difficulty, &mut group, true);
+                level.add_entity(tag);
+            }
+        }
+    }
+
     /// `ServerLevel.getCurrentDifficultyAt`.
     fn difficulty_at(level: &dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> DifficultyInstance {
         let (local, moon) = match level.inhabited_time(pos.chunk()) {

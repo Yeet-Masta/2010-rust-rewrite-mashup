@@ -36,6 +36,8 @@ pub struct NaturalSpawning {
     pub simulation: HashSet<ChunkPos>,
     /// What the last tick's spawning decided.
     pub report: TickReport,
+    /// `PhantomSpawner.nextTick`.
+    phantom_next_tick: i32,
 }
 
 impl NaturalSpawning {
@@ -48,6 +50,7 @@ impl NaturalSpawning {
             census: Vec::new(),
             spawn_mobs: true,
             spawn_monsters: true,
+            phantom_next_tick: 0,
             respawn: None,
             simulation: HashSet::new(),
             report: TickReport::default(),
@@ -182,6 +185,9 @@ impl Level<'_> {
         };
         let spawns = natural.spawns.clone();
         natural.report = spawns.tick_spawning(self, &mut context, &mut input);
+        // `ServerLevel.tickCustomSpawners`: the phantoms.
+        let spawn_enemies = natural.spawn_mobs && natural.spawn_monsters;
+        spawns.tick_phantoms(self, &mut context, &players, spawn_enemies, &mut natural.phantom_next_tick);
         natural.players = players;
         natural.census = census;
         natural.simulation = simulation;

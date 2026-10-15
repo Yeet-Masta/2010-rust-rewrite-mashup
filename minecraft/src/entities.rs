@@ -59,6 +59,9 @@ pub struct PlayerView {
     pub creative: bool,
     /// The yaw of its head while it blocks with a shield (`isBlocking`).
     pub shield: Option<f32>,
+    /// `Stats.TIME_SINCE_REST`: it counts up each tick (there is no
+    /// sleeping yet), and the client resets it on death.
+    pub time_since_rest: i32,
 }
 
 /// What the server sent back this frame.
@@ -856,6 +859,10 @@ impl Entities {
         let ticked = due > 0;
         for _ in 0..due {
             self.ticks += 1;
+            // `ServerPlayer.doTick`: `awardStat(TIME_SINCE_REST)` while awake.
+            if player.alive {
+                player.time_since_rest = player.time_since_rest.saturating_add(1);
+            }
             // Packets first, then the client level's entity and block
             // entity ticks.
             self.client.tick();
@@ -926,6 +933,7 @@ impl Entities {
                 bright_outside,
                 tracking: (feet.to_array(), 160.0),
                 player_hurts: std::mem::take(&mut player.hurts),
+                time_since_rest: player.time_since_rest,
                 spawn_mobs: true,
                 creative: player.creative,
                 shields: player.shield.map(|yaw| vec![(PLAYER, yaw)]).unwrap_or_default(),
