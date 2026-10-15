@@ -37,6 +37,7 @@ pub use ranged::{shield_faces, PlayerShot, NO_OWNER};
 mod wind;
 mod mobs;
 mod missiles;
+mod withers;
 pub use mobs::MobEntity;
 pub use missiles::{MissileEntity, MissileKind};
 pub use wind::{wind_sound, WindBlast, WindChargeEntity};
@@ -349,6 +350,9 @@ pub struct Spawned {
     /// Piglins done admiring their gold: where each throws from and
     /// toward, for the bartering loot (`getBarterResponseItems`).
     pub barters: Vec<(DVec3, DVec3)>,
+    /// `ServerLevel.globalLevelEvent`s, for every player: event id, block
+    /// and data (a wither's arrival).
+    pub global_events: Vec<(i32, (i32, i32, i32), i32)>,
 }
 
 #[derive(Clone)]

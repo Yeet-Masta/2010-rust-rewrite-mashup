@@ -30,6 +30,7 @@ pub mod rail;
 pub mod random_tick;
 pub mod redstone;
 pub mod spawning;
+pub mod summoning;
 pub mod ticks;
 pub mod time;
 pub mod weather;
@@ -799,6 +800,8 @@ impl<'a> Level<'a> {
             self.fire_on_place(state, pos, old);
         } else if self.is_a(state, "TntBlock") && self.block_id(old) != self.block_id(state) {
             self.tnt_block_changed(pos);
+        } else if self.is_a(state, "CarvedPumpkinBlock") {
+            self.carved_pumpkin_on_place(state, pos, old);
         } else if self.name(state) == "minecraft:sponge" {
             if self.block_id(old) != self.block_id(state) {
                 self.sponge_try_absorb(pos);

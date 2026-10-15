@@ -105,6 +105,10 @@ impl Level<'_> {
                 }
                 stack
             }
+            // Where no golem or wither waits, these equip the entity in
+            // front (`EquipmentDispenseItemBehavior`), not ported yet.
+            "carved_pumpkin" if self.golem_waits_in_front(pos) => self.dispense_carved_pumpkin(pos, stack),
+            "wither_skeleton_skull" if self.wither_waits_in_front(pos) => self.dispense_wither_skull(pos, stack),
             _ if OTHER_BEHAVIOURS.contains(&name.as_str()) || name.ends_with("shulker_box") || name.ends_with("_spawn_egg") => {
                 self.unsupported.push(format!("dispensing {}", stack.id));
                 return;

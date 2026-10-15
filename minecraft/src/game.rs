@@ -829,6 +829,14 @@ impl Game {
         for (pos, id, data) in events.level_events {
             self.level_event(pos, id, data);
         }
+        // `LevelEventHandler` 2001 (`addDestroyBlockEffect`): the pieces and
+        // the break sound of a block the level broke.
+        for (pos, block) in events.destroyed {
+            self.particles.destroy(&self.world, pos, &block);
+            if let Some(kind) = self.world.scene.sound_type(&block) {
+                self.play(&kind.break_sound, Some(center(pos)), (kind.volume + 1.0) / 2.0, kind.pitch * 0.8);
+            }
+        }
         for blast in events.explosions {
             let center = DVec3::from_array(blast.center);
             // A wind blast's gusts (`GUST_EMITTER_SMALL` or `_LARGE`), with
@@ -871,6 +879,14 @@ impl Game {
             f64::from(pos.1) + 0.5,
             f64::from(pos.2) + 0.5,
         );
+        // `globalLevelEvent` 1023: the wither's arrival, heard by everyone
+        // two blocks from the camera toward it.
+        if id == 1023 {
+            let eye = self.player.eye();
+            let toward = (at - eye).normalize_or_zero();
+            self.play("minecraft:entity.wither.spawn", Some(eye + toward * 2.0), 1.0, 1.0);
+            return;
+        }
         let (event, pitch) = match id {
             1029 => ("minecraft:block.anvil.destroy", None),
             1035 => ("minecraft:block.brewing_stand.brew", Some(1.0)),

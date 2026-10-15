@@ -64,6 +64,8 @@ pub struct MobEntity {
     deflate: i32,
     /// `Strider.isSuffocating`: out of the warmth of lava, cold and slow.
     pub cold: bool,
+    /// `WitherBoss.getInvulnerableTicks` (`Invul`): its spawn-in.
+    pub invulnerable_ticks: i32,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -272,6 +274,10 @@ impl MobEntity {
     /// `LivingEntity.hurtServer` for the generic mob: the idle clock, the
     /// damage cooldown, the hurt or death sound on a full hit.
     pub fn hurt(&mut self, amount: f32) -> DamageResult {
+        // `WitherBoss.hurtServer`: nothing lands while it gathers itself.
+        if self.invulnerable() {
+            return super::withers::UNHURT;
+        }
         if self.health > 0.0 && !self.damage.dead {
             self.no_action_time = 0;
         }
@@ -570,6 +576,7 @@ impl EntityWorld {
             inflate: 0,
             deflate: 0,
             cold: false,
+            invulnerable_ticks: 0,
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -630,7 +637,7 @@ impl EntityWorld {
         let owner_uuid = self.mobs.iter().find(|e| e.id == id).and_then(|e| e.owner);
         let owner = owner_uuid.and_then(|uuid| players.iter().find(|p| self.uuid_of(PLAYER_TARGET + p.id) == uuid)).map(|p| p.id);
         let piglins_zombify = self.piglins_zombify;
-        let (melee, shot, stepped, bred, barter, convert, sting) = {
+        let (melee, shot, stepped, bred, barter, convert, sting, spawn_blast) = {
             let e = self.mob_mut(id).unwrap();
             e.ai.state.wolf.tame = e.owner.is_some();
             e.ai.state.wolf.owner = owner;
@@ -715,9 +722,12 @@ impl EntityWorld {
             }
             let mut melee = None;
             let mut shot = None;
+            let mut spawn_blast = false;
             if !removed {
                 if e.health <= 0.0 && !e.no_ai {
                     let _ = dying_travel(&mut e.body, &*world, e.yaw, e.tick_count, &mut e.random, &mut e.voices, sounds, Some(s.category == crate::species::Category::Monster));
+                } else if e.health > 0.0 && !e.no_ai && e.invulnerable() {
+                    spawn_blast = e.wither_spawn_in(&*world);
                 } else if e.health > 0.0 && !e.no_ai {
                     let position = e.body.position;
                     // A piglin admiring its gold stands still (`stopWalking`).
@@ -765,7 +775,7 @@ impl EntityWorld {
                 e.voices.push((Voice::Event("entity.puffer_fish.sting", 1.0, pitch), at));
             }
             let sting = (stung, e.puff, e.body.position);
-            (melee, shot, !removed, bred, barter, convert, sting)
+            (melee, shot, !removed, bred, barter, convert, sting, spawn_blast)
         };
         if stepped && s.motion != Motion::Stationary {
             self.push_entities(EntityKey::Mob(id), &*world, game_time, ticks);
@@ -786,6 +796,9 @@ impl EntityWorld {
         }
         if let Some(barter) = barter {
             self.spawned.barters.push(barter);
+        }
+        if spawn_blast {
+            self.wither_spawn_blast(id, &*world, players);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

@@ -537,6 +537,10 @@ impl ServerSim {
         for (x, y, z) in spawned.fires {
             self.level.light_fire(minecraftoss_core::BlockPos::new(x, y, z));
         }
+        // `globalLevelEvent`s (a wither's arrival) go out with the level's.
+        for (event, (x, y, z), data) in spawned.global_events {
+            self.level.level_event(event, minecraftoss_core::BlockPos::new(x, y, z), data);
+        }
         // `PiglinAi.throwItems`: each bartered stack thrown from the
         // piglin's eyes toward its mark (`BehaviorUtils.throwItem`).
         for (from, toward) in spawned.barters {
@@ -749,6 +753,7 @@ impl ServerSim {
                     let components = stack.components.as_ref().and_then(crate::stacks::components_tag);
                     self.level.apply_container_components(at, components.as_ref());
                 }
+                self.level.set_placed_by(at);
             }
             _ => self.player_edit_block(pos, block, edit),
         }
@@ -1137,6 +1142,9 @@ pub struct Output {
     /// `Level.levelEvent`s (`ClientboundLevelEventPacket`): position, event
     /// id, data. The menus' at their blocks, and the level's.
     pub level_events: Vec<(BlockPos, i32, i32)>,
+    /// `LevelEvent.PARTICLES_DESTROY_BLOCK` (2001) with the state it names:
+    /// blocks the level broke itself (a golem's pattern).
+    pub destroyed: Vec<(BlockPos, Block)>,
     /// Mobs' hits on the players, in order.
     pub player_hits: Vec<minecraftoss_entities::world::PlayerHit>,
     /// Splash potions that broke near players, in order.
@@ -1653,7 +1661,15 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
         out.beacon_effects = sim.level.take_beacon_effects();
         out.explosions = sim.take_explosions();
         out.block_events = sim.take_block_events();
-        out.level_events = sim.take_level_events();
+        for (pos, id, data) in sim.take_level_events() {
+            if id == 2001 {
+                if let Some(block) = sim.states.block(minecraftoss_core::BlockStateId(data as u16)) {
+                    out.destroyed.push((pos, block.clone()));
+                }
+            } else {
+                out.level_events.push((pos, id, data));
+            }
+        }
         sim.block_entities_sent(handled);
         out.handled = handled;
         if outputs.send(out).is_err() {

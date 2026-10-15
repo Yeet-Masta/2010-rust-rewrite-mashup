@@ -918,6 +918,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             if kind == Kind::Pufferfish {
                 entity.set_puff(int(tag, "PuffState").unwrap_or(0));
             }
+            // `WitherBoss.readAdditionalSaveData`.
+            if kind == Kind::Wither {
+                entity.invulnerable_ticks = int(tag, "Invul").unwrap_or(0);
+            }
             entity.age.forced = int(tag, "ForcedAge").unwrap_or(0);
             entity.age.locked = flagged_baby || int(tag, "AgeLocked").unwrap_or(0) != 0;
             entity.in_love = int(tag, "InLove").unwrap_or(0);
@@ -928,7 +932,7 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.health = health;
             }
             // Its look, under whichever name its type saves it.
-            let found = ["variant", "Type", "type", "MainGene"]
+            let found = ["variant", "Type", "type", "MainGene", "weather_state"]
                 .iter()
                 .find_map(|key| text(tag, key).map(|v| (v.to_owned(), (*key, false))))
                 .or_else(|| ["Variant", "RabbitType", "Color", "Size"].iter().find_map(|key| int(tag, key).map(|v| (v.to_string(), (*key, true)))));
@@ -1239,6 +1243,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if e.kind == minecraftoss_entities::species::Kind::Pufferfish {
             fields.push(("PuffState", Tag::Int(e.puff)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Wither {
+            fields.push(("Invul", Tag::Int(e.invulnerable_ticks)));
         }
         if matches!(e.kind, minecraftoss_entities::species::Kind::Piglin | minecraftoss_entities::species::Kind::PiglinBrute | minecraftoss_entities::species::Kind::Hoglin) {
             fields.push(("TimeInOverworld", Tag::Int(e.time_in_overworld)));

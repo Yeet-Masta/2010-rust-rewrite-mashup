@@ -305,7 +305,9 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
         Kind::Vindicator => out.push(layer("vindicator", "illager/vindicator")),
         Kind::WanderingTrader => out.push(layer("wandering_trader", "wandering_trader/wandering_trader")),
         Kind::Warden => out.push(layer("warden", "warden/warden")),
-        Kind::Wither => out.push(layer("wither", "wither/wither")),
+        // `WitherBossRenderer.getTextureLocation`: the pale skin while it
+        // gathers itself, blinking over its last four seconds.
+        Kind::Wither => out.push(layer("wither", if e.wither_spawn_look(0.0).1 { "wither/wither_invulnerable" } else { "wither/wither" })),
         Kind::WitherSkeleton => out.push(layer("wither_skeleton", "skeleton/wither_skeleton")),
         Kind::Zoglin => {
             baby_model = own_baby("zoglin");
@@ -328,7 +330,7 @@ pub fn textures() -> Vec<String> {
         "slime/magmacube", "horse/mule", "horse/mule_baby", "horse/horse_skeleton", "horse/horse_skeleton_baby", "horse/horse_zombie", "horse/horse_zombie_baby", "nautilus/nautilus", "nautilus/nautilus_baby", "nautilus/zombie_nautilus",
         "cat/ocelot", "cat/ocelot_baby", "phantom/phantom", "phantom/phantom_eyes", "piglin/piglin", "piglin/piglin_baby", "piglin/piglin_brute", "piglin/zombified_piglin", "piglin/zombified_piglin_baby",
         "bear/polarbear", "bear/polarbear_baby", "fish/pufferfish", "fish/salmon", "silverfish/silverfish", "sniffer/sniffer", "sniffer/snifflet", "snow_golem/snow_golem", "strider/strider", "strider/strider_baby", "strider/strider_cold", "strider/strider_cold_baby",
-        "sulfur_cube/sulfur_cube_outer", "tadpole/tadpole", "fish/tropical_a", "fish/tropical_b", "turtle/turtle", "turtle/turtle_baby", "wandering_trader/wandering_trader", "warden/warden", "wither/wither",
+        "sulfur_cube/sulfur_cube_outer", "tadpole/tadpole", "fish/tropical_a", "fish/tropical_b", "turtle/turtle", "turtle/turtle_baby", "wandering_trader/wandering_trader", "warden/warden", "wither/wither", "wither/wither_invulnerable",
         "skeleton/wither_skeleton", "shulker/shulker",
     ] {
         add(t);
@@ -1073,7 +1075,8 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
         // A magma cube's size (`MagmaCubeRenderer.scale`).
         let size = match e.kind {
             Kind::MagmaCube | Kind::SulfurCube => (e.variant.parse::<i32>().unwrap_or(0) + 1) as f32 * 0.999,
-            Kind::Wither => 2.0,
+            // `WitherBossRenderer.scale`: smaller as it spawns in.
+            Kind::Wither => e.wither_spawn_look(partial).0,
             _ => 1.0,
         };
         let scale = Vec3::splat(age_scale * size);

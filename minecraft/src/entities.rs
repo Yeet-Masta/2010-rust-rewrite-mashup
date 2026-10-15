@@ -95,6 +95,8 @@ pub struct Events {
     pub picked_up: bool,
     /// `Level.levelEvent`s: position, event id, data.
     pub level_events: Vec<((i32, i32, i32), i32, i32)>,
+    /// Blocks the level broke itself, for their destroy effect (2001).
+    pub destroyed: Vec<((i32, i32, i32), minecraft_terrain::scene::Block)>,
     /// The powers beacons gave the player: effect, duration, amplifier.
     pub beacon_effects: Vec<(&'static str, i32, i32)>,
     /// Blasts, for their particles (`ClientboundExplodePacket`); their
@@ -940,6 +942,7 @@ impl Entities {
             events.menu.extend(output.menu);
             events.use_results.extend(output.use_results);
             events.level_events.extend(output.level_events);
+            events.destroyed.extend(output.destroyed);
             events.beacon_effects.extend(
                 output
                     .beacon_effects
