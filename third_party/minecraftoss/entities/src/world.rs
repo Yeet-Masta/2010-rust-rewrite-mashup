@@ -45,6 +45,8 @@ mod squids;
 mod dolphins;
 mod guardians;
 mod turtles;
+mod axolotls;
+pub use axolotls::{goals as axolotl_goals, targets as axolotl_targets, AxolotlState};
 pub use turtles::{goals as turtle_goals, TurtleState};
 pub use guardians::{attack_duration as guardian_attack_duration, goals as guardian_goals, targets as guardian_targets, GuardianState};
 pub use dolphins::{goals as dolphin_goals, DolphinState};

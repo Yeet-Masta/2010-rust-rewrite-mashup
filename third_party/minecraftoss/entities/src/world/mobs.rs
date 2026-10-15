@@ -81,6 +81,7 @@ pub struct MobEntity {
     pub dolphin: super::dolphins::DolphinState,
     pub guardian: super::guardians::GuardianState,
     pub turtle: super::turtles::TurtleState,
+    pub axolotl: super::axolotls::AxolotlState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -320,6 +321,7 @@ impl MobEntity {
     /// A hit after its armor that remembers who dealt it.
     pub(super) fn hurt_by(&mut self, amount: f32, by: Option<Target>) -> DamageResult {
         let amount = self.species().after_armor(amount);
+        self.axolotl_hurt(amount, by.is_some());
         // `setLastHurtByMob` comes before the hit's own reactions (a
         // squid's ink), and only for a hit that lands.
         let had = self.ai.state.hurt_by;
@@ -621,6 +623,7 @@ impl EntityWorld {
             dolphin: Default::default(),
             guardian: Default::default(),
             turtle: Default::default(),
+            axolotl: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -743,6 +746,15 @@ impl EntityWorld {
                             e.hurt(2.0);
                         }
                     }
+                } else if kind == Kind::Axolotl {
+                    // `Axolotl.handleAirSupply`: water or rain keeps it wet.
+                    let p = e.body.position;
+                    let feet = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+                    let top = (feet.0, (p.y + f64::from(e.body.height)).floor() as i32, feet.2);
+                    let wet = e.body.touching_water || world.rain_at(feet) || world.rain_at(top);
+                    if e.axolotl_air(wet) {
+                        e.hurt(2.0);
+                    }
                 } else if !s.aquatic && !s.undead && !matches!(kind, Kind::Blaze | Kind::Wither | Kind::EnderDragon | Kind::SnowGolem | Kind::CopperGolem | Kind::Creaking) && breathe(&mut e.body, &*world, eye, false) {
                     e.hurt(2.0);
                 }
@@ -793,7 +805,9 @@ impl EntityWorld {
                     let position = e.body.position;
                     // A piglin admiring its gold stands still (`stopWalking`),
                     // as a spellcaster does while it casts.
-                    let motion = if e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
+                    // An axolotl playing dead lies still.
+                    let still = e.axolotl_step_still();
+                    let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
                     match motion {
                         _ if matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) => {
                             if let Some(damage) = e.tick_guardian(&*world, players, &villagers, game_time, difficulty) {
@@ -818,6 +832,7 @@ impl EntityWorld {
                         Motion::Stationary => e.tick_still(&*world, players, game_time, difficulty),
                         _ => e.tick_free(&*world, players, &villagers, game_time, difficulty),
                     }
+                    e.axolotl_settle(game_time);
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -907,6 +922,9 @@ impl EntityWorld {
         }
         if kind == Kind::Turtle {
             self.turtle_step(id, world);
+        }
+        if kind == Kind::Axolotl {
+            self.axolotl_step(id, players);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

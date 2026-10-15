@@ -764,6 +764,14 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
                 posed.with("right_hind_leg", |p| p.rotation.x = cos(s + PI) * 1.2 * speed);
                 posed.with("left_hind_leg", |p| p.rotation.x = cos(s) * 1.2 * speed);
             }
+            // `AdultAxolotlModel.setupPlayDeadAnimation`: rolled half over,
+            // its left legs splayed.
+            let f = e.axolotl.dead_factor(m.age_in_ticks.fract());
+            if f > 1.0e-5 {
+                posed.with("left_hind_leg", |p| p.rotation += Vec3::new(1.413_716_7, 1.099_557_4, PI / 4.0) * f);
+                posed.with("left_front_leg", |p| p.rotation += Vec3::new(PI / 4.0, 2.042_035, 0.0) * f);
+                posed.with("body", |p| p.rotation += Vec3::new(-0.15, 0.0, 0.35) * f);
+            }
         }
         Kind::Strider => {
             posed.with("body", |p| p.rotation = Vec3::new(m.head_pitch.to_radians(), m.head_yaw.to_radians(), 0.1 * sin(pos * 1.5) * 4.0 * speed.min(0.25)));

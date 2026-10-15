@@ -568,6 +568,8 @@ pub struct MonsterGoalContext {
     pub guardian: GuardianCtx,
     /// A turtle's home, egg and journeys (`world/turtles`).
     pub turtle: TurtleCtx,
+    /// The game time an axolotl's hunting cooldown lasts until.
+    pub axolotl_hunting_until: i64,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -965,6 +967,7 @@ impl MonsterAi {
                 dolphin: DolphinCtx::default(),
                 guardian: GuardianCtx::default(),
                 turtle: TurtleCtx::default(),
+                axolotl_hunting_until: 0,
                 fly_target: None,
                 charging: false,
                 in_love: false,
