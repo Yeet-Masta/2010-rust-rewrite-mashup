@@ -538,8 +538,36 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
     let aggressive = e.aggressive();
     match e.kind {
         Kind::Armadillo => {
-            posed.look("head", m.head_yaw.clamp(-32.5, 32.5), m.head_pitch.clamp(-22.5, 25.0));
-            walk_keyframes(posed, if e.baby() { "BabyArmadilloAnimation.ARMADILLO_BABY_WALK" } else { "ArmadilloAnimation.ARMADILLO_WALK" }, m, 16.5, 2.5);
+            use minecraftoss_entities::world::ArmadilloPhase;
+            // `ArmadilloModel.setupAnim`: in its shell only the ball shows.
+            let a = &e.armadillo;
+            if a.phase.hides(a.in_state_ticks) {
+                posed.skip_draw("body");
+                posed.hide("left_hind_leg");
+                posed.hide("right_hind_leg");
+                posed.hide("tail");
+            } else {
+                posed.hide("cube");
+                posed.look("head", m.head_yaw.clamp(-32.5, 32.5), m.head_pitch.clamp(-22.5, 25.0));
+                walk_keyframes(posed, if e.baby() { "BabyArmadilloAnimation.ARMADILLO_BABY_WALK" } else { "ArmadilloAnimation.ARMADILLO_WALK" }, m, 16.5, 2.5);
+            }
+            let prefix = if e.baby() { "BabyArmadilloAnimation.ARMADILLO_BABY_" } else { "ArmadilloAnimation.ARMADILLO_" };
+            let since = |start: i32| ((e.tick_count - start) as f32 + m.age_in_ticks.fract()).max(0.0) * 50.0;
+            let play = |posed: &mut Posed, name: &str, millis: f32| {
+                if let Some(anim) = entity_model::animation(&format!("{prefix}{name}")) {
+                    anim.apply(posed, millis, 1.0);
+                }
+            };
+            match a.phase {
+                ArmadilloPhase::Rolling => play(posed, "ROLL_UP", since(a.phase_start)),
+                ArmadilloPhase::Unrolling => play(posed, "ROLL_OUT", since(a.phase_start)),
+                // The peek, run on to its end when it first lies scared.
+                ArmadilloPhase::Scared => match a.peek_start.filter(|&p| p >= a.phase_start) {
+                    Some(start) => play(posed, "PEEK", since(start)),
+                    None => play(posed, "PEEK", 2500.0 + since(a.phase_start)),
+                },
+                ArmadilloPhase::Idle => {}
+            }
         }
         Kind::Camel | Kind::CamelHusk => {
             posed.look("head", m.head_yaw.clamp(-30.0, 30.0), m.head_pitch.clamp(-25.0, 45.0));

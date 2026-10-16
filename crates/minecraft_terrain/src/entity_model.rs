@@ -233,11 +233,13 @@ pub struct Posed<'a> {
     pub model: &'a Model,
     pub poses: Vec<PartPose>,
     pub visible: Vec<bool>,
+    /// `ModelPart.skipDraw`: its own cubes left out, its children drawn.
+    pub skip_draw: Vec<bool>,
 }
 
 impl<'a> Posed<'a> {
     pub fn new(model: &'a Model) -> Self {
-        Self { model, poses: model.parts.iter().map(|p| p.pose).collect(), visible: vec![true; model.parts.len()] }
+        Self { model, poses: model.parts.iter().map(|p| p.pose).collect(), visible: vec![true; model.parts.len()], skip_draw: vec![false; model.parts.len()] }
     }
 
     /// A part's pose to change, by name.
@@ -256,6 +258,13 @@ impl<'a> Posed<'a> {
     /// The part's initial pose.
     pub fn initial(&self, name: &str) -> Option<PartPose> {
         Some(self.model.parts[self.model.part(name)?].pose)
+    }
+
+    /// `skipDraw` for a part.
+    pub fn skip_draw(&mut self, name: &str) {
+        if let Some(i) = self.model.part(name) {
+            self.skip_draw[i] = true;
+        }
     }
 
     pub fn hide(&mut self, name: &str) {
@@ -323,7 +332,8 @@ fn draw_part(mesh: &mut ChunkMesh, posed: &Posed, index: usize, parent: Mat4, pl
     let normal_matrix = Mat3::from_mat4(matrix);
     let flip = |v: Vec3| Vec3::new(-v.x, 1.501 - v.y, v.z);
     let region = placement.region;
-    for quad in &part.quads {
+    let quads: &[_] = if posed.skip_draw[index] { &[] } else { &part.quads };
+    for quad in quads {
         let n = normal_matrix * quad.normal;
         let n = placement.rotation * (Vec3::new(-n.x, -n.y, n.z) / placement.scale).normalize_or_zero();
         let shade = crate::cow_render::entity_shade(n);

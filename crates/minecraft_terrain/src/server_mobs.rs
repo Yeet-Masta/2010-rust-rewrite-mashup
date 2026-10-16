@@ -974,6 +974,11 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.trader.home = cell("home_pos").filter(|_| radius != -1).map(|c| (c, radius));
                 entity.trader.offers = tag.get("Offers").and_then(offers_of);
             }
+            // `Armadillo.readAdditionalSaveData`.
+            if kind == Kind::Armadillo {
+                entity.armadillo.phase = minecraftoss_entities::world::ArmadilloPhase::from_name(text(tag, "state").unwrap_or("idle"));
+                entity.armadillo.scute_time = int(tag, "scute_time");
+            }
             // `Endermite.readAdditionalSaveData`.
             if kind == Kind::Endermite {
                 entity.silverfish.life = int(tag, "Lifetime").unwrap_or(0);
@@ -1381,6 +1386,12 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
+            }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Armadillo {
+            fields.push(("state", Tag::String(e.armadillo.phase.name().to_owned())));
+            if let Some(time) = e.armadillo.scute_time {
+                fields.push(("scute_time", Tag::Int(time)));
             }
         }
         if e.kind == minecraftoss_entities::species::Kind::Endermite {

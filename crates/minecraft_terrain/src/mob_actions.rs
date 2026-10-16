@@ -339,6 +339,15 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             outcome.handled = true;
             outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         }
+        // `Armadillo.mobInteract`: a brush takes off a scute, and wears 16.
+        MobHit::Mob(id) if held.as_deref() == Some("minecraft:brush") && world.brush_armadillo(id) => {
+            if !infinite {
+                actor.inventory.wear_tool(selected, 16);
+            }
+            outcome.inventory_changed = true;
+            outcome.handled = true;
+            return outcome;
+        }
         // `WanderingTrader.mobInteract`: its trades open.
         MobHit::Mob(id) if world.trader_interact(id, 0, held.as_deref()) != minecraftoss_entities::world::VillagerUse::Pass => {
             outcome.handled = true;

@@ -92,6 +92,7 @@ pub struct MobEntity {
     pub polar: super::polar_bears::PolarState,
     pub silverfish: super::silverfish::SilverfishState,
     pub hoglin: super::hoglins::HoglinState,
+    pub armadillo: super::armadillos::ArmadilloState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -307,6 +308,7 @@ impl MobEntity {
         if self.health > 0.0 && !self.damage.dead {
             self.no_action_time = 0;
         }
+        let amount = self.armadillo_damage(amount);
         let max = self.max_health();
         let result = self.damage.hurt_generic(&mut self.health, max, amount);
         let position = self.position();
@@ -644,6 +646,7 @@ impl EntityWorld {
             polar: Default::default(),
             silverfish: Default::default(),
             hoglin: Default::default(),
+            armadillo: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -692,6 +695,9 @@ impl EntityWorld {
         let llama = if matches!(kind, Kind::Llama | Kind::TraderLlama) { self.llama_context(id) } else { Default::default() };
         let cub_near = kind == Kind::PolarBear && self.polar_cub_near(id);
         let (piglin_seen, hoglin_seen) = if kind == Kind::Hoglin { self.hoglin_sights(id) } else { (None, None) };
+        // The armadillo's scare sensor, four times a second.
+        let scary = (kind == Kind::Armadillo && game_time % 5 == 0).then(|| self.armadillo_scared_by(id));
+        let leashed = self.leash_holder(id).is_some();
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -746,6 +752,7 @@ impl EntityWorld {
             e.polar_prepare(cub_near);
             e.silverfish_prepare();
             e.hoglin_prepare(&*world, piglin_seen, hoglin_seen);
+            e.armadillo_prepare(scary, leashed);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -830,7 +837,7 @@ impl EntityWorld {
                     _ => {}
                 }
             }
-            if e.health > 0.0 && s.has_ambient() {
+            if e.health > 0.0 && s.has_ambient() && !e.armadillo_scared() {
                 if (e.random.next_int(1000) as i32) < e.ambient_sound_time {
                     e.ambient_sound_time = -s.ambient_interval();
                     let baby = e.baby();
@@ -854,7 +861,7 @@ impl EntityWorld {
                     // as a spellcaster does while it casts.
                     // An axolotl playing dead lies still.
                     let still = e.axolotl_step_still();
-                    let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() { Motion::Stationary } else { s.motion };
+                    let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() || e.armadillo_scared() { Motion::Stationary } else { s.motion };
                     match motion {
                         _ if matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) => {
                             if let Some(damage) = e.tick_guardian(&*world, players, &villagers, game_time, difficulty) {
@@ -1019,6 +1026,9 @@ impl EntityWorld {
         }
         if kind == Kind::Hoglin {
             self.hoglin_step(id);
+        }
+        if kind == Kind::Armadillo {
+            self.armadillo_step(id);
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {
