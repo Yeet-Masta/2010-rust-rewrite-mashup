@@ -296,7 +296,9 @@ impl EntityWorld {
         for other in self.mobs.iter_mut().filter(|o| o.id != id && o.kind == kind && o.health > 0.0) {
             let q = other.body.position;
             let inside = q.x > corner.x - range - 1.0 && q.x < corner.x + 1.0 + range + 1.0 && q.y > corner.y - 10.0 - f64::from(other.body.height) && q.y < corner.y + 11.0 && q.z > corner.z - range - 1.0 && q.z < corner.z + 1.0 + range + 1.0;
-            if !inside || other.ai.state.target.is_some() || other.owner != owner || kind == Kind::PolarBear && other.baby() {
+            // A polar bear calls grown bears; a panda only the aggressive.
+            let deaf = kind == Kind::PolarBear && other.baby() || kind == Kind::Panda && other.panda.variant() != super::pandas::Gene::Aggressive;
+            if !inside || other.ai.state.target.is_some() || other.owner != owner || deaf {
                 continue;
             }
             other.ai.state.set_target(Some(attacker));

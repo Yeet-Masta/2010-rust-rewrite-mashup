@@ -94,6 +94,7 @@ pub struct MobEntity {
     pub hoglin: super::hoglins::HoglinState,
     pub armadillo: super::armadillos::ArmadilloState,
     pub parrot: super::parrots::ParrotState,
+    pub panda: super::pandas::PandaState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -266,6 +267,10 @@ impl MobEntity {
     }
 
     pub fn max_health(&self) -> f32 {
+        // `Panda.setAttributes`: a weak panda has ten.
+        if self.kind == Kind::Panda && self.panda.ready && self.panda.variant() == super::pandas::Gene::Weak {
+            return 10.0;
+        }
         self.species().health
     }
 
@@ -490,7 +495,9 @@ impl MobEntity {
         let s = self.species();
         // A cold strider walks a third slower (`SUFFOCATING_MODIFIER`).
         let cold = if self.kind == Kind::Strider && self.cold { 0.66 } else { 1.0 };
-        let speed = self.effects.movement_speed(s.speed * cold * if self.baby() && matches!(self.kind, Kind::ZombifiedPiglin | Kind::Piglin) { 1.5 } else { 1.0 });
+        // A lazy panda ambles (`setAttributes`).
+        let base = if self.kind == Kind::Panda && self.panda.variant() == super::pandas::Gene::Lazy { 0.07 } else { s.speed };
+        let speed = self.effects.movement_speed(base * cold * if self.baby() && matches!(self.kind, Kind::ZombifiedPiglin | Kind::Piglin) { 1.5 } else { 1.0 });
         let step = MonsterStep { players, villagers, game_time, difficulty, movement_speed: speed, sounds: self.movement_sounds(), stands_on_lava: self.kind == Kind::Strider };
         self.ai.state.on_fire = self.body.fire_ticks > 0;
         self.ai.state.tick_count = self.tick_count;
@@ -649,6 +656,7 @@ impl EntityWorld {
             hoglin: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
+            panda: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -700,6 +708,8 @@ impl EntityWorld {
         // The armadillo's scare sensor, four times a second.
         let scary = (kind == Kind::Armadillo && game_time % 5 == 0).then(|| self.armadillo_scared_by(id));
         let leashed = self.leash_holder(id).is_some();
+        let thundering = world.thundering();
+        let panda_items = if kind == Kind::Panda { self.panda_items(id, &*world) } else { Vec::new() };
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -755,6 +765,7 @@ impl EntityWorld {
             e.silverfish_prepare();
             e.hoglin_prepare(&*world, piglin_seen, hoglin_seen);
             e.armadillo_prepare(scary, leashed);
+            e.panda_prepare(thundering, panda_items);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -910,6 +921,7 @@ impl EntityWorld {
                     e.silverfish_settle();
                     e.hoglin_settle();
                     e.parrot_flap();
+                    e.panda_settle(thundering);
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1035,6 +1047,9 @@ impl EntityWorld {
         }
         if kind == Kind::Parrot {
             self.parrot_step(id);
+        }
+        if kind == Kind::Panda {
+            self.panda_step(id, world.thundering());
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {

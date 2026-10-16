@@ -601,6 +601,8 @@ pub struct MonsterGoalContext {
     pub silverfish: crate::world::SilverfishCtx,
     /// A hoglin's memories (`world/hoglins`).
     pub hoglin: crate::world::HoglinCtx,
+    /// A panda's nature and doings (`world/pandas`).
+    pub panda: crate::world::PandaCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1022,6 +1024,7 @@ impl MonsterAi {
                 polar: Default::default(),
                 silverfish: Default::default(),
                 hoglin: Default::default(),
+                panda: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

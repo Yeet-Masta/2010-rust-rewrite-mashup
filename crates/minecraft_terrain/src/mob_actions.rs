@@ -158,6 +158,18 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         return outcome;
     }
+    // `Panda.mobInteract`: up off its back, or sat down to eat the bamboo
+    // it is given.
+    if let MobHit::Mob(id) = hit {
+        if let Some(spent) = world.panda_interact(id, held.as_deref()) {
+            if spent && !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
+            outcome.inventory_changed = true;
+            outcome.handled = true;
+            return outcome;
+        }
+    }
     match hit {
         MobHit::Cow(id) => {
             let Some(entity) = world.cow_mut(id) else { return outcome };

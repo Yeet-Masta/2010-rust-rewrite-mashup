@@ -205,7 +205,7 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
         }
         Kind::Panda => {
             baby_model = own_baby("panda");
-            let gene = panda_gene(v);
+            let gene = if e.panda.ready { e.panda.variant().name() } else { panda_gene(v) };
             let texture = match (gene, baby) {
                 ("normal", false) => "panda/panda".to_owned(),
                 ("normal", true) => "panda/panda_baby".to_owned(),
@@ -532,6 +532,116 @@ fn idle_keyframes(posed: &mut Posed, name: &str, age: f32) {
 }
 
 /// `setupAnim` for a generic mob.
+/// `PandaModel.setupAnim`: shaking its head unhappy, the sneeze's nod,
+/// sitting (munching or cowering), on its back, and rolling.
+fn panda_pose(posed: &mut Posed, e: &MobEntity, age: f32) {
+    let p = &e.panda;
+    let (sit, back, roll) = p.amounts(age.fract());
+    let thundering_scared = p.variant() == minecraftoss_entities::world::PandaGene::Worried && p.thundering;
+    if p.unhappy > 0 {
+        posed.with("head", |h| {
+            h.rotation.y = 0.35 * sin(0.6 * age);
+            h.rotation.z = 0.35 * sin(0.6 * age);
+        });
+        posed.with("right_front_leg", |l| l.rotation.x = -0.75 * sin(0.3 * age));
+        posed.with("left_front_leg", |l| l.rotation.x = 0.75 * sin(0.3 * age));
+    }
+    if p.sneezing {
+        let t = p.sneeze_counter as f32;
+        if t < 15.0 {
+            posed.with("head", |h| h.rotation.x = -PI / 4.0 * t / 14.0);
+        } else if t < 20.0 {
+            let k = ((t - 15.0) / 5.0).floor();
+            posed.with("head", |h| h.rotation.x = -PI / 4.0 + PI / 4.0 * k);
+        }
+    }
+    let rot_lerp = |t: f32, from: f32, to: f32| {
+        let mut d = (to - from) % (2.0 * PI);
+        if d < -PI {
+            d += 2.0 * PI;
+        } else if d >= PI {
+            d -= 2.0 * PI;
+        }
+        from + t * d
+    };
+    if sit > 0.0 {
+        posed.with("body", |b| b.rotation.x = rot_lerp(sit, b.rotation.x, 1.740_796_3));
+        posed.with("head", |h| h.rotation.x = rot_lerp(sit, h.rotation.x, PI / 2.0));
+        posed.with("right_front_leg", |l| l.rotation.z = -0.270_796_42);
+        if p.eating() {
+            posed.with("head", |h| h.rotation.x = PI / 2.0 + 0.2 * sin(age * 0.6));
+            for leg in ["right_front_leg", "left_front_leg"] {
+                posed.with(leg, |l| l.rotation.x = -0.4 - 0.2 * sin(age * 0.6));
+            }
+        }
+        if thundering_scared {
+            posed.with("head", |h| h.rotation.x = 2.170_796_4);
+            for leg in ["right_front_leg", "left_front_leg"] {
+                posed.with(leg, |l| l.rotation.x = -0.9);
+            }
+        }
+    }
+    if back > 0.0 {
+        posed.with("right_hind_leg", |l| l.rotation.x = -0.6 * sin(age * 0.15));
+        posed.with("left_hind_leg", |l| l.rotation.x = 0.6 * sin(age * 0.15));
+        posed.with("right_front_leg", |l| l.rotation.x = 0.3 * sin(age * 0.25));
+        posed.with("left_front_leg", |l| l.rotation.x = -0.3 * sin(age * 0.25));
+        posed.with("head", |h| h.rotation.x = rot_lerp(back, h.rotation.x, PI / 2.0));
+    }
+    if roll > 0.0 {
+        posed.with("head", |h| h.rotation.x = rot_lerp(roll, h.rotation.x, 2.056_194_5));
+        posed.with("right_hind_leg", |l| l.rotation.x = -0.5 * sin(age * 0.5));
+        posed.with("left_hind_leg", |l| l.rotation.x = 0.5 * sin(age * 0.5));
+        posed.with("right_front_leg", |l| l.rotation.x = 0.5 * sin(age * 0.5));
+        posed.with("left_front_leg", |l| l.rotation.x = -0.5 * sin(age * 0.5));
+    }
+}
+
+/// `PandaRenderer.setupRotations` after the body's turn: the roll's four
+/// quarter turns, sitting up, and lying back, folded into one turn and
+/// shift.
+fn panda_rotation(e: &MobEntity, partial: f32, pitch: f32) -> (Quat, Vec3) {
+    let p = &e.panda;
+    let (sit, back, _) = p.amounts(partial);
+    let mut q = Quat::IDENTITY;
+    let mut t = Vec3::ZERO;
+    let translate = |q: Quat, t: &mut Vec3, v: Vec3| *t += q * v;
+    let roll_time = if p.rolling { p.roll_counter as f32 + partial } else { 0.0 };
+    if roll_time > 0.0 {
+        let frac = roll_time.fract();
+        let pos = roll_time.floor() as i32;
+        let next = pos + 1;
+        let y = if e.baby() { 0.3 } else { 0.8 };
+        let angle = |this: f32, then: f32, threshold: f32| if (next as f32) < threshold { this + (then - this) * frac } else { this };
+        let (lift, a) = if pos < 8 {
+            let a = angle(90.0 * pos as f32 / 7.0, 90.0 * next as f32 / 7.0, 8.0);
+            ((y + 0.2) * (a / 90.0), a)
+        } else if pos < 16 {
+            let a = angle(90.0 + 90.0 * (pos as f32 - 8.0) / 7.0, 90.0 + 90.0 * (next as f32 - 8.0) / 7.0, 16.0);
+            (y + 0.2 + (y - 0.2) * (a - 90.0) / 90.0, a)
+        } else if pos < 24 {
+            let a = angle(180.0 + 90.0 * (pos as f32 - 16.0) / 7.0, 180.0 + 90.0 * (next as f32 - 16.0) / 7.0, 24.0);
+            (y + y * (270.0 - a) / 90.0, a)
+        } else {
+            let a = angle(270.0 + 90.0 * (pos as f32 - 24.0) / 7.0, 270.0 + 90.0 * (next as f32 - 24.0) / 7.0, 32.0);
+            (y * ((360.0 - a) / 90.0), a)
+        };
+        translate(q, &mut t, Vec3::new(0.0, lift, 0.0));
+        q *= Quat::from_rotation_x((-a).to_radians());
+    }
+    if sit > 0.0 {
+        translate(q, &mut t, Vec3::new(0.0, 0.8 * sit, 0.0));
+        q *= Quat::from_rotation_x((pitch + 90.0 * sit).to_radians());
+        translate(q, &mut t, Vec3::new(0.0, -sit, 0.0));
+    }
+    if back > 0.0 {
+        let y = if e.baby() { 0.5 } else { 1.3 };
+        translate(q, &mut t, Vec3::new(0.0, y * back, 0.0));
+        q *= Quat::from_rotation_x((pitch + 180.0 * back).to_radians());
+    }
+    (q, q.inverse() * t)
+}
+
 fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
     let (pos, speed, age) = (m.walk_position, m.walk_speed, m.age_in_ticks);
     let in_water = e.body.touching_water;
@@ -672,6 +782,9 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         Kind::PolarBear | Kind::Panda => {
             posed.look("head", m.head_yaw, m.head_pitch);
             quadruped_legs(posed, pos, speed, 1.4);
+            if e.kind == Kind::Panda {
+                panda_pose(posed, e, age);
+            }
             // `PolarBearModel.setupAnim`: rearing up on its hind legs.
             if e.kind == Kind::PolarBear {
                 let stand = e.polar.stand_scale(m.age_in_ticks.fract());
@@ -1248,6 +1361,9 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     }
     if matches!(e.kind, Kind::Phantom) {
         return (Quat::from_rotation_x(e.pitch.to_radians()), Vec3::ZERO);
+    }
+    if e.kind == Kind::Panda {
+        return panda_rotation(e, m.age_in_ticks.fract(), 0.0);
     }
     // `FoxRenderer.setupRotations`: a pouncing or snow-stuck fox tips.
     if e.kind == Kind::Fox && (e.fox.pouncing || e.fox.faceplanted) {

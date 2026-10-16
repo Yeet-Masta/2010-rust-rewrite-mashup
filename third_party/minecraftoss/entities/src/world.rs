@@ -61,6 +61,8 @@ mod silverfish;
 mod hoglins;
 mod armadillos;
 mod parrots;
+mod pandas;
+pub use pandas::{goals as panda_goals, targets as panda_targets, Gene as PandaGene, PandaCtx, PandaState};
 pub use parrots::{goals as parrot_goals, ParrotState};
 pub use armadillos::{ArmadilloPhase, ArmadilloState};
 pub use hoglins::{goals as hoglin_goals, targets as hoglin_targets, HoglinActivity, HoglinCtx, HoglinState};

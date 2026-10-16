@@ -756,7 +756,7 @@ impl EntityWorld {
             return;
         }
         let Some(e) = self.mobs.iter().find(|e| e.id == id) else { return };
-        if !matches!(e.kind, Kind::Fox | Kind::Piglin) || e.health <= 0.0 {
+        if !matches!(e.kind, Kind::Fox | Kind::Piglin | Kind::Panda) || e.health <= 0.0 {
             return;
         }
         let body = &e.body;
@@ -805,6 +805,18 @@ impl EntityWorld {
                         world.take_item(item.id, 1);
                         return;
                     }
+                }
+                // `Panda.pickUpItem`: a grown panda with empty paws takes
+                // the whole stack of bamboo or cake.
+                Kind::Panda => {
+                    if e.hand.is_some() || e.baby() || !super::pandas::eats_from_ground(&item.item) {
+                        continue;
+                    }
+                    e.hand = Some(item.item.clone());
+                    e.panda.hand_count = item.count;
+                    e.persistence_required = true;
+                    world.take_item(item.id, item.count);
+                    return;
                 }
                 _ => return,
             }
