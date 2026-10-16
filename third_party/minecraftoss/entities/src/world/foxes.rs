@@ -86,6 +86,7 @@ pub fn goals() -> GoalSelector<MonsterGoalContext> {
     selector.add(10, FoxEatBerriesGoal { target: None, next_start: 0, waited: 0, try_ticks: 0 });
     selector.add(10, crate::monster_ai::LeapGoal::new(0.4));
     selector.add(11, crate::monster_ai::StrollGoal::new(1.0, 0.001));
+    selector.add(11, FoxSearchForItemsGoal);
     selector.add(12, crate::monster_ai::LookAtPlayerGoal { range: 24.0 });
     selector.add(13, PerchAndSearchGoal { look_time: 0, looks: 0, rel: (0.0, 0.0) });
     selector
@@ -556,6 +557,43 @@ impl Goal<MonsterGoalContext> for FoxEatBerriesGoal {
     }
 }
 
+/// `FoxSearchForItemsGoal`: mouth empty and left in peace, to the first
+/// item within eight blocks.
+#[derive(Clone)]
+struct FoxSearchForItemsGoal;
+
+impl FoxSearchForItemsGoal {
+    fn walk(ctx: &mut MonsterGoalContext, world: &dyn World) {
+        let Some(&to) = ctx.fox_items.first() else { return };
+        let profile = ctx.profile();
+        let _ = navigate_walk_to(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, to, 1.2, 0);
+    }
+}
+
+impl Goal<MonsterGoalContext> for FoxSearchForItemsGoal {
+    fn controls(&self) -> Controls {
+        Controls::new(&[Control::Move])
+    }
+    fn can_start(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        let f = &ctx.fox;
+        if !f.mouth_empty || ctx.target.is_some() || ctx.hurt_by.is_some() || f.sleeping || f.sitting || f.faceplanted {
+            return false;
+        }
+        ctx.random.next_int(5) == 0 && !ctx.fox_items.is_empty()
+    }
+    fn can_continue(&mut self, ctx: &mut MonsterGoalContext, _world: &dyn World) -> bool {
+        !ctx.navigation.is_done() && ctx.fox.mouth_empty
+    }
+    fn start_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        Self::walk(ctx, world);
+    }
+    fn tick_world(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World) {
+        if ctx.fox.mouth_empty {
+            Self::walk(ctx, world);
+        }
+    }
+}
+
 /// `PerchAndSearchGoal`: sat, looking about two to four times.
 #[derive(Clone)]
 struct PerchAndSearchGoal {
@@ -615,7 +653,8 @@ impl MobEntity {
     }
 
     /// Before its goals: what it is doing, and what the world shows it.
-    pub(super) fn fox_prepare(&mut self, bright: bool, thundering: bool) {
+    pub(super) fn fox_prepare(&mut self, bright: bool, thundering: bool, items: Vec<DVec3>) {
+        self.ai.state.fox_items = items;
         let target = self.ai.state.target.is_some();
         let f = &mut self.fox;
         // `Fox.tick`: water, a target or thunder wakes it.
@@ -709,6 +748,69 @@ fn is_fox_food(item: &str) -> bool {
 }
 
 impl EntityWorld {
+    /// `Mob.aiStep`'s pickup for those that take things: items touching
+    /// its box, a block out to the sides, with no pickup delay, as each
+    /// kind wants them (`wantsToPickUp`, `pickUpItem`).
+    pub(super) fn mob_pick_up(&mut self, id: u64, world: &mut impl World) {
+        if !self.mob_griefing {
+            return;
+        }
+        let Some(e) = self.mobs.iter().find(|e| e.id == id) else { return };
+        if !matches!(e.kind, Kind::Fox | Kind::Piglin) || e.health <= 0.0 {
+            return;
+        }
+        let body = &e.body;
+        let half = f64::from(body.width) / 2.0;
+        let (min, max) = (body.position - DVec3::new(half + 1.0, 0.0, half + 1.0), body.position + DVec3::new(half + 1.0, f64::from(body.height), half + 1.0));
+        for item in world.items_in(min, max) {
+            if item.count <= 0 || item.pickup_delay > 0 {
+                continue;
+            }
+            let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) else { return };
+            match e.kind {
+                // `Fox.canHoldItem` and `Fox.pickUpItem`: one in the jaws,
+                // the rest dropped, what it held spat out.
+                Kind::Fox => {
+                    let held_food = e.hand.as_deref().is_some_and(is_fox_food);
+                    let wants = e.hand.is_none() || e.fox.ticks_since_eaten > 0 && is_fox_food(&item.item) && !held_food;
+                    if !wants {
+                        continue;
+                    }
+                    let position = e.body.position;
+                    let yaw = e.yaw.to_radians();
+                    let look = DVec3::new(f64::from(-yaw.sin()), 0.0, f64::from(yaw.cos()));
+                    if let Some(old) = e.hand.take() {
+                        let spat = minecraftoss_player::inventory::ItemStack::new(&old, 1);
+                        e.voices.push((Voice::Event("entity.fox.spit", 1.0, 1.0), position));
+                        world.spawn_item(position + look + DVec3::new(0.0, 1.0, 0.0), &spat, DVec3::ZERO, 40);
+                    }
+                    let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) else { return };
+                    e.hand = Some(item.item.clone());
+                    e.fox.ticks_since_eaten = 0;
+                    e.persistence_required = true;
+                    if item.count > 1 {
+                        let rest = minecraftoss_player::inventory::ItemStack::new(&item.item, (item.count - 1).clamp(1, 255) as u8);
+                        world.spawn_item(position, &rest, DVec3::ZERO, 0);
+                    }
+                    world.take_item(item.id, item.count);
+                    return;
+                }
+                // `PiglinAi.wantsToPickup` for its bartering currency: a gold
+                // ingot taken in hand and admired.
+                Kind::Piglin => {
+                    if item.item != "minecraft:gold_ingot" || e.off_hand.is_some() {
+                        continue;
+                    }
+                    if self.piglin_take_gold(id, &item.item) {
+                        world.take_item(item.id, 1);
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
     /// A fox's picked bush: the bush stripped, the spare berries dropped.
     pub(super) fn fox_step(&mut self, id: u64, world: &mut impl World) {
         let Some(e) = self.mob_mut(id) else { return };

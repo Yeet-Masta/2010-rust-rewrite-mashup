@@ -718,7 +718,10 @@ impl EntityWorld {
             }
             if kind == Kind::Fox {
                 let (bright, thundering) = (bright_now, world.thundering());
-                e.fox_prepare(bright, thundering);
+                let p = e.body.position;
+                let mut items: Vec<DVec3> = world.items_in(p - DVec3::splat(8.0), p + DVec3::splat(8.0)).into_iter().filter(|i| i.pickup_delay <= 0 && i.count > 0).map(|i| i.position).collect();
+                items.sort_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
+                e.fox_prepare(bright, thundering, items);
             }
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
@@ -965,6 +968,7 @@ impl EntityWorld {
         if kind == Kind::Fox {
             self.fox_step(id, world);
         }
+        self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
         let (stung, puff, at) = sting;

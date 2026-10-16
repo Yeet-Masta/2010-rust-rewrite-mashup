@@ -581,6 +581,8 @@ pub struct MonsterGoalContext {
     /// trusts, its pitch, and what its goals did this tick.
     pub fox: crate::world::FoxCtx,
     pub fox_trusted: Vec<u64>,
+    /// The items a fox sees within eight blocks, nearest first.
+    pub fox_items: Vec<DVec3>,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -994,6 +996,7 @@ impl MonsterAi {
                 bee_pollinate_sound: false,
                 fox: Default::default(),
                 fox_trusted: Vec::new(),
+                fox_items: Vec::new(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,
