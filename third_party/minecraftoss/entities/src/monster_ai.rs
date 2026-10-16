@@ -577,6 +577,14 @@ pub struct MonsterGoalContext {
     /// buzz this tick.
     pub bee: crate::world::BeeCtx,
     pub bee_pollinate_sound: bool,
+    /// A fox's poses and what it sees (`world/foxes`), the players it
+    /// trusts, its pitch, and what its goals did this tick.
+    pub fox: crate::world::FoxCtx,
+    pub fox_trusted: Vec<u64>,
+    pub fox_pitch: f32,
+    pub fox_reset_crouch: bool,
+    pub fox_took_berry: bool,
+    pub fox_sniff: bool,
     pub frog_pregnant: bool,
     pub frog_tongue: bool,
     pub frog_croaking: bool,
@@ -984,6 +992,12 @@ impl MonsterAi {
                 frog_food: Vec::new(),
                 bee: Default::default(),
                 bee_pollinate_sound: false,
+                fox: Default::default(),
+                fox_trusted: Vec::new(),
+                fox_pitch: 0.0,
+                fox_reset_crouch: false,
+                fox_took_berry: false,
+                fox_sniff: false,
                 frog_pregnant: false,
                 frog_tongue: false,
                 frog_croaking: false,
@@ -1379,7 +1393,8 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
         let mut best: Option<(f64, TargetInfo)> = None;
         // Players too, for those that flee them (the evoker's `Player`).
         let candidates: Vec<(Target, DVec3, f32, f32)> = if self.kind == "minecraft:player" {
-            ctx.players.iter().map(|p| (Target::Player(p.id), p.position, 0.6, 1.8)).collect()
+            // A fox does not shy from players it trusts.
+            ctx.players.iter().filter(|p| !ctx.fox_trusted.contains(&p.id)).map(|p| (Target::Player(p.id), p.position, 0.6, 1.8)).collect()
         } else {
             ctx.mobs.iter().filter(|m| m.kind == self.kind).map(|m| (Target::Mob(m.id), m.position, m.width, m.height)).collect()
         };

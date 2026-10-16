@@ -48,6 +48,8 @@ mod turtles;
 mod axolotls;
 mod frogs;
 mod bees;
+mod foxes;
+pub use foxes::{goals as fox_goals, targets as fox_targets, FoxCtx, FoxState};
 pub use bees::{goals as bee_goals, targets as bee_targets, BeeCtx, BeeState};
 pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};
 pub use axolotls::{goals as axolotl_goals, targets as axolotl_targets, AxolotlState};

@@ -84,6 +84,7 @@ pub struct MobEntity {
     pub axolotl: super::axolotls::AxolotlState,
     pub frog: super::frogs::FrogState,
     pub bee: super::bees::BeeState,
+    pub fox: super::foxes::FoxState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -628,6 +629,7 @@ impl EntityWorld {
             axolotl: Default::default(),
             frog: Default::default(),
             bee: Default::default(),
+            fox: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -673,6 +675,7 @@ impl EntityWorld {
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
+        let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
             .villagers
@@ -712,6 +715,10 @@ impl EntityWorld {
             }
             if kind == Kind::Frog {
                 e.frog_prepare(frog_food);
+            }
+            if kind == Kind::Fox {
+                let (bright, thundering) = (bright_now, world.thundering());
+                e.fox_prepare(bright, thundering);
             }
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
@@ -853,6 +860,9 @@ impl EntityWorld {
                     if kind == Kind::Bee {
                         e.bee_settle(&*world);
                     }
+                    if kind == Kind::Fox {
+                        e.fox_settle();
+                    }
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -951,6 +961,9 @@ impl EntityWorld {
         }
         if kind == Kind::Bee {
             self.bee_step(id, world);
+        }
+        if kind == Kind::Fox {
+            self.fox_step(id, world);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.

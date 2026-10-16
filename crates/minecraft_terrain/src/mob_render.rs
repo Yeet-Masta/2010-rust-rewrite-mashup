@@ -152,7 +152,9 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
         Kind::Fox => {
             baby_model = own_baby("fox");
             let snow = if v == "snow" { "_snow" } else { "" };
-            add("fox", format!("fox/fox{snow}{b}"), &mut out);
+            // `FoxRenderer.getTextureLocation`: eyes shut asleep.
+            let sleep = if e.fox.sleeping { "_sleep" } else { "" };
+            add("fox", format!("fox/fox{snow}{sleep}{b}"), &mut out);
         }
         Kind::Frog => {
             let kind = if v.is_empty() { "temperate" } else { v };
@@ -753,8 +755,84 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::Fox => {
-            posed.look("head", m.head_yaw, m.head_pitch);
+            // `FoxModel.setupAnim` with `AdultFoxModel`'s poses.
+            let f = &e.fox;
+            let partial = m.age_in_ticks.fract();
+            posed.with("head", |p| p.rotation.z = f.head_roll(partial));
             quadruped_legs(posed, pos, speed, 1.4);
+            let crouch = f.crouch(partial);
+            if f.crouching {
+                let age_scale = if e.baby() { 0.5 } else { 1.0 };
+                let wiggle = cos(age) * 0.05;
+                posed.with("body", |p| {
+                    p.rotation.x += 0.104_719_76;
+                    p.rotation.y = wiggle;
+                    if !e.baby() {
+                        p.offset.y += crouch;
+                    }
+                });
+                posed.with("head", |p| p.offset.y += crouch * age_scale);
+                for (leg, w) in [("right_hind_leg", wiggle), ("left_hind_leg", wiggle), ("right_front_leg", wiggle / 2.0), ("left_front_leg", wiggle / 2.0)] {
+                    posed.with(leg, |p| p.rotation.z = w);
+                }
+            } else if f.sleeping {
+                for leg in ["right_hind_leg", "left_hind_leg", "right_front_leg", "left_front_leg"] {
+                    posed.hide(leg);
+                }
+                posed.with("body", |p| {
+                    p.rotation.z = -PI / 2.0;
+                    p.offset.y += 5.0;
+                });
+                posed.with("tail", |p| p.rotation.x = -PI * 5.0 / 6.0);
+                posed.with("head", |p| {
+                    p.offset.x += 2.0;
+                    p.offset.y += 2.99;
+                });
+            } else if f.sitting {
+                posed.with("body", |p| {
+                    p.rotation.x = PI / 6.0;
+                    p.offset.y -= 7.0;
+                    p.offset.z += 3.0;
+                });
+                posed.with("tail", |p| {
+                    p.rotation.x = PI / 4.0;
+                    p.offset.z -= 1.0;
+                });
+                posed.with("head", |p| {
+                    p.offset.y -= 6.5;
+                    p.offset.z += 2.75;
+                });
+                for leg in ["right_front_leg", "left_front_leg"] {
+                    posed.with(leg, |p| p.rotation.x = -PI / 12.0);
+                }
+                for leg in ["right_hind_leg", "left_hind_leg"] {
+                    posed.with(leg, |p| {
+                        p.rotation.x = -PI * 5.0 / 12.0;
+                        p.offset.y += 4.0;
+                        p.offset.z -= 0.25;
+                    });
+                }
+            }
+            if f.pouncing {
+                posed.with("body", |p| p.offset.y -= crouch / 2.0);
+                posed.with("head", |p| p.offset.y -= crouch / 2.0);
+            }
+            if !f.sleeping && !f.faceplanted && !f.crouching {
+                posed.with("head", |p| {
+                    p.rotation.x = m.head_pitch.to_radians();
+                    p.rotation.y = m.head_yaw.to_radians();
+                });
+            }
+            if f.sleeping {
+                posed.with("head", |p| p.rotation = Vec3::new(0.0, -PI * 2.0 / 3.0, cos(age * 0.027) / 22.0));
+            }
+            if f.faceplanted {
+                let s = age * 0.67 * 0.4662;
+                posed.with("right_hind_leg", |p| p.rotation.x = cos(s) * 0.1);
+                posed.with("left_hind_leg", |p| p.rotation.x = cos(s + PI) * 0.1);
+                posed.with("right_front_leg", |p| p.rotation.x = cos(s + PI) * 0.1);
+                posed.with("left_front_leg", |p| p.rotation.x = cos(s) * 0.1);
+            }
         }
         Kind::Axolotl => {
             posed.with("body", |p| p.rotation.y += m.head_yaw.to_radians());
@@ -1096,6 +1174,10 @@ fn extra_rotation(e: &MobEntity, m: &MobPose) -> (Quat, Vec3) {
     if matches!(e.kind, Kind::Phantom) {
         return (Quat::from_rotation_x(e.pitch.to_radians()), Vec3::ZERO);
     }
+    // `FoxRenderer.setupRotations`: a pouncing or snow-stuck fox tips.
+    if e.kind == Kind::Fox && (e.fox.pouncing || e.fox.faceplanted) {
+        return (Quat::from_rotation_x(-e.pitch.to_radians()), Vec3::ZERO);
+    }
     // `SquidRenderer.setupRotations`: tilted and spun about a point half a
     // block up (a baby's quarter), the model hung 1.2 below it (0.6).
     if matches!(e.kind, Kind::Squid | Kind::GlowSquid) {
@@ -1154,6 +1236,26 @@ fn held_in_hands(e: &MobEntity, posed: &Posed, m: &MobPose, rotation: Quat, scal
             * Mat4::from_rotation_y(180.0f32.to_radians())
             * Mat4::from_translation(Vec3::new(side, 2.0, -10.0) / 16.0);
         held.push(crate::mesh::HeldItem { pose, light: m.light_probe.as_vec3(), id: item.clone(), display, first_tint: None, state: Default::default() });
+    }
+    // `FoxHeldItemLayer`: what a fox carries, in its jaws (laid flat
+    // asleep).
+    if e.kind == Kind::Fox {
+        if let (Some(item), Some(head)) = (&e.fox_mouth(), posed.matrix_of("head")) {
+            let (baby, sleeping) = (e.baby(), e.fox.sleeping);
+            let at = match (baby, sleeping) {
+                (true, true) => Vec3::new(0.4, 0.26, 0.15),
+                (true, false) => Vec3::new(0.06, 0.26, -0.5),
+                (false, true) => Vec3::new(0.46, 0.26, 0.22),
+                (false, false) => Vec3::new(0.06, 0.27, -0.5),
+            };
+            let mut local = Mat4::from_translation(at) * Mat4::from_rotation_x(90.0f32.to_radians());
+            if sleeping {
+                local = local * Mat4::from_rotation_z(90.0f32.to_radians());
+            }
+            let shrink = if baby { Mat4::from_scale(Vec3::splat(0.75)) } else { Mat4::IDENTITY };
+            let pose = Mat4::from_translation(m.feet.as_vec3()) * Mat4::from_quat(rotation) * Mat4::from_scale(scale) * Mat4::from_translation(Vec3::new(0.0, 1.501, 0.0)) * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0)) * head * shrink * local;
+            held.push(crate::mesh::HeldItem { pose, light: m.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::Ground, first_tint: None, state: Default::default() });
+        }
     }
     held
 }
