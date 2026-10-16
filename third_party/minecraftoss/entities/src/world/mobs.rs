@@ -91,6 +91,7 @@ pub struct MobEntity {
     pub rabbit: super::rabbits::RabbitState,
     pub polar: super::polar_bears::PolarState,
     pub silverfish: super::silverfish::SilverfishState,
+    pub hoglin: super::hoglins::HoglinState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -642,6 +643,7 @@ impl EntityWorld {
             rabbit: Default::default(),
             polar: Default::default(),
             silverfish: Default::default(),
+            hoglin: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -689,6 +691,7 @@ impl EntityWorld {
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
         let llama = if matches!(kind, Kind::Llama | Kind::TraderLlama) { self.llama_context(id) } else { Default::default() };
         let cub_near = kind == Kind::PolarBear && self.polar_cub_near(id);
+        let (piglin_seen, hoglin_seen) = if kind == Kind::Hoglin { self.hoglin_sights(id) } else { (None, None) };
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -742,6 +745,7 @@ impl EntityWorld {
             e.llama_prepare(llama);
             e.polar_prepare(cub_near);
             e.silverfish_prepare();
+            e.hoglin_prepare(&*world, piglin_seen, hoglin_seen);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -895,6 +899,7 @@ impl EntityWorld {
                     e.llama_settle();
                     e.polar_settle();
                     e.silverfish_settle();
+                    e.hoglin_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1011,6 +1016,9 @@ impl EntityWorld {
         }
         if matches!(kind, Kind::Silverfish | Kind::Endermite) {
             self.silverfish_step(id, world);
+        }
+        if kind == Kind::Hoglin {
+            self.hoglin_step(id);
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {

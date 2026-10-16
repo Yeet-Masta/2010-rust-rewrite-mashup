@@ -58,6 +58,8 @@ mod leashes;
 mod rabbits;
 mod polar_bears;
 mod silverfish;
+mod hoglins;
+pub use hoglins::{goals as hoglin_goals, targets as hoglin_targets, HoglinActivity, HoglinCtx, HoglinState};
 pub use silverfish::{goals as silverfish_goals, SilverfishCtx, SilverfishState};
 pub use polar_bears::{goals as polar_bear_goals, targets as polar_bear_targets, PolarCtx, PolarState};
 pub use rabbits::{goals as rabbit_goals, targets as rabbit_targets, RabbitCtx, RabbitState, EVIL as KILLER_BUNNY};
