@@ -74,6 +74,66 @@ impl Level<'_> {
         false
     }
 
+    /// `BeehiveBlock.useItemOn` on a full hive: shears cut three combs
+    /// loose, a bottle takes honey (the caller fills it); the honey resets.
+    /// Unless smoke rises through it from a campfire below, the bees inside
+    /// burst out. Whether smoke calmed it, when it was full.
+    pub fn beehive_harvest(&mut self, pos: BlockPos, shears: bool) -> Option<bool> {
+        let state = self.block(pos);
+        if !self.is_a(state, "BeehiveBlock") || self.registries().blocks.property(state, "honey_level") != Some("5") {
+            return None;
+        }
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        if shears {
+            self.play_sound("block.beehive.shear", at, 1.0, 1.0);
+            // `dropHoneycomb`: three combs.
+            self.pop_resource(pos, super::container::Stack::new("minecraft:honeycomb", 3));
+        } else {
+            self.play_sound("item.bottle.fill", at, 1.0, 1.0);
+        }
+        let smoky = self.smoky_below(pos);
+        if !smoky {
+            self.beehive_release_all(pos);
+        }
+        let reset = self.with(self.block(pos), "honey_level", "0");
+        self.set_block(pos, reset, 3, super::update::LIMIT);
+        Some(smoky)
+    }
+
+    /// `CampfireBlock.isSmokeyPos`: a lit campfire within five blocks
+    /// below, with nothing solid between.
+    fn smoky_below(&self, pos: BlockPos) -> bool {
+        for i in 1..=5 {
+            let below = pos.offset(0, -i, 0);
+            let state = self.block(below);
+            if self.is_a(state, "CampfireBlock") && self.registries().blocks.property(state, "lit") == Some("true") {
+                return true;
+            }
+            if self.block_collision_shape(state, below).is_some() && !self.is_a(state, "CampfireBlock") {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// `emptyAllLivingFromHive` with `EMERGENCY`: every bee out now.
+    pub fn beehive_release_all(&mut self, pos: BlockPos) {
+        let state = self.block(pos);
+        let Some(Tag::Compound(hive)) = self.block_entity(pos).cloned() else { return };
+        let bees: Vec<Tag> = hive.get("bees").and_then(Tag::as_list).map(<[Tag]>::to_vec).unwrap_or_default();
+        let flower = hive.get("flower_pos").cloned();
+        let mut kept = Vec::new();
+        for bee in bees {
+            let Tag::Compound(map) = &bee else { continue };
+            if !self.release_occupant(pos, state, map, Release::Emergency, flower.as_ref()) {
+                kept.push(bee);
+            }
+        }
+        if let Some(Tag::Compound(map)) = self.block_entity_mut(pos) {
+            map.insert("bees".to_owned(), Tag::List(kept));
+        }
+    }
+
     /// `BeehiveBlockEntity.addOccupant`: a bee goes in, with its saved
     /// data. Whether there was room.
     pub fn beehive_add(&mut self, pos: BlockPos, mut bee: Tag) -> bool {

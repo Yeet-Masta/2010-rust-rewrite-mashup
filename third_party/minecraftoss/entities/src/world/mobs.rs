@@ -673,7 +673,7 @@ impl EntityWorld {
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
-        let (hives, bees_stay_in) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in) } else { (Vec::new(), false) };
+        let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
@@ -715,7 +715,7 @@ impl EntityWorld {
             }
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
-                e.bee_prepare(&hives, bees_stay_in, raining);
+                e.bee_prepare(&hives, bees_stay_in, raining, &zones);
             }
             e.tadpole_grow();
             // A turtle with an egg is in no mood (`canFallInLove`, `TurtleBreedGoal`).

@@ -809,6 +809,31 @@ impl Game {
         for (pos, flint_and_steel) in events.ignited {
             self.ignited(pos, flint_and_steel);
         }
+        // `BeehiveBlock.useItemOn`: the shears wear, or the bottle fills.
+        for (_, shears) in events.hives_harvested {
+            self.start_swing();
+            if self.creative {
+                continue;
+            }
+            let selected = self.entities.selected;
+            if shears {
+                if self.entities.inventory.wear_tool(selected, 1) {
+                    self.item_broke("minecraft:shears");
+                }
+            } else {
+                if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                    held.count -= 1;
+                    if held.count == 0 {
+                        self.entities.inventory.slots[selected] = None;
+                    }
+                }
+                let honey = minecraftoss_player::inventory::ItemStack::new("minecraft:honey_bottle", 1);
+                if let Some(left) = self.entities.inventory.add_item(honey, selected) {
+                    let eye = self.player.pos + DVec3::new(0.0, self.player.eye_height(), 0.0);
+                    self.entities.throw(vec![left], eye, self.player.yaw as f32, self.player.pitch as f32);
+                }
+            }
+        }
         if events.use_taken {
             self.start_swing();
         }
@@ -1981,6 +2006,16 @@ impl Game {
                     }
                 }
             }
+            return;
+        }
+        if matches!(stack.id.as_str(), "minecraft:shears" | "minecraft:glass_bottle")
+            && let Some(hit) = target.as_ref()
+            && self.world.block(hit.pos).is_some_and(|b| {
+                matches!(b.id.path.as_str(), "beehive" | "bee_nest")
+                    && b.properties.get("honey_level").map(String::as_str) == Some("5")
+            })
+        {
+            self.entities.use_hive(hit.pos, stack.id == "minecraft:shears");
             return;
         }
         if matches!(

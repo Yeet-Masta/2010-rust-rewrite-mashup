@@ -2503,6 +2503,9 @@ pub struct EntityWorld {
     hives: Vec<((i32, i32, i32), usize, bool)>,
     bees_stay_in: bool,
     hive_entries: Vec<(u64, (i32, i32, i32))>,
+    /// Hives robbed without smoke: where, by whom, and for how many more
+    /// ticks bees about them turn on the robber.
+    bee_anger_zones: Vec<((i32, i32, i32), u64, i32)>,
     /// The weapon of the player's hit that killed a mob, by mob: its
     /// looting and fire reach the loot (`ATTACKING_ENTITY`'s equipment).
     kill_weapons: HashMap<u64, Option<ItemStack>>,
@@ -2593,6 +2596,7 @@ impl Default for EntityWorld {
             hives: Vec::new(),
             bees_stay_in: false,
             hive_entries: Vec::new(),
+            bee_anger_zones: Vec::new(),
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
@@ -4585,6 +4589,7 @@ impl EntityWorld {
             hives: self.hives.clone(),
             bees_stay_in: self.bees_stay_in,
             hive_entries: Vec::new(),
+            bee_anger_zones: Vec::new(),
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),

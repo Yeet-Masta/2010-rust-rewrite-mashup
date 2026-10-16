@@ -667,6 +667,16 @@ impl ServerSim {
         self.level.use_item_on_tnt(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2))
     }
 
+    /// Shears or a glass bottle on a full hive (`BeehiveBlock.useItemOn`):
+    /// whether it took; without smoke the bees turn on the player.
+    pub fn use_hive(&mut self, pos: BlockPos, shears: bool) -> bool {
+        let Some(smoky) = self.level.beehive_harvest(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), shears) else { return false };
+        if !smoky {
+            self.mobs.anger_bees(pos, 0);
+        }
+        true
+    }
+
     /// `FlintAndSteelItem.useOn` or `FireChargeItem.useOn` on a clicked
     /// face: where the item's sound plays, when it lit something.
     pub fn use_igniter(&mut self, pos: BlockPos, face: &str, flint_and_steel: bool) -> Option<BlockPos> {
@@ -1026,6 +1036,7 @@ pub enum Command {
     IgniteTnt(BlockPos),
     /// Flint and steel (or a fire charge) used on a clicked face.
     UseIgniter { pos: BlockPos, face: &'static str, flint_and_steel: bool },
+    UseHive { pos: BlockPos, shears: bool },
     /// The saved weather, as the world loads (`prepareWeather`).
     LoadWeather(Weather),
     /// `/weather`: rain, and thunder with it, for vanilla's default time.
@@ -1191,6 +1202,8 @@ pub struct Output {
     /// Uses of flint and steel (true) or a fire charge that lit something,
     /// with where the item's sound plays.
     pub ignited: Vec<(BlockPos, bool)>,
+    /// Hives harvested: where, and whether with shears (else a bottle).
+    pub hives_harvested: Vec<(BlockPos, bool)>,
     /// The powers beacons gave the players (`BeaconBlockEntity.applyEffects`).
     pub beacon_effects: Vec<minecraftoss_world::level::beacon::BeaconEffect>,
     /// The weather after a tick (`ClientboundGameEventPacket`'s rain and
@@ -1360,6 +1373,12 @@ impl ServerHandle {
     /// something, `Output.ignited` says so.
     pub fn use_igniter(&mut self, pos: BlockPos, face: &'static str, flint_and_steel: bool) {
         self.send(Command::UseIgniter { pos, face, flint_and_steel });
+    }
+
+    /// Shears or a bottle on a hive; `Output.hives_harvested` says if it
+    /// took.
+    pub fn use_hive(&mut self, pos: BlockPos, shears: bool) {
+        self.send(Command::UseHive { pos, shears });
     }
 
     /// The saved weather, as the world loads.
@@ -1557,6 +1576,11 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 Command::UseIgniter { pos, face, flint_and_steel } => {
                     if let Some(at) = sim.use_igniter(pos, face, flint_and_steel) {
                         out.ignited.push((at, flint_and_steel));
+                    }
+                }
+                Command::UseHive { pos, shears } => {
+                    if sim.use_hive(pos, shears) {
+                        out.hives_harvested.push((pos, shears));
                     }
                 }
                 Command::LoadWeather(weather) => sim.level.load_weather(&weather),

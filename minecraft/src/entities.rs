@@ -87,6 +87,7 @@ pub struct Events {
     /// Flint and steel (true) or a fire charge that lit something, and
     /// where its sound plays.
     pub ignited: Vec<((i32, i32, i32), bool)>,
+    pub hives_harvested: Vec<((i32, i32, i32), bool)>,
     /// Entity events with particles (hearts, a villager's moods).
     pub mob_events: Vec<(u64, u8)>,
     /// The player's hits: the mob, and what the hit did.
@@ -888,6 +889,12 @@ impl Entities {
         self.server.use_igniter(pos, face, flint_and_steel);
     }
 
+    /// Shears or a glass bottle on a full hive; whether it took arrives
+    /// with the server's output.
+    pub fn use_hive(&mut self, pos: (i32, i32, i32), shears: bool) {
+        self.server.use_hive(pos, shears);
+    }
+
     /// `BoneMealItem.useOn` on a clicked face; whether it took arrives with
     /// the server's output.
     pub fn bone_meal(&mut self, pos: (i32, i32, i32), face: &'static str) {
@@ -1046,6 +1053,7 @@ impl Entities {
             events.block_entities.extend(output.block_entities);
             events.bone_meal_used.extend(output.bone_meal_used);
             events.ignited.extend(output.ignited);
+            events.hives_harvested.extend(output.hives_harvested);
             events.menu.extend(output.menu);
             events.use_results.extend(output.use_results);
             events.level_events.extend(output.level_events);

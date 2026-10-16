@@ -544,8 +544,19 @@ impl Goal<MonsterGoalContext> for BeeWanderGoal {
 impl MobEntity {
     /// Before its goals: its state for them, the hives about it, and
     /// `customServerAiStep` (drowning, the sting's toll, the clocks).
-    pub(super) fn bee_prepare(&mut self, hives: &[(Cell, usize, bool)], stay_in: bool, raining: bool) {
+    pub(super) fn bee_prepare(&mut self, hives: &[(Cell, usize, bool)], stay_in: bool, raining: bool, zones: &[(Cell, u64, i32)]) {
         let at = self.body.position;
+        // `BeehiveBlock.angerNearbyBees` and the robbed hive's bees: those
+        // about it with no target turn on the robber.
+        if self.ai.state.target.is_none() && !self.bee.has_stung {
+            if let Some(&(_, player, _)) = zones.iter().find(|(c, _, _)| {
+                let d = at - center(*c);
+                d.x.abs() <= 8.5 && d.y.abs() <= 6.5 && d.z.abs() <= 8.5
+            }) {
+                self.ai.state.set_target(Some(crate::monster_ai::Target::Player(player)));
+                self.bee.anger = 400 + self.random.next_int(380) as i32;
+            }
+        }
         let b = &mut self.bee;
         b.under_water = if self.body.touching_water { b.under_water + 1 } else { 0 };
         let mut hurt = 0.0;
@@ -642,6 +653,16 @@ impl EntityWorld {
     pub fn set_hives(&mut self, hives: Vec<(Cell, usize, bool)>, stay_in: bool) {
         self.hives = hives;
         self.bees_stay_in = stay_in;
+        for zone in &mut self.bee_anger_zones {
+            zone.2 -= 1;
+        }
+        self.bee_anger_zones.retain(|z| z.2 > 0);
+    }
+
+    /// A hive robbed without smoke by `player`: its bees, and those about
+    /// it, turn on them for the next few ticks' worth of arrivals.
+    pub fn anger_bees(&mut self, hive: Cell, player: u64) {
+        self.bee_anger_zones.push((hive, player, 3));
     }
 
     /// The bees that went into hives since the last call: each bee and
