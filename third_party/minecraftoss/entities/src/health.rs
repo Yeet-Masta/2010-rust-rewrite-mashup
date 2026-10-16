@@ -32,6 +32,8 @@ pub struct Death {
     pub direct: bool,
     /// The charged creeper whose blast killed it (`Creeper.killedEntity`).
     pub charged_creeper: Option<u64>,
+    /// The killer's frog kind, when a frog ate it (`frog/variant`).
+    pub attacker_variant: Option<&'static str>,
 }
 
 /// Pinned 26.3 `CombatRules.getDamageAfterAbsorb` for the no-enchantment

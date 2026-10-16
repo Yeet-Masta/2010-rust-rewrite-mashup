@@ -447,6 +447,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Axolotl {
         return crate::world::axolotl_goals();
     }
+    if kind == Kind::Frog {
+        return crate::world::frog_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;

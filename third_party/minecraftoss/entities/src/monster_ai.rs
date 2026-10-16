@@ -570,6 +570,15 @@ pub struct MonsterGoalContext {
     pub turtle: TurtleCtx,
     /// The game time an axolotl's hunting cooldown lasts until.
     pub axolotl_hunting_until: i64,
+    /// A frog's prey in reach (the size-1 cubes), its spawn, and what its
+    /// tongue, croak and laying did this tick (`world/frogs`).
+    pub frog_food: Vec<(u64, DVec3)>,
+    pub frog_pregnant: bool,
+    pub frog_tongue: bool,
+    pub frog_croaking: bool,
+    pub frog_pull: Option<(u64, DVec3)>,
+    pub frog_eat: Option<u64>,
+    pub frog_laid: Option<(i32, i32, i32)>,
     /// Where a flier or swimmer steers, and at what speed modifier: its
     /// move control's wanted position (`mob_ai`'s goals set it).
     pub fly_target: Option<(DVec3, f64)>,
@@ -968,6 +977,13 @@ impl MonsterAi {
                 guardian: GuardianCtx::default(),
                 turtle: TurtleCtx::default(),
                 axolotl_hunting_until: 0,
+                frog_food: Vec::new(),
+                frog_pregnant: false,
+                frog_tongue: false,
+                frog_croaking: false,
+                frog_pull: None,
+                frog_eat: None,
+                frog_laid: None,
                 fly_target: None,
                 charging: false,
                 in_love: false,

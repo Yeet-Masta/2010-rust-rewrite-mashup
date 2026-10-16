@@ -550,6 +550,17 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             walk_keyframes(posed, "SnifferAnimation.SNIFFER_WALK", m, 9.0, 100.0);
         }
         Kind::Frog => {
+            // `FrogModel.setupAnim`: the tongue and croak play from when
+            // they began; the throat sac shows only while it croaks.
+            let since = |start: i32| ((e.tick_count - start) as f32 + m.age_in_ticks.fract()).max(0.0) * 50.0;
+            if let (Some(start), Some(a)) = (e.frog.croak_start, entity_model::animation("FrogAnimation.FROG_CROAK")) {
+                a.apply(posed, since(start), 1.0);
+            } else {
+                posed.hide("croaking_body");
+            }
+            if let (Some(start), Some(a)) = (e.frog.tongue_start, entity_model::animation("FrogAnimation.FROG_TONGUE")) {
+                a.apply(posed, since(start), 1.0);
+            }
             if in_water {
                 walk_keyframes(posed, "FrogAnimation.FROG_SWIM", m, 1.0, 2.5);
                 idle_keyframes(posed, "FrogAnimation.FROG_IDLE_WATER", age);

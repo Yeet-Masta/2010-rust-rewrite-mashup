@@ -82,6 +82,7 @@ pub struct MobEntity {
     pub guardian: super::guardians::GuardianState,
     pub turtle: super::turtles::TurtleState,
     pub axolotl: super::axolotls::AxolotlState,
+    pub frog: super::frogs::FrogState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -624,6 +625,7 @@ impl EntityWorld {
             guardian: Default::default(),
             turtle: Default::default(),
             axolotl: Default::default(),
+            frog: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -668,6 +670,7 @@ impl EntityWorld {
         let tempters = self.tempters(kind);
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
+        let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
@@ -704,6 +707,10 @@ impl EntityWorld {
             if kind == Kind::Dolphin {
                 e.ai.state.vitals = vitals;
             }
+            if kind == Kind::Frog {
+                e.frog_prepare(frog_food);
+            }
+            e.tadpole_grow();
             // A turtle with an egg is in no mood (`canFallInLove`, `TurtleBreedGoal`).
             e.ai.state.in_love = e.in_love > 0 && e.age.ticks == 0 && !e.turtle.has_egg;
             e.ai.state.mates = mates;
@@ -833,6 +840,9 @@ impl EntityWorld {
                         _ => e.tick_free(&*world, players, &villagers, game_time, difficulty),
                     }
                     e.axolotl_settle(game_time);
+                    if kind == Kind::Frog {
+                        e.frog_settle();
+                    }
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -926,6 +936,9 @@ impl EntityWorld {
         if kind == Kind::Axolotl {
             self.axolotl_step(id, players);
         }
+        if matches!(kind, Kind::Frog | Kind::Tadpole) {
+            self.frog_step(id, world);
+        }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
         let (stung, puff, at) = sting;
@@ -996,6 +1009,13 @@ impl EntityWorld {
         for i in [a, b] {
             self.mobs[i].age.set(6000);
             self.mobs[i].in_love = 0;
+        }
+        // `Frog.spawnChildFromBreeding`: spawn to lay, not a baby.
+        if kind == Kind::Frog {
+            self.mobs[a].frog.pregnant = true;
+            self.spawned.experience.push((position, xp));
+            self.entity_events.push((first, 18));
+            return;
         }
         // `TurtleBreedGoal.breed`: an egg to carry home, not a baby.
         if kind == Kind::Turtle {
@@ -1125,6 +1145,23 @@ impl EntityWorld {
     pub fn feed_mob(&mut self, id: u64, inventory: &mut minecraftoss_player::inventory::Inventory, hand: usize, infinite: bool) -> Option<(bool, Vec<crate::animal::AnimalEvent>)> {
         let recipes = self.recipes.clone();
         let e = self.mobs.iter_mut().find(|e| e.id == id)?;
+        // `Tadpole.mobInteract`: a slime ball hurries its growing up.
+        if e.kind == Kind::Tadpole {
+            let held = inventory.slots.get(hand).and_then(Option::as_ref).map(|s| s.id.clone());
+            if held.as_deref() != Some("minecraft:slime_ball") {
+                return None;
+            }
+            if !infinite {
+                if let Some(stack) = inventory.slots[hand].as_mut() {
+                    stack.count -= 1;
+                    if stack.count == 0 {
+                        inventory.slots[hand] = None;
+                    }
+                }
+            }
+            e.feed_tadpole();
+            return Some((true, Vec::new()));
+        }
         let tag = e.species().breeding_food()?;
         // A wild cat or a wary ocelot does not breed (`TamableAnimal.canMate`,
         // `Ocelot.isTrusting`).

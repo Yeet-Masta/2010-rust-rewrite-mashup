@@ -934,6 +934,11 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.body.height = height * scale;
                 entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
             }
+            // `Tadpole.readAdditionalSaveData`: its growing counts up.
+            if kind == Kind::Tadpole {
+                entity.frog.growth = age.max(0);
+                entity.age.ticks = 0;
+            }
             // `Turtle.readAdditionalSaveData`: home (else where it stands)
             // and its egg.
             if kind == Kind::Turtle {
@@ -1295,6 +1300,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Tadpole {
+            fields.push(("Age", Tag::Int(e.frog.growth)));
+            fields.push(("AgeLocked", Tag::Byte(i8::from(e.age.locked))));
         }
         if e.kind == minecraftoss_entities::species::Kind::Turtle {
             if let Some((x, y, z)) = e.turtle.home {

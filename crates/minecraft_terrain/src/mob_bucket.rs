@@ -52,7 +52,7 @@ pub fn bucket_components(mob: &MobEntity) -> Value {
     }
     data.insert("Health".into(), json!(mob.health));
     if matches!(mob.kind, Kind::Axolotl | Kind::Tadpole) {
-        data.insert("Age".into(), json!(mob.age.ticks));
+        data.insert("Age".into(), json!(if mob.kind == Kind::Tadpole { mob.frog.growth } else { mob.age.ticks }));
         data.insert("AgeLocked".into(), json!(mob.age.locked));
     }
     let mut components = Map::new();

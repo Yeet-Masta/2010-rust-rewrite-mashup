@@ -30,6 +30,8 @@ pub struct EntityLootContext {
     pub vehicle: Option<&'static str>,
     /// The killer's entity type.
     pub attacker: Option<&'static str>,
+    /// The killer's frog kind (`minecraft:frog/variant`).
+    pub attacker_variant: Option<&'static str>,
     /// The dead entity's own type.
     pub this_type: Option<&'static str>,
     /// A cube mob's size (`type_specific/cube_mob`).
@@ -563,10 +565,21 @@ fn condition_true(data: &LootData, value: &Value, context: EntityLootContext, ra
                 return None;
             }
             let source = predicate.get("source_entity")?.as_object()?;
-            if source.keys().any(|k| k != "minecraft:entity_type") {
+            if source.keys().any(|k| k != "minecraft:entity_type" && k != "minecraft:components") {
                 return None;
             }
-            Some(data.type_matches(source.get("minecraft:entity_type")?.as_str()?, context.attacker))
+            // A frog's kind, as its data components name it.
+            let kind_ok = match source.get("minecraft:components") {
+                None => true,
+                Some(components) => {
+                    let components = components.as_object()?;
+                    if components.keys().any(|k| k != "minecraft:frog/variant") {
+                        return None;
+                    }
+                    components.get("minecraft:frog/variant")?.as_str() == context.attacker_variant
+                }
+            };
+            Some(kind_ok && data.type_matches(source.get("minecraft:entity_type")?.as_str()?, context.attacker))
         }
         _ => None,
     }

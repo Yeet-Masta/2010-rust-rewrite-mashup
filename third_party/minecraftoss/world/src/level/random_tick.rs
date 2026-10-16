@@ -645,6 +645,29 @@ impl Level<'_> {
         }
     }
 
+    /// `FrogspawnBlock.tick`: off still water it just breaks; otherwise it
+    /// hatches two to five tadpoles about the block.
+    pub(super) fn frogspawn_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        let below = self.block(pos.below());
+        // `mayPlaceOn`: water (`#supports_frogspawn`) with no fluid on it.
+        let water = self.name(below) == "minecraft:water" || self.registries().blocks.property(below, "waterlogged") == Some("true");
+        self.level_event(2001, pos, i32::from(state.0));
+        self.destroy_block(pos, super::update::LIMIT);
+        if !water {
+            return;
+        }
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        self.play_sound("block.frogspawn.hatch", at, 1.0, 1.0);
+        let count = 2 + self.random.next_i32_bound(4);
+        for _ in 0..count {
+            let x = f64::from(pos.x) + self.random.next_f64().clamp(f64::from(0.2_f32), 0.799_999_997_019_767_8);
+            let z = f64::from(pos.z) + self.random.next_f64().clamp(f64::from(0.2_f32), 0.799_999_997_019_767_8);
+            let yaw = (1 + self.random.next_i32_bound(360)) as f32;
+            let tag = self.built_mob_tag("minecraft:tadpole", [x, f64::from(pos.y) - 0.5, z], yaw, vec![("PersistenceRequired", minecraftoss_core::nbt::Tag::Byte(1))]);
+            self.spawned.push(tag);
+        }
+    }
+
     /// `CactusBlock.randomTick`.
     fn cactus_random_tick(&mut self, state: BlockStateId, pos: BlockPos) {
         let above = pos.above();

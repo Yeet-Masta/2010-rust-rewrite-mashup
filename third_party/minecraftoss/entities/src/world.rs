@@ -46,6 +46,8 @@ mod dolphins;
 mod guardians;
 mod turtles;
 mod axolotls;
+mod frogs;
+pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};
 pub use axolotls::{goals as axolotl_goals, targets as axolotl_targets, AxolotlState};
 pub use turtles::{goals as turtle_goals, TurtleState};
 pub use guardians::{attack_duration as guardian_attack_duration, goals as guardian_goals, targets as guardian_targets, GuardianState};
@@ -679,8 +681,8 @@ const BOW_DURABILITY: u32 = 384;
 
 /// A reported death: its order and what its drops see.
 fn death_of(id: u64, damage: &mut DamageState, kind: &'static str, table: Option<&'static str>, context: EntityLootContext) -> Option<(u64, MobDeath)> {
-    let Death { order, position, killed_by_player, on_fire, attacker, direct, charged_creeper } = damage.death.take()?;
-    let context = EntityLootContext { this_type: Some(kind), on_fire, killed_by_player, attacker, has_direct_attacker: direct, ..context };
+    let Death { order, position, killed_by_player, on_fire, attacker, direct, charged_creeper, attacker_variant } = damage.death.take()?;
+    let context = EntityLootContext { this_type: Some(kind), on_fire, killed_by_player, attacker, attacker_variant, has_direct_attacker: direct, ..context };
     Some((order, MobDeath { id, table, position, context, charged_creeper, equipment: Vec::new(), experience: 0 }))
 }
 
