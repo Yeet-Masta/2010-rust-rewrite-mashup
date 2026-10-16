@@ -401,7 +401,7 @@ fn build_internal<S: Scene>(scene: &S, packs: &PackStack, preload_blocks: bool) 
         textures.insert(ResourceId::parse(&skin)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/slime/slime")?, ());
-    for texture in crate::missile_render::TEXTURES {
+    for texture in crate::missile_render::TEXTURES.into_iter().chain(crate::leash_render::TEXTURES) {
         textures.insert(ResourceId::parse(texture)?, ());
     }
     textures.insert(ResourceId::parse("minecraft:entity/enderman/enderman")?, ());
@@ -1571,6 +1571,9 @@ pub fn make_atlas(packs: &PackStack, mut textures: Vec<ResourceId>) -> Result<At
             } else {
                 decoded
             }
+        } else if id.path == "misc/white" {
+            // A plain white tile under untextured geometry (leads).
+            RgbaImage::from_pixel(tile, tile, image::Rgba([255, 255, 255, 255]))
         } else {
             if id.path != "missingno" {
                 missing.push(id.clone());

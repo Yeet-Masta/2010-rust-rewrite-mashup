@@ -681,6 +681,7 @@ impl EntityWorld {
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
+        let llama = if matches!(kind, Kind::Llama | Kind::TraderLlama) { self.llama_context(id) } else { Default::default() };
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -731,7 +732,7 @@ impl EntityWorld {
             }
             e.goat_prepare();
             e.trader_prepare();
-            e.llama_prepare();
+            e.llama_prepare(llama);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);

@@ -33,7 +33,7 @@ impl PanicGoal {
 }
 
 /// `getLastDamageSource` is still set, or it burns.
-fn panicking(ctx: &MonsterGoalContext) -> bool {
+pub(crate) fn panicking(ctx: &MonsterGoalContext) -> bool {
     ctx.on_fire || ctx.hurt_by.is_some_and(|(_, when)| ctx.tick_count - when <= 40)
 }
 
@@ -604,7 +604,7 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         return crate::world::fox_targets(false);
     }
     if matches!(kind, Kind::Llama | Kind::TraderLlama) {
-        return crate::world::llama_targets();
+        return crate::world::llama_targets(kind == Kind::TraderLlama);
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

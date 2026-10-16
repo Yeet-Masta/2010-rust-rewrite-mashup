@@ -195,6 +195,7 @@ fn main() {
                         poisoned: effects.contains(&"minecraft:poison"),
                         weakened: effects.contains(&"minecraft:weakness"),
                         swimming: false,
+                        sneaking: false,
                     },
                 ));
                 world.set_player_vitals(vitals.clone());

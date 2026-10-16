@@ -64,6 +64,8 @@ pub struct PlayerView {
     pub time_since_rest: i32,
     /// `Player.isSwimming`.
     pub swimming: bool,
+    /// Sneaking (`isSecondaryUseActive`).
+    pub crouching: bool,
 }
 
 /// What the server sent back this frame.
@@ -120,6 +122,8 @@ pub struct Entities {
     world: EntityWorld,
     /// The client's copies of them: tracked, interpolated, animated.
     client: ClientMobs,
+    /// Where the player holds leads this frame (`getRopeHoldPosition`).
+    pub player_rope: Option<DVec3>,
     poof: PoofParticles,
     portal: PortalParticles,
     items: ItemVisuals,
@@ -210,6 +214,7 @@ impl Entities {
             server,
             world: EntityWorld::default(),
             client: ClientMobs::default(),
+            player_rope: None,
             poof: PoofParticles::default(),
             portal: PortalParticles::default(),
             items: ItemVisuals::default(),
@@ -683,6 +688,16 @@ impl Entities {
             .map(|(_, distance)| distance)
     }
 
+    /// A use on a fence: when it holds a knot or the player's leashed mobs
+    /// are about, the server ties or takes their leads. Whether it did.
+    pub fn leash_fence(&mut self, pos: (i32, i32, i32)) -> bool {
+        if !self.world.knots().contains(&pos) && !self.world.has_leashed_near(0, pos) {
+            return false;
+        }
+        self.server.leash_fence(pos);
+        true
+    }
+
     /// An attack on the mob the player looks at; whether there was one.
     pub fn attack(&mut self, eye: DVec3, look: DVec3, reach: f64, attack: PlayerAttack) -> bool {
         let Some((hit, _)) = self.world.mob_on_ray(eye, look, reach) else {
@@ -1003,6 +1018,7 @@ impl Entities {
                         health: player.health,
                         velocity: player.velocity,
                         swimming: player.swimming,
+                        sneaking: player.crouching,
                         ..Default::default()
                     },
                 )],
@@ -1387,6 +1403,34 @@ impl Entities {
             })
             .collect();
         minecraft_terrain::missile_render::append_beams(&mut out.models, beams, atlas);
+        // Leads, from each mob's attachment to its holder's rope hold.
+        let ropes: Vec<_> = w
+            .leashes()
+            .iter()
+            .filter_map(|leash| {
+                use minecraftoss_entities::world::LeashHolder;
+                let pose = poses.pose(leash.mob, partial)?;
+                let (width, _) = w.mob_dimensions(leash.mob)?;
+                let eye = (pose.light_probe.y - pose.feet.y) as f32;
+                let start = pose.feet + minecraft_terrain::leash_render::leash_offset(eye, width, pose.body_rot);
+                let (end, end_light_at) = match leash.holder {
+                    LeashHolder::Player(_) => (self.player_rope?, camera),
+                    LeashHolder::Mob(holder) => {
+                        // `Entity.getRopeHoldPosition`: seven tenths of its
+                        // eye height up.
+                        let p = poses.pose(holder, partial)?;
+                        (p.feet + DVec3::new(0.0, (p.light_probe.y - p.feet.y) * 0.7, 0.0), p.light_probe)
+                    }
+                    LeashHolder::Knot((x, y, z)) => {
+                        let at = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.375 + 0.2, f64::from(z) + 0.5);
+                        (at, at)
+                    }
+                };
+                Some(minecraft_terrain::leash_render::Rope { start, end, start_light_at: pose.light_probe, end_light_at })
+            })
+            .collect();
+        minecraft_terrain::leash_render::append_leashes(&mut out.models, &ropes, atlas, light);
+        minecraft_terrain::leash_render::append_knots(&mut out.models, w.knots(), atlas, light);
         witch_render::append_potions(
             &mut out.items,
             w.potions().iter().filter(|p| p.potion.alive).map(|p| {

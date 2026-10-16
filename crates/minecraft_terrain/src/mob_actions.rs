@@ -142,6 +142,22 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     let recipes = actor.inventory.recipes.clone();
     let held = actor.inventory.slots.get(selected).and_then(Option::as_ref).map(|stack| stack.id.clone());
     let mut outcome = MobOutcome::default();
+    // `Entity.interact`'s leads come before the mob's own use.
+    let sneaking = world.player_sneaking(0);
+    if let Some(used) = world.leash_interact(hit.id(), 0, held.as_deref(), sneaking, infinite) {
+        use minecraftoss_entities::world::LeashUse;
+        match used {
+            LeashUse::Tied { spends: true } if !infinite => minecraftoss_entities::animal::consume_one(actor.inventory, selected),
+            LeashUse::Sheared if !infinite => {
+                actor.inventory.wear_tool(selected, 1);
+            }
+            _ => {}
+        }
+        outcome.inventory_changed = true;
+        outcome.handled = true;
+        outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
+        return outcome;
+    }
     match hit {
         MobHit::Cow(id) => {
             let Some(entity) = world.cow_mut(id) else { return outcome };

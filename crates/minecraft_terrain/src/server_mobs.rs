@@ -379,6 +379,22 @@ fn seed(tag: &Tag) -> u64 {
 /// Adds a saved entity the entity world simulates; its ID, or none for a
 /// type it does not simulate yet.
 pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
+    let id = spawn_saved_mob(world, tag)?;
+    // `Leashable.readLeashData`: `{UUID: [I; ...]}` for an entity holder,
+    // the knot's block otherwise.
+    match tag.get("leash") {
+        Some(Tag::Compound(holder)) => {
+            if let Some(ints) = holder.get("UUID").and_then(Tag::as_ints).filter(|u| u.len() == 4) {
+                world.restore_leash(id, Ok(minecraftoss_entities::gossip::uuid_from_ints([ints[0], ints[1], ints[2], ints[3]])));
+            }
+        }
+        Some(Tag::IntArray(p)) if p.len() == 3 => world.restore_leash(id, Err((p[0], p[1], p[2]))),
+        _ => {}
+    }
+    Some(id)
+}
+
+fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
     let kind = text(tag, "id")?;
     let pos = position(tag)?;
     let yaw = yaw(tag);
@@ -1201,6 +1217,19 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         map.insert("PersistenceRequired".into(), Tag::Byte(i8::from(persistent)));
         // The UUID gossip about it is kept by.
         map.entry("UUID".into()).or_insert_with(|| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(world.uuid_of(id)).to_vec()));
+        // `writeLeashData`.
+        match world.leash_save(id) {
+            Some(Ok(uuid)) => {
+                let holder = std::collections::BTreeMap::from([("UUID".to_owned(), Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec()))]);
+                map.insert("leash".into(), Tag::Compound(holder));
+            }
+            Some(Err((x, y, z))) => {
+                map.insert("leash".into(), Tag::IntArray(vec![x, y, z]));
+            }
+            None => {
+                map.remove("leash");
+            }
+        }
         for (key, value) in fields {
             map.insert(key.to_owned(), value);
         }

@@ -611,6 +611,7 @@ impl Game {
             shield: self.blocking_slot().map(|_| self.player.yaw as f32),
             time_since_rest: self.time_since_rest,
             swimming: self.player.swimming,
+            crouching: self.player.crouching,
         };
         let bright = self.world.sky_light_level() > 11.0;
         self.entities.hold_pickups = self.pickups_wait();
@@ -670,6 +671,8 @@ impl Game {
 
         // Mobs, items, particles, cracks, the outline and the hand.
         let sky_darken = (15.0 - self.world.sky_light_level()).clamp(0.0, 15.0) as u8;
+        let feet = eye - DVec3::new(0.0, self.player.eye_height(), 0.0);
+        self.entities.player_rope = Some(minecraft_terrain::leash_render::player_rope_hold(feet, self.player.yaw as f32, self.player.crouching));
         let mut meshes = self.entities.meshes(
             &self.world.scene,
             &self.world.packs,
@@ -1924,6 +1927,11 @@ impl Game {
                 let player = self.player_context();
                 self.entities.use_block_with(hit.pos, facing, player);
                 self.use_pending = Some(hit.pos);
+                self.start_swing();
+                return;
+            }
+            // `FenceBlock.useWithoutItem`: leads tied to a knot there.
+            if block.id.path.ends_with("_fence") && self.entities.leash_fence(hit.pos) {
                 self.start_swing();
                 return;
             }

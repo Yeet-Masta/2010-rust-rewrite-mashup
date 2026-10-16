@@ -879,6 +879,7 @@ impl CreatureSpawns {
         }
         let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag("minecraft:wandering_trader")) else { return false };
         let uuid = level.next_uuid();
+        let trader_uuid = uuid;
         let yaw = level.random().next_f32() * 360.0;
         place(&mut tag, [f64::from(spawn.x) + 0.5, f64::from(spawn.y), f64::from(spawn.z) + 0.5], yaw, 0.0, uuid);
         set(&mut tag, "DespawnDelay", Tag::Int(48000));
@@ -894,6 +895,8 @@ impl CreatureSpawns {
             let uuid = level.next_uuid();
             let yaw = level.random().next_f32() * 360.0;
             place(&mut llama, [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5], yaw, 0.0, uuid);
+            // `setLeashedTo(trader, true)`.
+            set(&mut llama, "leash", Tag::Compound([("UUID".to_owned(), Tag::IntArray(trader_uuid.to_vec()))].into_iter().collect()));
             level.add_entity(llama);
         }
         true

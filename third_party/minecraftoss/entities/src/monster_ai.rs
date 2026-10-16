@@ -200,11 +200,13 @@ pub struct PlayerVitals {
     pub weakened: bool,
     /// `Player.isSwimming` (a dolphin swims along).
     pub swimming: bool,
+    /// `isSecondaryUseActive` (a lead use hands leashed mobs over).
+    pub sneaking: bool,
 }
 
 impl Default for PlayerVitals {
     fn default() -> Self {
-        Self { health: 20.0, velocity: DVec3::ZERO, slowed: false, poisoned: false, weakened: false, swimming: false }
+        Self { health: 20.0, velocity: DVec3::ZERO, slowed: false, poisoned: false, weakened: false, swimming: false, sneaking: false }
     }
 }
 
@@ -589,8 +591,8 @@ pub struct MonsterGoalContext {
     pub goat: crate::world::GoatCtx,
     /// A wandering trader's drinks, trader and errands (`world/traders`).
     pub trader: crate::world::TraderCtx,
-    /// A llama spat since its hurt-by target last looked (`didSpit`).
-    pub llama_did_spit: bool,
+    /// A llama's spit, caravan and trader (`world/llamas`).
+    pub llama: crate::world::LlamaCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1007,7 +1009,7 @@ impl MonsterAi {
                 fox_items: Vec::new(),
                 goat: Default::default(),
                 trader: Default::default(),
-                llama_did_spit: false,
+                llama: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

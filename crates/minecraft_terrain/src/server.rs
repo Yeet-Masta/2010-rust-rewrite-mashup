@@ -1033,6 +1033,8 @@ pub enum Command {
     /// A use of a block; with the player, it may open a menu, and is
     /// answered in `Output.use_results`.
     UseBlock { pos: BlockPos, facing: &'static str, player: Option<Box<crate::menus::PlayerContext>> },
+    /// A use on a fence with leashed mobs about or a knot on it.
+    LeashFence(BlockPos),
     /// A batch of inputs on the open menu `id`, the `seq`-th (counting from
     /// 1), with the player as it was when sent.
     Menu { id: u8, seq: u32, inputs: Vec<crate::menus::MenuInput>, player: Box<crate::menus::PlayerContext> },
@@ -1344,6 +1346,11 @@ impl ServerHandle {
         handled
     }
 
+    /// A use on the fence at `pos` that ties or takes leads.
+    pub fn leash_fence(&mut self, pos: BlockPos) {
+        self.send(Command::LeashFence(pos));
+    }
+
     /// Whether using the block the scene shows at `pos` opens a menu (a
     /// chest, a barrel, a hopper...): the client then sends the use with
     /// the player ([`Self::use_block_with`]), swings, and places nothing.
@@ -1569,6 +1576,17 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                 }
                 Command::UseBlock { pos, facing, player: None } => {
                     sim.use_block(pos, facing);
+                }
+                Command::LeashFence(pos) => {
+                    // `LeashFenceKnotEntity.interact` on a knot, else
+                    // `FenceBlock.useWithoutItem`'s `bindPlayerMobs`.
+                    let cell = (pos.0, pos.1, pos.2);
+                    let sneaking = sim.mobs.player_sneaking(0);
+                    if sim.mobs.knots().contains(&cell) {
+                        sim.mobs.knot_interact(0, cell, sneaking);
+                    } else {
+                        sim.mobs.bind_to_fence(0, cell);
+                    }
                 }
                 Command::Menu { id, seq, inputs, player } => out.menu.push(sim.menu_batch(id, seq, &inputs, *player)),
                 Command::SetEnderItems(items) => sim.set_ender_items(items),

@@ -54,7 +54,9 @@ pub use goats::{goals as goat_goals, GoatCtx, GoatState};
 mod traders;
 pub use traders::{goals as trader_goals, TraderCtx, TraderDrink, TraderState};
 mod llamas;
-pub use llamas::{goals as llama_goals, targets as llama_targets, LlamaState, TRADER_LLAMA_DESPAWN_DELAY};
+mod leashes;
+pub use leashes::{Leash, LeashHolder, LeashUse};
+pub use llamas::{goals as llama_goals, targets as llama_targets, CaravanLlama, LlamaCtx, LlamaState, TRADER_LLAMA_DESPAWN_DELAY};
 pub use foxes::{goals as fox_goals, targets as fox_targets, FoxCtx, FoxState};
 pub use bees::{goals as bee_goals, targets as bee_targets, BeeCtx, BeeState};
 pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};
@@ -2514,6 +2516,11 @@ pub struct EntityWorld {
     /// Hives robbed without smoke: where, by whom, and for how many more
     /// ticks bees about them turn on the robber.
     bee_anger_zones: Vec<((i32, i32, i32), u64, i32)>,
+    /// The leads, the fence knots, and leads read from saves still to find
+    /// their holders.
+    leashes: Vec<leashes::Leash>,
+    knots: Vec<(i32, i32, i32)>,
+    saved_leashes: Vec<leashes::SavedLeash>,
     /// The weapon of the player's hit that killed a mob, by mob: its
     /// looting and fire reach the loot (`ATTACKING_ENTITY`'s equipment).
     kill_weapons: HashMap<u64, Option<ItemStack>>,
@@ -2605,6 +2612,9 @@ impl Default for EntityWorld {
             bees_stay_in: false,
             hive_entries: Vec::new(),
             bee_anger_zones: Vec::new(),
+            leashes: Vec::new(),
+            knots: Vec::new(),
+            saved_leashes: Vec::new(),
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
@@ -4602,6 +4612,9 @@ impl EntityWorld {
             bees_stay_in: self.bees_stay_in,
             hive_entries: Vec::new(),
             bee_anger_zones: Vec::new(),
+            leashes: self.leashes.clone(),
+            knots: self.knots.clone(),
+            saved_leashes: Vec::new(),
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
@@ -6611,6 +6624,8 @@ impl EntityWorld {
                 horse.tick_animation();
             }
         }
+        // `Leashable.tickLeash`, the dying still holding theirs.
+        self.tick_leashes(world);
         self.bats
             .retain(|entity| entity.bat.damage.death_ticks < 20);
         self.zombies
