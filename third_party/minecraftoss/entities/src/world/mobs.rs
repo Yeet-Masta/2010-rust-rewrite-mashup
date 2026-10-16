@@ -87,6 +87,7 @@ pub struct MobEntity {
     pub fox: super::foxes::FoxState,
     pub goat: super::goats::GoatState,
     pub trader: super::traders::TraderState,
+    pub llama: super::llamas::LlamaState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -634,6 +635,7 @@ impl EntityWorld {
             fox: Default::default(),
             goat: Default::default(),
             trader: Default::default(),
+            llama: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -684,7 +686,7 @@ impl EntityWorld {
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
-            .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.villager.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager" })
+            .map(|v| MobCandidate { id: v.id, position: v.villager.body.position, eye_height: v.villager.eye_height(), width: v.villager.body.width, height: v.villager.body.height, alive: v.villager.health > 0.0, kind: "minecraft:villager", tame: false })
             .collect();
         let s = kind.species();
         // Its kind about it: those in love (for `BreedGoal`) and, for a
@@ -729,6 +731,7 @@ impl EntityWorld {
             }
             e.goat_prepare();
             e.trader_prepare();
+            e.llama_prepare();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -874,6 +877,7 @@ impl EntityWorld {
                     }
                     e.goat_settle();
                     e.trader_settle();
+                    e.llama_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -981,6 +985,9 @@ impl EntityWorld {
         }
         if kind == Kind::WanderingTrader {
             self.trader_step(id);
+        }
+        if kind == Kind::TraderLlama {
+            self.trader_llama_step(id);
         }
         self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
@@ -1348,6 +1355,9 @@ impl EntityWorld {
                 let d = aim - start;
                 let horizontal = (d.x * d.x + d.z * d.z).sqrt() * 0.2;
                 self.launch_missile(MissileKind::LlamaSpit, Some(id), start, DVec3::new(d.x, d.y + horizontal, d.z), 1.5, None);
+                if let Some(e) = self.mob_mut(id) {
+                    e.llama.did_spit = true;
+                }
                 sound = Some(("entity.llama.spit", 1.0));
             }
             AttackKind::WindCharge => {

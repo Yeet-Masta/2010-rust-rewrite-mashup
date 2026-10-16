@@ -53,6 +53,8 @@ mod goats;
 pub use goats::{goals as goat_goals, GoatCtx, GoatState};
 mod traders;
 pub use traders::{goals as trader_goals, TraderCtx, TraderDrink, TraderState};
+mod llamas;
+pub use llamas::{goals as llama_goals, targets as llama_targets, LlamaState, TRADER_LLAMA_DESPAWN_DELAY};
 pub use foxes::{goals as fox_goals, targets as fox_targets, FoxCtx, FoxState};
 pub use bees::{goals as bee_goals, targets as bee_targets, BeeCtx, BeeState};
 pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};
@@ -3447,7 +3449,7 @@ impl EntityWorld {
         use crate::monster_ai::MobCandidate;
         let mut out = Vec::new();
         let mut add = |id: u64, kind: &'static str, body: &Body, eye_height: f32, alive: bool| {
-            out.push(MobCandidate { id, position: body.position, eye_height, width: body.width, height: body.height, alive, kind });
+            out.push(MobCandidate { id, position: body.position, eye_height, width: body.width, height: body.height, alive, kind, tame: false });
         };
         for e in &self.iron_golems {
             add(e.id, "minecraft:iron_golem", &e.golem.body, crate::iron_golem::EYE_HEIGHT, e.golem.health > 0.0);
@@ -3495,6 +3497,10 @@ impl EntityWorld {
         }
         for e in &self.mobs {
             add(e.id, e.species().id, &e.body, e.eye_height(), e.health > 0.0);
+        }
+        // Tame wolves and other owned mobs.
+        for c in &mut out {
+            c.tame = self.wolves.iter().any(|w| w.id == c.id && w.wolf.tame) || self.mobs.iter().any(|m| m.id == c.id && m.owner.is_some());
         }
         out
     }
@@ -4918,7 +4924,7 @@ impl EntityWorld {
                             if entity.zombie.health > 0.0 && !entity.no_ai && entity.ai.is_some() {
                                 let mob_villagers: Vec<crate::monster_ai::MobCandidate> = villagers
                                     .iter()
-                                    .map(|v| crate::monster_ai::MobCandidate { id: v.id, position: v.position, eye_height: v.eye_height, width: v.width, height: v.height, alive: v.alive, kind: "minecraft:villager" })
+                                    .map(|v| crate::monster_ai::MobCandidate { id: v.id, position: v.position, eye_height: v.eye_height, width: v.width, height: v.height, alive: v.alive, kind: "minecraft:villager", tame: false })
                                     .collect();
                                 // `Zombie.createAttributes`: 0.23 speed, half again for babies.
                                 let speed = entity.effects.movement_speed(f64::from(0.23_f32) * if entity.zombie.baby { 1.5 } else { 1.0 });

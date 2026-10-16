@@ -289,6 +289,8 @@ pub struct MobCandidate {
     pub alive: bool,
     /// Its entity type (`minecraft:villager` for the villager list).
     pub kind: &'static str,
+    /// Owned (`TamableAnimal.isTame`).
+    pub tame: bool,
 }
 
 /// A monster's target.
@@ -587,6 +589,8 @@ pub struct MonsterGoalContext {
     pub goat: crate::world::GoatCtx,
     /// A wandering trader's drinks, trader and errands (`world/traders`).
     pub trader: crate::world::TraderCtx,
+    /// A llama spat since its hurt-by target last looked (`didSpit`).
+    pub llama_did_spit: bool,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1003,6 +1007,7 @@ impl MonsterAi {
                 fox_items: Vec::new(),
                 goat: Default::default(),
                 trader: Default::default(),
+                llama_did_spit: false,
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

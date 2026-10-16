@@ -944,6 +944,10 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.trader.home = cell("home_pos").filter(|_| radius != -1).map(|c| (c, radius));
                 entity.trader.offers = tag.get("Offers").and_then(offers_of);
             }
+            // `TraderLlama.readAdditionalSaveData`.
+            if kind == Kind::TraderLlama {
+                entity.llama.despawn_delay = int(tag, "DespawnDelay").unwrap_or(minecraftoss_entities::world::TRADER_LLAMA_DESPAWN_DELAY);
+            }
             // `Goat.readAdditionalSaveData`.
             if kind == Kind::Goat {
                 entity.goat.screaming = int(tag, "IsScreamingGoat").unwrap_or(0) != 0;
@@ -1327,6 +1331,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::TraderLlama {
+            fields.push(("DespawnDelay", Tag::Int(e.llama.despawn_delay)));
         }
         if e.kind == minecraftoss_entities::species::Kind::WanderingTrader {
             let t = &e.trader;

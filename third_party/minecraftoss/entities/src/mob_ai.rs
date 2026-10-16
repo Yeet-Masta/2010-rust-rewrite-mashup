@@ -193,6 +193,12 @@ pub(crate) struct FollowParentGoal {
     time_to_recalc: i32,
 }
 
+impl FollowParentGoal {
+    pub(crate) fn new(speed: f64) -> Self {
+        Self { speed, time_to_recalc: 0 }
+    }
+}
+
 impl Goal<MonsterGoalContext> for FollowParentGoal {
     fn controls(&self) -> Controls {
         Controls::new(&[Control::Move])
@@ -349,7 +355,7 @@ pub(crate) struct ShootGoal {
 }
 
 impl ShootGoal {
-    fn new(range: f64, interval: i32, warmup: i32, speed: f64) -> Self {
+    pub(crate) fn new(range: f64, interval: i32, warmup: i32, speed: f64) -> Self {
         Self { range, interval, warmup, speed, seen: 0, cooldown: 0 }
     }
 }
@@ -461,6 +467,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if kind == Kind::WanderingTrader {
         return crate::world::trader_goals();
+    }
+    if matches!(kind, Kind::Llama | Kind::TraderLlama) {
+        return crate::world::llama_goals(kind == Kind::TraderLlama);
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();
@@ -593,6 +602,9 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if kind == Kind::Fox {
         return crate::world::fox_targets(false);
+    }
+    if matches!(kind, Kind::Llama | Kind::TraderLlama) {
+        return crate::world::llama_targets();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();
