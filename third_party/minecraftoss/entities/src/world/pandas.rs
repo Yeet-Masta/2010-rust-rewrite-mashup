@@ -65,6 +65,10 @@ impl Gene {
 
     /// `getRandom`: one in sixteen each lazy, worried, playful and
     /// aggressive; four weak, two brown, the rest normal.
+    pub(super) fn random_gene(random: &mut LegacyRandom) -> Self {
+        Self::random(random)
+    }
+
     fn random(random: &mut LegacyRandom) -> Self {
         match random.next_int(16) {
             0 => Self::Lazy,

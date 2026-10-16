@@ -96,6 +96,7 @@ pub struct MobEntity {
     pub parrot: super::parrots::ParrotState,
     pub panda: super::pandas::PandaState,
     pub breeze: super::breezes::BreezeState,
+    pub sniffer: super::sniffers::SnifferState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -659,6 +660,7 @@ impl EntityWorld {
             parrot: Default::default(),
             panda: Default::default(),
             breeze: Default::default(),
+            sniffer: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -769,6 +771,7 @@ impl EntityWorld {
             e.armadillo_prepare(scary, leashed);
             e.panda_prepare(thundering, panda_items);
             e.breeze_prepare();
+            e.sniffer_prepare(&*world, leashed);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -853,7 +856,8 @@ impl EntityWorld {
                     _ => {}
                 }
             }
-            if e.health > 0.0 && s.has_ambient() && !e.armadillo_scared() {
+            let digging = e.kind == Kind::Sniffer && matches!(e.sniffer.phase, super::sniffers::SnifferPhase::Digging | super::sniffers::SnifferPhase::Searching);
+            if e.health > 0.0 && s.has_ambient() && !e.armadillo_scared() && !digging {
                 if (e.random.next_int(1000) as i32) < e.ambient_sound_time {
                     e.ambient_sound_time = -s.ambient_interval();
                     let baby = e.baby();
@@ -877,7 +881,7 @@ impl EntityWorld {
                     // as a spellcaster does while it casts.
                     // An axolotl playing dead lies still.
                     let still = e.axolotl_step_still();
-                    let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() || e.armadillo_scared() { Motion::Stationary } else { s.motion };
+                    let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() || e.armadillo_scared() || e.kind == Kind::Sniffer && e.sniffer.busy() { Motion::Stationary } else { s.motion };
                     match motion {
                         _ if matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) => {
                             if let Some(damage) = e.tick_guardian(&*world, players, &villagers, game_time, difficulty) {
@@ -926,6 +930,7 @@ impl EntityWorld {
                     e.parrot_flap();
                     e.panda_settle(thundering);
                     e.breeze_settle();
+                    e.sniffer_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1055,6 +1060,9 @@ impl EntityWorld {
         if kind == Kind::Panda {
             self.panda_step(id, world.thundering());
         }
+        if kind == Kind::Sniffer {
+            self.sniffer_step(id);
+        }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {
             self.alert_others(id, attacker);
@@ -1138,16 +1146,43 @@ impl EntityWorld {
             self.entity_events.push((first, 18));
             return;
         }
+        // `Sniffer.spawnChildFromBreeding`: an egg dropped, not a baby.
+        if kind == Kind::Sniffer {
+            self.spawned.items.push((position, ItemStack::new("minecraft:sniffer_egg", 1)));
+            let pitch = (self.mobs[a].random.next_float() - self.mobs[a].random.next_float()) * 0.2 + 0.5;
+            self.mobs[a].voices.push((Voice::Event("entity.sniffer.egg_plop", 1.0, pitch), position));
+            self.spawned.experience.push((position, xp));
+            self.entity_events.push((first, 18));
+            return;
+        }
         // `TurtleBreedGoal.breed`: an egg to carry home, not a baby.
         if kind == Kind::Turtle {
             self.mobs[a].turtle.has_egg = true;
             self.spawned.experience.push((position, xp));
             return;
         }
+        // `Panda.setGeneFromParents`: a gene from each, one time in
+        // thirty-two a fresh one.
+        let genes = (kind == Kind::Panda).then(|| {
+            let (pa, pb) = (self.mobs[a].panda.clone(), self.mobs[b].panda.clone());
+            let r = &mut self.mobs[a].random;
+            let pick = |p: &super::pandas::PandaState, r: &mut LegacyRandom| if r.next_boolean() { p.main } else { p.hidden };
+            let (main, hidden) = if r.next_boolean() { (pick(&pa, r), pick(&pb, r)) } else { (pick(&pb, r), pick(&pa, r)) };
+            (main, hidden)
+        });
         let child = self.spawn_mob(kind, position, yaw, crate::age::Age::BABY_START, false);
         if let Some(c) = self.mob_mut(child) {
             c.variant = variant;
             c.variant_key = variant_key;
+            if let Some((main, hidden)) = genes {
+                let main = if c.random.next_int(32) == 0 { super::pandas::Gene::random_gene(&mut c.random) } else { main };
+                let hidden = if c.random.next_int(32) == 0 { super::pandas::Gene::random_gene(&mut c.random) } else { hidden };
+                c.panda.main = main;
+                c.panda.hidden = hidden;
+                c.panda.hidden_saved = true;
+                c.panda.ready = true;
+                c.variant = main.name().to_owned();
+            }
         }
         self.spawned.experience.push((position, xp));
         self.entity_events.push((first, 18));

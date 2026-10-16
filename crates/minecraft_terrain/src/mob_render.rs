@@ -688,8 +688,28 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::Sniffer => {
+            use minecraftoss_entities::world::SnifferPhase;
             posed.look("head", m.head_yaw, m.head_pitch);
-            walk_keyframes(posed, "SnifferAnimation.SNIFFER_WALK", m, 9.0, 100.0);
+            // `SnifferModel.setupAnim`: searching sniffs as it walks; the
+            // rest play from when they began.
+            let s = &e.sniffer;
+            if s.phase == SnifferPhase::Searching {
+                walk_keyframes(posed, "SnifferAnimation.SNIFFER_SNIFF_SEARCH", m, 9.0, 100.0);
+            } else {
+                walk_keyframes(posed, "SnifferAnimation.SNIFFER_WALK", m, 9.0, 100.0);
+            }
+            let anim = match s.phase {
+                SnifferPhase::Digging => Some("SnifferAnimation.SNIFFER_DIG"),
+                SnifferPhase::Rising => Some("SnifferAnimation.SNIFFER_STAND_UP"),
+                SnifferPhase::Sniffing => Some("SnifferAnimation.SNIFFER_LONGSNIFF"),
+                SnifferPhase::Scenting => Some("SnifferAnimation.SNIFFER_SNIFFSNIFF"),
+                SnifferPhase::FeelingHappy => Some("SnifferAnimation.SNIFFER_HAPPY"),
+                _ => None,
+            };
+            if let Some(a) = anim.and_then(entity_model::animation) {
+                let since = ((e.tick_count - s.phase_start) as f32 + age.fract()).max(0.0) * 50.0;
+                a.apply(posed, since, 1.0);
+            }
         }
         Kind::Frog => {
             // `FrogModel.setupAnim`: the tongue and croak play from when

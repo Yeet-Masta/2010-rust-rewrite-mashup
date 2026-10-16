@@ -811,6 +811,8 @@ impl<'a> Level<'a> {
             self.wet_sponge_on_place(pos);
         } else if self.name(state) == "minecraft:frosted_ice" {
             self.frosted_ice_on_place(state, pos);
+        } else if self.name(state) == "minecraft:sniffer_egg" {
+            self.sniffer_egg_on_place(state, pos);
         } else if self.name(state) == "minecraft:frogspawn" {
             // `FrogspawnBlock.onPlace`: it hatches in three to ten minutes.
             use minecraftoss_core::random::RandomSource as _;
@@ -1004,6 +1006,8 @@ impl<'a> Level<'a> {
             self.frosted_ice_tick(state, pos);
         } else if self.name(state) == "minecraft:frogspawn" {
             self.frogspawn_tick(state, pos);
+        } else if self.name(state) == "minecraft:sniffer_egg" {
+            self.sniffer_egg_tick(state, pos);
         } else if self.is_a(state, "ComposterBlock") {
             // `ComposterBlock.tick`: a composter at 7 is ready (8); its
             // sound is the client's.

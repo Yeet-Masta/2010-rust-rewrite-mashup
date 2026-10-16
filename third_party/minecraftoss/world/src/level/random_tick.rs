@@ -668,6 +668,38 @@ impl Level<'_> {
         }
     }
 
+    /// `SnifferEggBlock.onPlace`: each of its three stages takes a third of
+    /// twenty minutes (ten on moss, with the boost's sparkles, level event
+    /// 3009) and up to fifteen seconds more.
+    pub(super) fn sniffer_egg_on_place(&mut self, state: BlockStateId, pos: BlockPos) {
+        let boosted = self.lib.registries.block_tags.require("minecraft:sniffer_egg_hatch_boost").is_ok_and(|t| self.lib.registries.block_in_tag(self.block(pos.below()), t));
+        if boosted {
+            self.level_event(3009, pos, 0);
+        }
+        let stage = if boosted { 12000 } else { 24000 } / 3;
+        let delay = stage + self.random.next_i32_bound(300);
+        self.schedule_block_tick(pos, state, delay);
+    }
+
+    /// `SnifferEggBlock.tick`: a crack, or at its third the hatching of a
+    /// sniffling at its middle, facing anywhere.
+    pub(super) fn sniffer_egg_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        let hatch: i32 = self.registries().blocks.property(state, "hatch").and_then(|a| a.parse().ok()).unwrap_or(0);
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        let pitch = 0.9 + self.random.next_f32() * 0.2;
+        if hatch < 2 {
+            self.play_sound("block.sniffer_egg.crack", at, 0.7, pitch);
+            self.set_block(pos, self.with(state, "hatch", &(hatch + 1).to_string()), 2, super::update::LIMIT);
+            return;
+        }
+        self.play_sound("block.sniffer_egg.hatch", at, 0.7, pitch);
+        self.destroy_block_drops(pos, false, super::update::LIMIT);
+        let yaw = self.random.next_f32() * 360.0;
+        let yaw = if yaw >= 180.0 { yaw - 360.0 } else { yaw };
+        let tag = self.built_mob_tag("minecraft:sniffer", at, yaw, vec![("Age", minecraftoss_core::nbt::Tag::Int(-24000))]);
+        self.spawned.push(tag);
+    }
+
     /// `CactusBlock.randomTick`.
     fn cactus_random_tick(&mut self, state: BlockStateId, pos: BlockPos) {
         let above = pos.above();
