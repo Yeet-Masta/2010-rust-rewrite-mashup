@@ -93,6 +93,7 @@ pub struct MobEntity {
     pub silverfish: super::silverfish::SilverfishState,
     pub hoglin: super::hoglins::HoglinState,
     pub armadillo: super::armadillos::ArmadilloState,
+    pub parrot: super::parrots::ParrotState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -647,6 +648,7 @@ impl EntityWorld {
             silverfish: Default::default(),
             hoglin: Default::default(),
             armadillo: Default::default(),
+            parrot: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -907,6 +909,7 @@ impl EntityWorld {
                     e.polar_settle();
                     e.silverfish_settle();
                     e.hoglin_settle();
+                    e.parrot_flap();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1029,6 +1032,9 @@ impl EntityWorld {
         }
         if kind == Kind::Armadillo {
             self.armadillo_step(id);
+        }
+        if kind == Kind::Parrot {
+            self.parrot_step(id);
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {

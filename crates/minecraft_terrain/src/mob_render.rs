@@ -1071,7 +1071,8 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         Kind::Parrot => {
             posed.look("head", m.head_yaw, m.head_pitch);
             let flying = !e.body.on_ground;
-            let flap = if flying { (sin(age * 0.6) + 1.0) * 0.6 } else { 0.0 };
+            // `ParrotRenderer.getBob`: the wings' beat as they flap.
+            let flap = e.parrot.flap_angle(age.fract());
             if !flying {
                 posed.with("left_leg", |p| p.rotation.x += cos(pos * 0.6662) * 1.4 * speed);
                 posed.with("right_leg", |p| p.rotation.x += cos(pos * 0.6662 + PI) * 1.4 * speed);

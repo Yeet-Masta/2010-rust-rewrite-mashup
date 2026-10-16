@@ -60,6 +60,8 @@ mod polar_bears;
 mod silverfish;
 mod hoglins;
 mod armadillos;
+mod parrots;
+pub use parrots::{goals as parrot_goals, ParrotState};
 pub use armadillos::{ArmadilloPhase, ArmadilloState};
 pub use hoglins::{goals as hoglin_goals, targets as hoglin_targets, HoglinActivity, HoglinCtx, HoglinState};
 pub use silverfish::{goals as silverfish_goals, SilverfishCtx, SilverfishState};
