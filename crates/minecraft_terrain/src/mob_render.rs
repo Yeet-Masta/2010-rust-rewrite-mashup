@@ -98,9 +98,11 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
             add("axolotl", format!("axolotl/axolotl_{}{b}", COLOURS[index(v).clamp(0, 4) as usize]), &mut out);
         }
         Kind::Bee => {
+            // `BeeRenderer.getTextureLocation`: angry and laden looks.
             baby_model = own_baby("bee");
-            let angry = if e.aggressive() { "_angry" } else { "" };
-            add("bee", format!("bee/bee{angry}{b}"), &mut out);
+            let angry = if e.bee.anger > 0 { "_angry" } else { "" };
+            let nectar = if e.bee.has_nectar { "_nectar" } else { "" };
+            add("bee", format!("bee/bee{angry}{nectar}{b}"), &mut out);
         }
         Kind::Blaze => out.push(Layer { glow: true, ..layer("blaze", "blaze/blaze") }),
         Kind::Breeze => {
@@ -904,6 +906,15 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
                 }
             }
             posed.with("left_antenna", |p| p.rotation.x = 0.0);
+            // `BeeModel.setupAnim`: the stinger gone once used, and the
+            // roll toward its target.
+            if e.bee.has_stung {
+                posed.hide("stinger");
+            }
+            let roll = e.bee.roll(m.age_in_ticks.fract());
+            if roll > 0.0 {
+                posed.with("bone", |p| p.rotation.x += (3.091_592_8 - p.rotation.x) * roll);
+            }
         }
         Kind::Parrot => {
             posed.look("head", m.head_yaw, m.head_pitch);

@@ -450,6 +450,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Frog {
         return crate::world::frog_goals();
     }
+    if kind == Kind::Bee {
+        return crate::world::bee_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -575,6 +578,9 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if kind == Kind::Axolotl {
         return crate::world::axolotl_targets();
+    }
+    if kind == Kind::Bee {
+        return crate::world::bee_targets();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

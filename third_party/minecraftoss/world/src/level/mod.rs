@@ -20,6 +20,7 @@ pub mod plants;
 pub mod bonemeal;
 pub mod brewing;
 pub mod beacon;
+pub mod beehive;
 pub mod crafter;
 pub mod fluid;
 pub mod furnace;

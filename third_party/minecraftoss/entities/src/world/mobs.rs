@@ -83,6 +83,7 @@ pub struct MobEntity {
     pub turtle: super::turtles::TurtleState,
     pub axolotl: super::axolotls::AxolotlState,
     pub frog: super::frogs::FrogState,
+    pub bee: super::bees::BeeState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -626,6 +627,7 @@ impl EntityWorld {
             turtle: Default::default(),
             axolotl: Default::default(),
             frog: Default::default(),
+            bee: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -671,6 +673,7 @@ impl EntityWorld {
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
+        let (hives, bees_stay_in) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in) } else { (Vec::new(), false) };
         let villagers: Vec<MobCandidate> = self
             .villagers
             .iter()
@@ -709,6 +712,10 @@ impl EntityWorld {
             }
             if kind == Kind::Frog {
                 e.frog_prepare(frog_food);
+            }
+            if kind == Kind::Bee && e.health > 0.0 {
+                let raining = world.raining();
+                e.bee_prepare(&hives, bees_stay_in, raining);
             }
             e.tadpole_grow();
             // A turtle with an egg is in no mood (`canFallInLove`, `TurtleBreedGoal`).
@@ -843,6 +850,9 @@ impl EntityWorld {
                     if kind == Kind::Frog {
                         e.frog_settle();
                     }
+                    if kind == Kind::Bee {
+                        e.bee_settle(&*world);
+                    }
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -938,6 +948,9 @@ impl EntityWorld {
         }
         if matches!(kind, Kind::Frog | Kind::Tadpole) {
             self.frog_step(id, world);
+        }
+        if kind == Kind::Bee {
+            self.bee_step(id, world);
         }
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
         // three seconds a puff step.
@@ -1246,6 +1259,7 @@ impl EntityWorld {
         if let (Some(sound), Some(e)) = (sound, self.mob_mut(id)) {
             let position = e.position();
             e.voices.push((Voice::Event(sound, 1.0, 1.0), position));
+            e.bee_stung();
         }
         match target {
             Target::Player(player_id) => {

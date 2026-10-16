@@ -573,6 +573,10 @@ pub struct MonsterGoalContext {
     /// A frog's prey in reach (the size-1 cubes), its spawn, and what its
     /// tongue, croak and laying did this tick (`world/frogs`).
     pub frog_food: Vec<(u64, DVec3)>,
+    /// A bee's hive, flower and temper (`world/bees`), and a pollinating
+    /// buzz this tick.
+    pub bee: crate::world::BeeCtx,
+    pub bee_pollinate_sound: bool,
     pub frog_pregnant: bool,
     pub frog_tongue: bool,
     pub frog_croaking: bool,
@@ -978,6 +982,8 @@ impl MonsterAi {
                 turtle: TurtleCtx::default(),
                 axolotl_hunting_until: 0,
                 frog_food: Vec::new(),
+                bee: Default::default(),
+                bee_pollinate_sound: false,
                 frog_pregnant: false,
                 frog_tongue: false,
                 frog_croaking: false,

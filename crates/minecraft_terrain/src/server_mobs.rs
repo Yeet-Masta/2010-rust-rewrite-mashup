@@ -934,6 +934,17 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.body.height = height * scale;
                 entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
             }
+            // `Bee.readAdditionalSaveData`.
+            if kind == Kind::Bee {
+                let cell = |key: &str| tag.get(key).and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
+                entity.bee.hive = cell("hive_pos");
+                entity.bee.flower = cell("flower_pos");
+                entity.bee.has_nectar = int(tag, "HasNectar").unwrap_or(0) != 0;
+                entity.bee.has_stung = int(tag, "HasStung").unwrap_or(0) != 0;
+                entity.bee.ticks_without_nectar = int(tag, "TicksSincePollination").unwrap_or(0);
+                entity.bee.stay_out = int(tag, "CannotEnterHiveTicks").unwrap_or(0);
+                entity.bee.crops_grown = int(tag, "CropsGrownSincePollination").unwrap_or(0);
+            }
             // `Tadpole.readAdditionalSaveData`: its growing counts up.
             if kind == Kind::Tadpole {
                 entity.frog.growth = age.max(0);
@@ -1300,6 +1311,20 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Bee {
+            let b = &e.bee;
+            if let Some((x, y, z)) = b.hive {
+                fields.push(("hive_pos", Tag::IntArray(vec![x, y, z])));
+            }
+            if let Some((x, y, z)) = b.flower {
+                fields.push(("flower_pos", Tag::IntArray(vec![x, y, z])));
+            }
+            fields.push(("HasNectar", Tag::Byte(i8::from(b.has_nectar))));
+            fields.push(("HasStung", Tag::Byte(i8::from(b.has_stung))));
+            fields.push(("TicksSincePollination", Tag::Int(b.ticks_without_nectar)));
+            fields.push(("CannotEnterHiveTicks", Tag::Int(b.stay_out)));
+            fields.push(("CropsGrownSincePollination", Tag::Int(b.crops_grown)));
         }
         if e.kind == minecraftoss_entities::species::Kind::Tadpole {
             fields.push(("Age", Tag::Int(e.frog.growth)));

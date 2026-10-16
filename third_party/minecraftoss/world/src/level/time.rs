@@ -257,6 +257,14 @@ impl Level<'_> {
         sky.environment.value_named("gameplay/monsters_burn", &sample) == minecraftoss_core::environment::Value::Bool(true)
     }
 
+    /// `gameplay/bees_stay_in_hive`: at night and in rain.
+    pub fn bees_stay_in_hive(&self) -> bool {
+        let Some(sky) = &self.sky else { return false };
+        let clocks = |clock: &str| sky.clocks.get(clock).copied().unwrap_or(0);
+        let sample = Sample { clock_ticks: &clocks, rain_level: sky.weather.rain_level, thunder_level: sky.weather.thunder(), biome_weights: None, biome: 0 };
+        sky.environment.value_named("gameplay/bees_stay_in_hive", &sample) == minecraftoss_core::environment::Value::Bool(true)
+    }
+
     /// `gameplay/turtle_egg_hatch_chance`: certain for a while before dawn
     /// in the Overworld, otherwise one in five hundred.
     pub fn turtle_egg_hatch_chance(&self) -> f32 {

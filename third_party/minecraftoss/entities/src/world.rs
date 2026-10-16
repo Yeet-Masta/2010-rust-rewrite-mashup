@@ -47,6 +47,8 @@ mod guardians;
 mod turtles;
 mod axolotls;
 mod frogs;
+mod bees;
+pub use bees::{goals as bee_goals, targets as bee_targets, BeeCtx, BeeState};
 pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};
 pub use axolotls::{goals as axolotl_goals, targets as axolotl_targets, AxolotlState};
 pub use turtles::{goals as turtle_goals, TurtleState};
@@ -2496,6 +2498,11 @@ pub struct EntityWorld {
     player_main_hands: HashMap<u64, String>,
     /// The players wearing a piece of `#piglin_safe_armor`.
     gilded_players: Vec<u64>,
+    /// The level's hives (where, how full, fire beside), whether bees stay
+    /// in, and the bees that went in since the server last took them.
+    hives: Vec<((i32, i32, i32), usize, bool)>,
+    bees_stay_in: bool,
+    hive_entries: Vec<(u64, (i32, i32, i32))>,
     /// The weapon of the player's hit that killed a mob, by mob: its
     /// looting and fire reach the loot (`ATTACKING_ENTITY`'s equipment).
     kill_weapons: HashMap<u64, Option<ItemStack>>,
@@ -2583,6 +2590,9 @@ impl Default for EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: HashMap::new(),
             gilded_players: Vec::new(),
+            hives: Vec::new(),
+            bees_stay_in: false,
+            hive_entries: Vec::new(),
             kill_weapons: HashMap::new(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),
@@ -4572,6 +4582,9 @@ impl EntityWorld {
             trade_experience: Vec::new(),
             player_main_hands: self.player_main_hands.clone(),
             gilded_players: self.gilded_players.clone(),
+            hives: self.hives.clone(),
+            bees_stay_in: self.bees_stay_in,
+            hive_entries: Vec::new(),
             kill_weapons: self.kill_weapons.clone(),
             entity_events: Vec::new(),
             spawned: Spawned::default(),

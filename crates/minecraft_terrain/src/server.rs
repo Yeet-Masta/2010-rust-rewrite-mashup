@@ -492,6 +492,10 @@ impl ServerSim {
         self.mobs.set_bright_outside(bright_outside);
         self.mobs.set_monsters_burn(self.level.monsters_burn());
         self.mobs.set_piglins_zombify(self.level.piglins_zombify());
+        // The hives the bees seek, and whether they keep in.
+        if self.mobs.mobs().iter().any(|e| e.kind == minecraftoss_entities::species::Kind::Bee) {
+            self.mobs.set_hives(self.level.beehives(), self.level.bees_stay_in_hive());
+        }
         let Self { level, states, mobs, mob_tables, .. } = self;
         let mut world = crate::server_mobs::MobWorld { level: std::cell::RefCell::new(level), states, tables: mob_tables };
         let ticks = |p: glam::DVec3| ticking.contains(&ChunkPos::new((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4));
@@ -524,6 +528,16 @@ impl ServerSim {
         self.drop_death_loot();
         // What the mobs and projectiles put into the level: a trident left
         // without its owner, channeling's lightning.
+        // `BeehiveBlockEntity.addOccupant`: each bee that went in goes into
+        // its hive as its saved data, and leaves the world.
+        for (bee, (x, y, z)) in self.mobs.take_hive_entries() {
+            let Some(at) = self.mobs.mobs().iter().find(|e| e.id == bee).map(|e| e.body.position) else { continue };
+            let Some((_, tag)) = crate::server_mobs::mob_tags(&self.mobs, |p| p == at, &self.mob_tags).into_iter().find(|(id, _)| *id == bee) else { continue };
+            if self.level.beehive_add(minecraftoss_core::BlockPos::new(x, y, z), tag) {
+                self.mobs.discard_mob(bee);
+                self.mob_tags.remove(&bee);
+            }
+        }
         let spawned = self.mobs.take_spawned();
         for (position, stack) in spawned.items {
             self.level.spawn_at_location(position.to_array(), crate::stacks::to_level(&stack));
