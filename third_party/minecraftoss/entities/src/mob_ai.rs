@@ -489,6 +489,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Panda {
         return crate::world::panda_goals();
     }
+    if kind == Kind::Breeze {
+        return crate::world::breeze_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -651,7 +654,7 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         if hunts_villagers(kind) {
             selector.add(3, NearestTargetGoal::every(Prey::Villager, false, 10));
         }
-        if !matches!(kind, Kind::Shulker | Kind::Ghast | Kind::Phantom | Kind::Silverfish | Kind::Endermite) {
+        if !matches!(kind, Kind::Shulker | Kind::Ghast | Kind::Phantom | Kind::Silverfish | Kind::Endermite | Kind::Breeze) {
             selector.add(3, NearestTargetGoal::every(Prey::Golem, true, 10));
         }
     }

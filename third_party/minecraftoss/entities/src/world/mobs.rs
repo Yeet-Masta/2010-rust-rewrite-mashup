@@ -95,6 +95,7 @@ pub struct MobEntity {
     pub armadillo: super::armadillos::ArmadilloState,
     pub parrot: super::parrots::ParrotState,
     pub panda: super::pandas::PandaState,
+    pub breeze: super::breezes::BreezeState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -657,6 +658,7 @@ impl EntityWorld {
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
+            breeze: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -766,6 +768,7 @@ impl EntityWorld {
             e.hoglin_prepare(&*world, piglin_seen, hoglin_seen);
             e.armadillo_prepare(scary, leashed);
             e.panda_prepare(thundering, panda_items);
+            e.breeze_prepare();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -922,6 +925,7 @@ impl EntityWorld {
                     e.hoglin_settle();
                     e.parrot_flap();
                     e.panda_settle(thundering);
+                    e.breeze_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1426,7 +1430,10 @@ impl EntityWorld {
                 sound = Some(("entity.llama.spit", 1.0));
             }
             AttackKind::WindCharge => {
-                let start = feet + DVec3::new(0.0, eye * 0.5, 0.0);
+                // `Shoot.tick`: from `getFiringYPosition` to 0.3 of the
+                // target's height.
+                let start = feet + DVec3::new(0.0, height / 2.0 + f64::from(0.3_f32), 0.0);
+                let aim = target_feet + DVec3::new(0.0, target_height * 0.3, 0.0);
                 let direction = (aim - start).normalize_or_zero();
                 self.add_wind_charge(start, direction * 0.7);
                 sound = Some(("entity.breeze.shoot", 1.5));

@@ -721,7 +721,22 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
                 idle_keyframes(posed, "CopperGolemAnimation.COPPER_GOLEM_IDLE", age);
             }
         }
-        Kind::Breeze => idle_keyframes(posed, "BreezeAnimation.IDLE", age),
+        Kind::Breeze => {
+            use minecraftoss_entities::world::BreezePose;
+            idle_keyframes(posed, "BreezeAnimation.IDLE", age);
+            // `BreezeModel.setupAnim`: each pose's animation from its start.
+            let anim = match e.breeze.pose {
+                BreezePose::Shooting => Some("BreezeAnimation.SHOOT"),
+                BreezePose::Inhaling => Some("BreezeAnimation.INHALE"),
+                BreezePose::LongJumping => Some("BreezeAnimation.JUMP"),
+                BreezePose::Sliding => Some("BreezeAnimation.SLIDE"),
+                BreezePose::Standing => None,
+            };
+            if let Some(a) = anim.and_then(entity_model::animation) {
+                let since = ((e.tick_count - e.breeze.pose_start) as f32 + age.fract()).max(0.0) * 50.0;
+                a.apply(posed, since, 1.0);
+            }
+        }
         Kind::Nautilus | Kind::ZombieNautilus => {
             if let Some(a) = entity_model::animation("NautilusAnimation.SWIMMING") {
                 a.apply_walk(posed, pos + age / 5.0, speed + 0.2, 2.0, 3.0);

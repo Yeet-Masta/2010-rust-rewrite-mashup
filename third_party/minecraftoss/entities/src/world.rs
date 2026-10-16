@@ -62,6 +62,8 @@ mod hoglins;
 mod armadillos;
 mod parrots;
 mod pandas;
+mod breezes;
+pub use breezes::{goals as breeze_goals, BreezeCtx, BreezePose, BreezeState};
 pub use pandas::{goals as panda_goals, targets as panda_targets, Gene as PandaGene, PandaCtx, PandaState};
 pub use parrots::{goals as parrot_goals, ParrotState};
 pub use armadillos::{ArmadilloPhase, ArmadilloState};
