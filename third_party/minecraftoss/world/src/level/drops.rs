@@ -139,18 +139,29 @@ impl Level<'_> {
         }
     }
 
-    /// `BlockBehaviour.spawnAfterBreak` for experience-dropping blocks,
-    /// broken without a tool (`dropExperience` true).
+    /// `BlockBehaviour.spawnAfterBreak` broken without a tool
+    /// (`dropExperience` true): an infested block lets out its silverfish,
+    /// an ore its experience at its middle.
     fn spawn_after_break(&mut self, state: BlockStateId, pos: BlockPos) {
         let name = self.name(state).to_owned();
+        if name.starts_with("minecraft:infested_") {
+            self.spawn_infestation(pos);
+        }
         if let Some((min, max)) = experience_range(&name) {
-            // `UniformInt.sample(level.random)`, then experience orbs.
+            // `UniformInt.sample(level.random)`, then `popExperience`.
             let amount = if min >= max { min } else { self.random.next_i32_bound(max - min + 1) + min };
             if amount > 0 {
-                let _ = pos;
-                self.unsupported.push("experience orbs".to_owned());
+                self.award_experience([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5], amount);
             }
         }
+    }
+
+    /// `InfestedBlock.spawnInfestation`: a silverfish at the block's floor,
+    /// facing south, with its spawn puff.
+    pub fn spawn_infestation(&mut self, pos: BlockPos) {
+        let at = [f64::from(pos.x) + 0.5, f64::from(pos.y), f64::from(pos.z) + 0.5];
+        let tag = self.built_mob_tag("minecraft:silverfish", at, 0.0, Vec::new());
+        self.spawned.push(tag);
     }
 
     /// `shouldChangedStateKeepBlockEntity`: copper chests and copper golem

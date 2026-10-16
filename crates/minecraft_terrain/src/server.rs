@@ -781,6 +781,12 @@ impl ServerSim {
                     let tool = breaker.tool.as_ref().map_or_else(crate::stacks::LevelStack::empty, crate::stacks::to_level);
                     self.level.player_destroy_drops(old, at, tool, entity);
                 }
+                // `InfestedBlock.spawnAfterBreak`: a silverfish, unless the
+                // tool is in `#prevents_infested_spawns` (silk touch).
+                let silk = breaker.tool.as_ref().is_some_and(|t| minecraftoss_player::enchantment::item_enchantments(t).iter().any(|&(id, _)| id == "minecraft:silk_touch"));
+                if removed && !breaker.creative && breaker.harvests && !silk && self.level.registries().blocks.block(self.level.registries().blocks.block_of(old)).name.as_str().starts_with("minecraft:infested_") {
+                    self.level.spawn_infestation(at);
+                }
             }
             Some(EditBy::Placing(stack)) if edit == PlayerEdit::Place => {
                 self.player_edit_block(pos, block, edit);

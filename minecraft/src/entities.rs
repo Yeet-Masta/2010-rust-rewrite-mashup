@@ -677,6 +677,13 @@ impl Entities {
             .collect()
     }
 
+    /// The endermites: feet, width and height (`Endermite.aiStep`'s portal
+    /// motes).
+    pub fn endermites(&self) -> Vec<(DVec3, f64, f64)> {
+        use minecraftoss_entities::species::Kind;
+        self.world.mobs().iter().filter(|e| e.kind == Kind::Endermite && e.health > 0.0).map(|e| (e.body.position, f64::from(e.body.width), f64::from(e.body.height))).collect()
+    }
+
     pub fn mob_bounds(&self, id: u64) -> Option<crate::emitters::Bounds> {
         self.world.mob_bounds(id)
     }

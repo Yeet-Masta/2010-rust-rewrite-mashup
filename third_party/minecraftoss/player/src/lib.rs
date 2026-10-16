@@ -116,6 +116,12 @@ pub trait World {
     /// stack)`, its own random turning and throwing it) with the default
     /// pickup delay.
     fn spawn_popped_item(&mut self, _position: DVec3, _stack: &inventory::ItemStack) {}
+    /// `Level.destroyBlock(pos, true, mob)`: the block breaks with its
+    /// effects, drops what it drops and leaves its fluid; worlds without
+    /// those just clear it.
+    fn destroy_block(&mut self, pos: Pos) {
+        self.set_block(pos, None);
+    }
     /// `levelEvent(2001, pos, Block.getId(block))`: a block's break
     /// particles and sound; worlds without level events show nothing.
     fn break_effect(&mut self, _pos: Pos, _block: &Block) {}

@@ -235,6 +235,14 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::ALL, update::LIMIT);
     }
 
+    fn destroy_block(&mut self, (x, y, z): (i32, i32, i32)) {
+        let pos = minecraftoss_core::BlockPos::new(x, y, z);
+        let mut level = self.level.borrow_mut();
+        let state = level.block(pos);
+        level.level_event(2001, pos, i32::from(state.0));
+        level.destroy_block_drops(pos, true, update::LIMIT);
+    }
+
     fn break_effect(&mut self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) {
         let Ok(id) = crate::pack::ResourceId::parse(&block.id) else { return };
         let Some(state) = self.states.state_of(&Block { id, properties: block.properties.clone() }) else { return };
@@ -966,6 +974,10 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.trader.home = cell("home_pos").filter(|_| radius != -1).map(|c| (c, radius));
                 entity.trader.offers = tag.get("Offers").and_then(offers_of);
             }
+            // `Endermite.readAdditionalSaveData`.
+            if kind == Kind::Endermite {
+                entity.silverfish.life = int(tag, "Lifetime").unwrap_or(0);
+            }
             // `Rabbit.readAdditionalSaveData`.
             if kind == Kind::Rabbit {
                 entity.rabbit.more_carrot_ticks = int(tag, "MoreCarrotTicks").unwrap_or(0);
@@ -1370,6 +1382,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Endermite {
+            fields.push(("Lifetime", Tag::Int(e.silverfish.life)));
         }
         if e.kind == minecraftoss_entities::species::Kind::Rabbit {
             fields.push(("MoreCarrotTicks", Tag::Int(e.rabbit.more_carrot_ticks)));

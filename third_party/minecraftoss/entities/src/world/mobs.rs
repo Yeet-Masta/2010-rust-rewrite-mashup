@@ -90,6 +90,7 @@ pub struct MobEntity {
     pub llama: super::llamas::LlamaState,
     pub rabbit: super::rabbits::RabbitState,
     pub polar: super::polar_bears::PolarState,
+    pub silverfish: super::silverfish::SilverfishState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -640,6 +641,7 @@ impl EntityWorld {
             llama: Default::default(),
             rabbit: Default::default(),
             polar: Default::default(),
+            silverfish: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -739,6 +741,7 @@ impl EntityWorld {
             e.trader_prepare();
             e.llama_prepare(llama);
             e.polar_prepare(cub_near);
+            e.silverfish_prepare();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -891,6 +894,7 @@ impl EntityWorld {
                     e.trader_settle();
                     e.llama_settle();
                     e.polar_settle();
+                    e.silverfish_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1004,6 +1008,9 @@ impl EntityWorld {
         }
         if kind == Kind::Rabbit {
             self.rabbit_step(id, world);
+        }
+        if matches!(kind, Kind::Silverfish | Kind::Endermite) {
+            self.silverfish_step(id, world);
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {

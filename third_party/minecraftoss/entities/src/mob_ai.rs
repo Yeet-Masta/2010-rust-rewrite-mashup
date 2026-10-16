@@ -477,6 +477,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::PolarBear {
         return crate::world::polar_bear_goals();
     }
+    if kind == Kind::Silverfish {
+        return crate::world::silverfish_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -624,7 +627,7 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         return selector;
     }
     if s.temper != Temper::Inert {
-        selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: matches!(kind, Kind::ZombifiedPiglin | Kind::Bee | Kind::Piglin | Kind::Hoglin | Kind::PolarBear | Kind::Dolphin) });
+        selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: matches!(kind, Kind::ZombifiedPiglin | Kind::Bee | Kind::Piglin | Kind::Hoglin | Kind::PolarBear | Kind::Dolphin | Kind::Silverfish | Kind::Endermite) });
     }
     if s.temper == Temper::Hostile {
         // A piglin spares players in gold (a brute does not).
@@ -633,7 +636,7 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         if hunts_villagers(kind) {
             selector.add(3, NearestTargetGoal::every(Prey::Villager, false, 10));
         }
-        if !matches!(kind, Kind::Shulker | Kind::Ghast | Kind::Phantom) {
+        if !matches!(kind, Kind::Shulker | Kind::Ghast | Kind::Phantom | Kind::Silverfish | Kind::Endermite) {
             selector.add(3, NearestTargetGoal::every(Prey::Golem, true, 10));
         }
     }

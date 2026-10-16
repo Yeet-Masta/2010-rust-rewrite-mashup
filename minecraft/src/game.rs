@@ -1551,6 +1551,16 @@ impl Game {
                     }
                 }
             }
+            // `Endermite.aiStep`: two portal motes a tick about its box,
+            // drifting down.
+            for (feet, width, height) in self.entities.endermites() {
+                for _ in 0..2 {
+                    let r = &mut self.particles.random;
+                    let at = DVec3::new(feet.x + width * (2.0 * r.next_double() - 1.0) * 0.5, feet.y + height * r.next_double(), feet.z + width * (2.0 * r.next_double() - 1.0) * 0.5);
+                    let motion = DVec3::new((r.next_double() - 0.5) * 2.0, -r.next_double(), (r.next_double() - 0.5) * 2.0);
+                    self.particles.spawn(&self.world, &Type::Portal.into(), at, motion);
+                }
+            }
             // `Guardian.aiStep`: two bubbles behind a swimming guardian,
             // and bubbles strung along its beam, closer as it charges.
             let (wakes, beams) = self.entities.guardian_bubbles(self.player.pos + DVec3::new(0.0, self.player.eye_height(), 0.0));
