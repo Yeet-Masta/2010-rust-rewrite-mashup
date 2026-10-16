@@ -593,6 +593,8 @@ pub struct MonsterGoalContext {
     pub trader: crate::world::TraderCtx,
     /// A llama's spit, caravan and trader (`world/llamas`).
     pub llama: crate::world::LlamaCtx,
+    /// A rabbit's type and bite (`world/rabbits`).
+    pub rabbit: crate::world::RabbitCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1010,6 +1012,7 @@ impl MonsterAi {
                 goat: Default::default(),
                 trader: Default::default(),
                 llama: Default::default(),
+                rabbit: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,
@@ -1412,7 +1415,8 @@ impl Goal<MonsterGoalContext> for AvoidEntityGoal {
             // A fox does not shy from players it trusts.
             ctx.players.iter().filter(|p| !ctx.fox_trusted.contains(&p.id)).map(|p| (Target::Player(p.id), p.position, 0.6, 1.8)).collect()
         } else {
-            ctx.mobs.iter().filter(|m| m.kind == self.kind).map(|m| (Target::Mob(m.id), m.position, m.width, m.height)).collect()
+            // `Monster.class` for a rabbit.
+            ctx.mobs.iter().filter(|m| if self.kind == "#monster" { is_enemy(m.kind) } else { m.kind == self.kind }).map(|m| (Target::Mob(m.id), m.position, m.width, m.height)).collect()
         };
         for (candidate, q, width, height) in candidates {
             let mh = f64::from(width / 2.0);

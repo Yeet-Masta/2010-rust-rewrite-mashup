@@ -88,6 +88,7 @@ pub struct MobEntity {
     pub goat: super::goats::GoatState,
     pub trader: super::traders::TraderState,
     pub llama: super::llamas::LlamaState,
+    pub rabbit: super::rabbits::RabbitState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -341,7 +342,7 @@ impl MobEntity {
         hit
     }
 
-    fn movement_sounds(&self) -> MovementSounds {
+    pub(super) fn movement_sounds(&self) -> MovementSounds {
         let s = self.species();
         let step = s.step_sound();
         if s.category == crate::species::Category::Monster {
@@ -636,6 +637,7 @@ impl EntityWorld {
             goat: Default::default(),
             trader: Default::default(),
             llama: Default::default(),
+            rabbit: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -853,6 +855,11 @@ impl EntityWorld {
                                 e.hurt(damage);
                             }
                         }
+                        _ if e.kind == Kind::Rabbit => {
+                            if let Some(damage) = e.tick_rabbit(&*world, players, &villagers, game_time, difficulty) {
+                                e.hurt(damage);
+                            }
+                        }
                         _ if matches!(e.kind, Kind::Squid | Kind::GlowSquid) => {
                             if let Some(damage) = e.tick_squid(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);
@@ -989,6 +996,9 @@ impl EntityWorld {
         }
         if kind == Kind::TraderLlama {
             self.trader_llama_step(id);
+        }
+        if kind == Kind::Rabbit {
+            self.rabbit_step(id, world);
         }
         self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for

@@ -72,23 +72,23 @@ fn is_air(world: &dyn World, c: Cell) -> bool {
 
 /// `MoveToBlockGoal`'s search and approach.
 #[derive(Clone)]
-struct MoveToBlock {
+pub(super) struct MoveToBlock {
     range: i32,
     vertical_start: i32,
-    next_start: i32,
-    try_ticks: i32,
-    max_stay: i32,
-    reached: bool,
-    target: Cell,
+    pub(super) next_start: i32,
+    pub(super) try_ticks: i32,
+    pub(super) max_stay: i32,
+    pub(super) reached: bool,
+    pub(super) target: Cell,
 }
 
 impl MoveToBlock {
-    fn new(range: i32, vertical_start: i32) -> Self {
+    pub(super) fn new(range: i32, vertical_start: i32) -> Self {
         Self { range, vertical_start, next_start: 0, try_ticks: 0, max_stay: 0, reached: false, target: (0, 0, 0) }
     }
 
     /// `canUse`: every 100 to 200 goal ticks, the nearest valid block.
-    fn can_use(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, valid: &dyn Fn(&dyn World, Cell) -> bool) -> bool {
+    pub(super) fn can_use(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, valid: &dyn Fn(&dyn World, Cell) -> bool) -> bool {
         if self.next_start > 0 {
             self.next_start -= 1;
             return false;
@@ -126,7 +126,7 @@ impl MoveToBlock {
         let _ = navigate_walk_to(&ctx.body, &mut ctx.navigation, world, &profile, ctx.fluid, to, speed, 1);
     }
 
-    fn start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, speed: f64) {
+    pub(super) fn start(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, speed: f64) {
         self.walk(ctx, world, speed);
         self.try_ticks = 0;
         let inner = ctx.random.next_int(1200) as i32 + 1200;
@@ -134,7 +134,7 @@ impl MoveToBlock {
     }
 
     /// `tick`: on until within a block of the top of the target.
-    fn tick(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, speed: f64, recalculate: i32) {
+    pub(super) fn tick(&mut self, ctx: &mut MonsterGoalContext, world: &dyn World, speed: f64, recalculate: i32) {
         let above = (self.target.0, self.target.1 + 1, self.target.2);
         if !near(above, ctx.body.position, 1.0) {
             self.reached = false;

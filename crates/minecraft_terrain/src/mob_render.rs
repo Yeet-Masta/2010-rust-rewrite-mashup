@@ -595,9 +595,12 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         }
         Kind::Rabbit => {
             posed.look("head", m.head_yaw, m.head_pitch);
-            // `Rabbit.hopAnimationState` runs while it moves.
-            if speed > 0.05 {
-                idle_keyframes(posed, if e.baby() { "BabyRabbitAnimation.HOP" } else { "RabbitAnimation.HOP" }, age);
+            // `Rabbit.hopAnimationState`: from each hop's start while it
+            // lasts (entity event 1).
+            let hop = if e.baby() { "BabyRabbitAnimation.HOP" } else { "RabbitAnimation.HOP" };
+            if let (Some(start), Some(a)) = (e.rabbit.hop_start, entity_model::animation(hop)) {
+                let since = ((e.tick_count - start) as f32 + m.age_in_ticks.fract()).max(0.0) * 50.0;
+                a.apply(posed, since, 1.0);
             }
         }
         Kind::Warden => {

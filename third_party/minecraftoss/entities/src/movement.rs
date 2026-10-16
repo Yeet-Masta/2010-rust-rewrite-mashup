@@ -207,6 +207,12 @@ impl Body {
     /// swims up in water above its jump threshold or in deep lava
     /// (`jumpInLiquid`), and otherwise jumps from the ground or shallow
     /// water at most every ten ticks (`jumpFromGround`; honey halves it).
+    /// `getBlockJumpFactor` under the body (honey and the like hold it
+    /// down).
+    pub fn block_jump_factor(&self, world: &impl World) -> f32 {
+        jump_factor(world, self.position, self.on_pos(world, 0.500001))
+    }
+
     pub fn living_jump(&mut self, world: &impl World, fluid: FluidFrame, jumping: bool, no_jump_delay: &mut i32, threshold: f64) {
         if !jumping {
             *no_jump_delay = 0;

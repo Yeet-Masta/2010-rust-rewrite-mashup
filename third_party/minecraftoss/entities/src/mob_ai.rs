@@ -471,6 +471,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if matches!(kind, Kind::Llama | Kind::TraderLlama) {
         return crate::world::llama_goals(kind == Kind::TraderLlama);
     }
+    if kind == Kind::Rabbit {
+        return crate::world::rabbit_goals();
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     let swims = s.motion == Motion::Swim;
@@ -605,6 +608,9 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if matches!(kind, Kind::Llama | Kind::TraderLlama) {
         return crate::world::llama_targets(kind == Kind::TraderLlama);
+    }
+    if kind == Kind::Rabbit {
+        return crate::world::rabbit_targets();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

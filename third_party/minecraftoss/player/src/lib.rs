@@ -116,6 +116,9 @@ pub trait World {
     /// stack)`, its own random turning and throwing it) with the default
     /// pickup delay.
     fn spawn_popped_item(&mut self, _position: DVec3, _stack: &inventory::ItemStack) {}
+    /// `levelEvent(2001, pos, Block.getId(block))`: a block's break
+    /// particles and sound; worlds without level events show nothing.
+    fn break_effect(&mut self, _pos: Pos, _block: &Block) {}
     /// `scheduleTick(pos, block, delay)` for the block at `pos`; worlds
     /// without block ticks drop it.
     fn schedule_block_tick(&mut self, _pos: Pos, _delay: i32) {}

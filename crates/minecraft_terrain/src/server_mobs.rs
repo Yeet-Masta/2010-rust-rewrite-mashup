@@ -235,6 +235,12 @@ impl PlayerWorld for MobWorld<'_> {
         self.level.borrow_mut().set_block(minecraftoss_core::BlockPos::new(x, y, z), state, update::ALL, update::LIMIT);
     }
 
+    fn break_effect(&mut self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) {
+        let Ok(id) = crate::pack::ResourceId::parse(&block.id) else { return };
+        let Some(state) = self.states.state_of(&Block { id, properties: block.properties.clone() }) else { return };
+        self.level.borrow_mut().level_event(2001, minecraftoss_core::BlockPos::new(x, y, z), i32::from(state.0));
+    }
+
     fn collision_boxes(&self, pos: (i32, i32, i32)) -> Vec<[f64; 6]> {
         let state = self.state(pos);
         self.level.borrow().registries().blocks.collision_boxes(state)
@@ -960,6 +966,10 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.trader.home = cell("home_pos").filter(|_| radius != -1).map(|c| (c, radius));
                 entity.trader.offers = tag.get("Offers").and_then(offers_of);
             }
+            // `Rabbit.readAdditionalSaveData`.
+            if kind == Kind::Rabbit {
+                entity.rabbit.more_carrot_ticks = int(tag, "MoreCarrotTicks").unwrap_or(0);
+            }
             // `TraderLlama.readAdditionalSaveData`.
             if kind == Kind::TraderLlama {
                 entity.llama.despawn_delay = int(tag, "DespawnDelay").unwrap_or(minecraftoss_entities::world::TRADER_LLAMA_DESPAWN_DELAY);
@@ -1360,6 +1370,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Rabbit {
+            fields.push(("MoreCarrotTicks", Tag::Int(e.rabbit.more_carrot_ticks)));
         }
         if e.kind == minecraftoss_entities::species::Kind::TraderLlama {
             fields.push(("DespawnDelay", Tag::Int(e.llama.despawn_delay)));
