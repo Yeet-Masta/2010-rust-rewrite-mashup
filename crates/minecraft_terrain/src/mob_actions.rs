@@ -323,6 +323,11 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
             outcome.handled = true;
             outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         }
+        // `WanderingTrader.mobInteract`: its trades open.
+        MobHit::Mob(id) if world.trader_interact(id, 0, held.as_deref()) != minecraftoss_entities::world::VillagerUse::Pass => {
+            outcome.handled = true;
+            return outcome;
+        }
         MobHit::Mob(id) if held.as_deref() == Some("minecraft:gold_ingot") && world.piglin_take_gold(id, "minecraft:gold_ingot") => {
             // `PiglinAi.mobInteract`: one ingot goes to be admired.
             if !infinite {

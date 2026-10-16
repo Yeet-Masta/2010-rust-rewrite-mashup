@@ -832,6 +832,104 @@ impl CreatureSpawns {
         }
     }
 
+    /// `WanderingTraderSpawner.tick`: once a minute the day's wait runs
+    /// down; each day there is a chance (25%, rising by 25 to 75% each day
+    /// without one) that a trader comes, one try in ten, near a random
+    /// player's village bell or the player, with two llamas.
+    pub fn tick_trader(&self, level: &mut dyn SpawnLevel, players: &[super::tick::SpawnPlayer], state: &mut super::tick::TraderSpawnState) {
+        state.tick_delay -= 1;
+        if state.tick_delay > 0 {
+            return;
+        }
+        state.tick_delay = 1200;
+        state.spawn_delay -= 1200;
+        if state.spawn_delay > 0 {
+            return;
+        }
+        state.spawn_delay = 24000;
+        let chance = state.spawn_chance;
+        state.spawn_chance = (chance + 25).clamp(25, 75);
+        if level.random().next_i32_bound(100) > chance {
+            return;
+        }
+        if self.spawn_trader(level, players) {
+            state.spawn_chance = 25;
+        }
+    }
+
+    /// `WanderingTraderSpawner.spawn`.
+    fn spawn_trader(&self, level: &mut dyn SpawnLevel, players: &[super::tick::SpawnPlayer]) -> bool {
+        let alive: Vec<&super::tick::SpawnPlayer> = players.iter().filter(|p| !p.spectator).collect();
+        if alive.is_empty() {
+            return true;
+        }
+        let player = alive[level.random().next_i32_bound(alive.len() as i32) as usize];
+        if level.random().next_i32_bound(10) != 0 {
+            return false;
+        }
+        let at = BlockPos::new(player.pos[0].floor() as i32, player.pos[1].floor() as i32, player.pos[2].floor() as i32);
+        let reference = player.meeting.map_or(at, |m| BlockPos::new(m[0], m[1], m[2]));
+        let Some(spawn) = self.trader_spawn_near(level, reference, 48) else { return false };
+        if !self.trader_room(level, spawn) {
+            return false;
+        }
+        let biome = level.biome(spawn);
+        if self.registries.biome_tags.id("minecraft:without_wandering_trader_spawns").is_some_and(|t| self.registries.biome_in_tag(biome, t)) {
+            return false;
+        }
+        let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag("minecraft:wandering_trader")) else { return false };
+        let uuid = level.next_uuid();
+        let yaw = level.random().next_f32() * 360.0;
+        place(&mut tag, [f64::from(spawn.x) + 0.5, f64::from(spawn.y), f64::from(spawn.z) + 0.5], yaw, 0.0, uuid);
+        set(&mut tag, "DespawnDelay", Tag::Int(48000));
+        set(&mut tag, "wander_target", Tag::IntArray(vec![reference.x, reference.y, reference.z]));
+        // `setHomeTo(referencePos, 16)`.
+        set(&mut tag, "home_pos", Tag::IntArray(vec![reference.x, reference.y, reference.z]));
+        set(&mut tag, "home_radius", Tag::Int(16));
+        level.add_entity(tag);
+        // `tryToSpawnLlamaFor`, twice, within four blocks.
+        for _ in 0..2 {
+            let Some(at) = self.trader_spawn_near(level, spawn, 4) else { continue };
+            let Some(mut llama) = self.registries.entities.as_ref().and_then(|c| c.default_tag("minecraft:trader_llama")) else { continue };
+            let uuid = level.next_uuid();
+            let yaw = level.random().next_f32() * 360.0;
+            place(&mut llama, [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5], yaw, 0.0, uuid);
+            level.add_entity(llama);
+        }
+        true
+    }
+
+    /// `findSpawnPositionNear`: ten tries at a spot on the ground within the
+    /// radius.
+    fn trader_spawn_near(&self, level: &mut dyn SpawnLevel, reference: BlockPos, radius: i32) -> Option<BlockPos> {
+        let info = type_info("minecraft:wandering_trader")?;
+        for _ in 0..10 {
+            let x = reference.x + level.random().next_i32_bound(radius * 2) - radius;
+            let z = reference.z + level.random().next_i32_bound(radius * 2) - radius;
+            let y = level.height(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, x, z);
+            let pos = BlockPos::new(x, y, z);
+            if self.is_spawn_position_ok(level, "minecraft:wandering_trader", &info, pos) {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    /// `hasEnoughSpace`: two by three by two of open air.
+    fn trader_room(&self, level: &mut dyn SpawnLevel, spawn: BlockPos) -> bool {
+        for dx in 0..=1 {
+            for dy in 0..=2 {
+                for dz in 0..=1 {
+                    let state = level.block(spawn.offset(dx, dy, dz));
+                    if !matches!(self.registries.blocks.collision_shape(state), None | Some(minecraftoss_core::block::FaceShape::Empty)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// `ServerLevel.getCurrentDifficultyAt`.
     fn difficulty_at(level: &dyn SpawnLevel, context: &SpawnContext, pos: BlockPos) -> DifficultyInstance {
         let (local, moon) = match level.inhabited_time(pos.chunk()) {

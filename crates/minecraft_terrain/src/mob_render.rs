@@ -1253,6 +1253,24 @@ fn held_in_hands(e: &MobEntity, posed: &Posed, m: &MobPose, rotation: Quat, scal
             * Mat4::from_translation(Vec3::new(side, 2.0, -10.0) / 16.0);
         held.push(crate::mesh::HeldItem { pose, light: m.light_probe.as_vec3(), id: item.clone(), display, first_tint: None, state: Default::default() });
     }
+    // `CrossedArmsItemLayer`: a wandering trader's drink, held in its
+    // folded arms and shown as on the ground.
+    if e.kind == Kind::WanderingTrader {
+        if let (Some(item), Some(arms)) = (&e.hand, posed.matrix_of("arms")) {
+            let pose = Mat4::from_translation(m.feet.as_vec3())
+                * Mat4::from_quat(rotation)
+                * Mat4::from_scale(scale)
+                * Mat4::from_translation(Vec3::new(0.0, 1.501, 0.0))
+                * Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0))
+                * arms
+                * Mat4::from_rotation_x(0.75)
+                * Mat4::from_scale(Vec3::splat(1.07))
+                * Mat4::from_translation(Vec3::new(0.0, 0.13, -0.34))
+                * Mat4::from_rotation_x(std::f32::consts::PI);
+            held.push(crate::mesh::HeldItem { pose, light: m.light_probe.as_vec3(), id: item.clone(), display: crate::mesh::HeldDisplay::Ground, first_tint: None, state: Default::default() });
+        }
+        return held;
+    }
     // `FoxHeldItemLayer`: what a fox carries, in its jaws (laid flat
     // asleep).
     if e.kind == Kind::Fox {

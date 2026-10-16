@@ -272,6 +272,11 @@ impl MobEffects {
         }
     }
 
+    /// `removeAllEffects`: milk's work.
+    pub fn clear(&mut self) {
+        self.active.clear();
+    }
+
     /// Puts an effect back as saved (`readAdditionalSaveData`).
     pub fn insert(&mut self, instance: EffectInstance) {
         self.active.retain(|e| e.effect != instance.effect);

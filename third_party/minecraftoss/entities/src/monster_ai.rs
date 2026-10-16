@@ -585,6 +585,8 @@ pub struct MonsterGoalContext {
     pub fox_items: Vec<DVec3>,
     /// A goat's ram (`world/goats`).
     pub goat: crate::world::GoatCtx,
+    /// A wandering trader's drinks, trader and errands (`world/traders`).
+    pub trader: crate::world::TraderCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1000,6 +1002,7 @@ impl MonsterAi {
                 fox_trusted: Vec::new(),
                 fox_items: Vec::new(),
                 goat: Default::default(),
+                trader: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

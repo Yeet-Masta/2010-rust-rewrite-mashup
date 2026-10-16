@@ -23,6 +23,22 @@ pub struct SpawnPlayer {
     pub spectator: bool,
     /// `Stats.TIME_SINCE_REST`: ticks since it last slept or died.
     pub time_since_rest: i32,
+    /// The nearest meeting point (a village's bell) within 48 blocks.
+    pub meeting: Option<[i32; 3]>,
+}
+
+/// `WanderingTraderSpawner`'s clock and `WanderingTraderData`.
+#[derive(Clone, Copy, Debug)]
+pub struct TraderSpawnState {
+    pub tick_delay: i32,
+    pub spawn_delay: i32,
+    pub spawn_chance: i32,
+}
+
+impl Default for TraderSpawnState {
+    fn default() -> Self {
+        Self { tick_delay: 1200, spawn_delay: 24000, spawn_chance: 25 }
+    }
 }
 
 /// An entity in the level, as `createState` counts it and spawning's

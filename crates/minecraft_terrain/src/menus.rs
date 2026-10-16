@@ -937,10 +937,17 @@ impl ServerSim {
     /// the villager's offers. Returns the menu updates it made.
     pub(crate) fn open_merchant(&mut self, villager: u64, inventory: &mut Inventory, player: &PlayerContext) -> Vec<MenuUpdate> {
         let mut updates: Vec<MenuUpdate> = self.close_for_open(inventory, player).into_iter().collect();
-        let (Some(offers), Some(entity)) = (self.mobs.merchant_offers(villager), self.mobs.villagers().iter().find(|e| e.id == villager)) else { return updates };
-        let profession = entity.villager.profession.id();
-        let (namespace, path) = profession.split_once(':').unwrap_or(("minecraft", profession));
-        let title = translated(&format!("entity.{namespace}.villager.{path}"));
+        let Some(offers) = self.mobs.merchant_offers(villager) else { return updates };
+        // A villager's title is its profession's; a wandering trader's its
+        // own name.
+        let title = match self.mobs.villagers().iter().find(|e| e.id == villager) {
+            Some(entity) => {
+                let profession = entity.villager.profession.id();
+                let (namespace, path) = profession.split_once(':').unwrap_or(("minecraft", profession));
+                translated(&format!("entity.{namespace}.villager.{path}"))
+            }
+            None => translated("entity.minecraft.wandering_trader"),
+        };
         self.menus.counter = self.menus.counter % 100 + 1;
         let mut menu = MerchantMenu::new(Vec::new());
         menu.set_offers(offers);

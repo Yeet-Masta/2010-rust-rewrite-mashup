@@ -276,7 +276,7 @@ impl ServerSim {
         self.spawn_trade_experience();
         // `Villager.startTrading`'s `openTradingScreen`.
         let mut menu = Vec::new();
-        if let minecraftoss_entities::world::MobHit::Villager(id) = hit {
+        if let minecraftoss_entities::world::MobHit::Villager(id) | minecraftoss_entities::world::MobHit::Mob(id) = hit {
             if self.mobs.trading_villager(0) == Some(id) && !self.trades_with(id) {
                 let player = crate::menus::PlayerContext { selected, creative: infinite, ..crate::menus::PlayerContext::default() };
                 menu = self.open_merchant(id, &mut inventory, &player);
@@ -414,9 +414,16 @@ impl ServerSim {
     /// its spawn counter), the mob census for its caps, and the simulation
     /// area.
     pub fn prepare_spawning(&mut self, players: &[minecraftoss_entities::tempt::PlayerCandidate]) {
-        let Some(natural) = &mut self.level.natural_spawning else { return };
         let rest = self.time_since_rest;
-        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest }).collect();
+        // The village bell nearest each, for the wandering trader
+        // (`PoiManager.find(MEETING, …, 48)`).
+        let pois = &self.mobs.pois;
+        let meeting = |p: glam::DVec3| {
+            let at = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            pois.find_first(&|t| t == minecraftoss_entities::poi::PoiType::Meeting, &|_| true, at, 48, minecraftoss_entities::poi::Occupancy::Any).map(|(x, y, z)| [x, y, z])
+        };
+        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest, meeting: meeting(p.position) }).collect();
+        let Some(natural) = &mut self.level.natural_spawning else { return };
         natural.set_players(&spawn_players);
         let mut census: Vec<CensusMob> = self
             .mobs

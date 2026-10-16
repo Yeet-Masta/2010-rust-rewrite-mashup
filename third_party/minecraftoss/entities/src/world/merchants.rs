@@ -191,7 +191,7 @@ impl EntityWorld {
 
     /// The villager trading with `player` (`getTradingPlayer`), if any.
     pub fn trading_villager(&self, player: u64) -> Option<u64> {
-        self.villagers.iter().find(|e| e.trading_player == Some(player)).map(|e| e.id)
+        self.villagers.iter().find(|e| e.trading_player == Some(player)).map(|e| e.id).or_else(|| self.trading_trader(player))
     }
 
     /// What a villager shows its trader (`ClientboundMerchantOffersPacket`,
@@ -199,6 +199,9 @@ impl EntityWorld {
     /// offers (made if need be), level and experience; a villager shows
     /// its progress and restocks.
     pub fn merchant_offers(&mut self, id: u64) -> Option<Offers> {
+        if !self.villagers.iter().any(|e| e.id == id) {
+            return self.trader_merchant_offers(id);
+        }
         let offers = self.villager_offers(id)?.to_vec();
         let entity = self.villagers.iter().find(|e| e.id == id)?;
         let (level, xp) = (entity.villager.level, entity.villager.xp);
@@ -217,6 +220,9 @@ impl EntityWorld {
     /// What a trading screen told its villager, in order: yes or no to its
     /// payments (`notifyTradeUpdated`) and its trades (`notifyTrade`).
     pub fn merchant_notify(&mut self, id: u64, events: &[MerchantEvent]) {
+        if !self.villagers.iter().any(|e| e.id == id) {
+            return self.trader_notify(id, events);
+        }
         for event in events {
             match *event {
                 MerchantEvent::Updated(valid) => self.villager_trade_updated(id, valid),
@@ -229,7 +235,7 @@ impl EntityWorld {
     /// still trades with them, lives, and is within their entity reach (3,
     /// or 5 in creative) and 4 more of `eyes`.
     pub fn merchant_still_valid(&self, id: u64, player: u64, eyes: DVec3, creative: bool) -> bool {
-        let Some(e) = self.villagers.iter().find(|e| e.id == id) else { return false };
+        let Some(e) = self.villagers.iter().find(|e| e.id == id) else { return self.trader_still_valid(id, player, eyes, creative) };
         if e.trading_player != Some(player) || e.villager.health <= 0.0 {
             return false;
         }
@@ -245,6 +251,7 @@ impl EntityWorld {
     /// The trading screen closed (`MerchantMenu.removed`'s
     /// `setTradingPlayer(null)`), which stops a villager that was trading.
     pub fn merchant_stop(&mut self, id: u64) {
+        self.trader_stop(id);
         if self.villagers.iter().any(|e| e.id == id && e.trading_player.is_some()) {
             self.villager_stop_trading(id);
         }

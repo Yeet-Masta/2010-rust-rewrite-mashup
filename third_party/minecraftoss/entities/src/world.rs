@@ -51,6 +51,8 @@ mod bees;
 mod foxes;
 mod goats;
 pub use goats::{goals as goat_goals, GoatCtx, GoatState};
+mod traders;
+pub use traders::{goals as trader_goals, TraderCtx, TraderDrink, TraderState};
 pub use foxes::{goals as fox_goals, targets as fox_targets, FoxCtx, FoxState};
 pub use bees::{goals as bee_goals, targets as bee_targets, BeeCtx, BeeState};
 pub use frogs::{goals as frog_goals, FrogState, TICKS_TO_BE_FROG};

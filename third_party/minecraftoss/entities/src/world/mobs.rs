@@ -86,6 +86,7 @@ pub struct MobEntity {
     pub bee: super::bees::BeeState,
     pub fox: super::foxes::FoxState,
     pub goat: super::goats::GoatState,
+    pub trader: super::traders::TraderState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -632,6 +633,7 @@ impl EntityWorld {
             bee: Default::default(),
             fox: Default::default(),
             goat: Default::default(),
+            trader: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -726,6 +728,7 @@ impl EntityWorld {
                 e.fox_prepare(bright, thundering, items);
             }
             e.goat_prepare();
+            e.trader_prepare();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -870,6 +873,7 @@ impl EntityWorld {
                         e.fox_settle();
                     }
                     e.goat_settle();
+                    e.trader_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -974,6 +978,9 @@ impl EntityWorld {
         }
         if kind == Kind::Goat {
             self.goat_step(id, world);
+        }
+        if kind == Kind::WanderingTrader {
+            self.trader_step(id);
         }
         self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for

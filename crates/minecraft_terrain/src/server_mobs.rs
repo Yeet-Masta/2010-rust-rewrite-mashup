@@ -934,6 +934,16 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.body.height = height * scale;
                 entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
             }
+            // `WanderingTrader.readAdditionalSaveData`, its offers and
+            // `Mob`'s home.
+            if kind == Kind::WanderingTrader {
+                let cell = |key: &str| tag.get(key).and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
+                entity.trader.despawn_delay = int(tag, "DespawnDelay").unwrap_or(0);
+                entity.trader.wander_target = cell("wander_target");
+                let radius = int(tag, "home_radius").unwrap_or(-1);
+                entity.trader.home = cell("home_pos").filter(|_| radius != -1).map(|c| (c, radius));
+                entity.trader.offers = tag.get("Offers").and_then(offers_of);
+            }
             // `Goat.readAdditionalSaveData`.
             if kind == Kind::Goat {
                 entity.goat.screaming = int(tag, "IsScreamingGoat").unwrap_or(0) != 0;
@@ -1316,6 +1326,20 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
+            }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::WanderingTrader {
+            let t = &e.trader;
+            fields.push(("DespawnDelay", Tag::Int(t.despawn_delay)));
+            if let Some((x, y, z)) = t.wander_target {
+                fields.push(("wander_target", Tag::IntArray(vec![x, y, z])));
+            }
+            if let Some(((x, y, z), radius)) = t.home {
+                fields.push(("home_pos", Tag::IntArray(vec![x, y, z])));
+                fields.push(("home_radius", Tag::Int(radius)));
+            }
+            if let Some(offers) = &t.offers {
+                fields.push(("Offers", offers_tag(offers)));
             }
         }
         if e.kind == minecraftoss_entities::species::Kind::Goat {
