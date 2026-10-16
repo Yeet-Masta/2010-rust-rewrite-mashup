@@ -330,6 +330,13 @@ pub(crate) fn spawn_variant(registries: &minecraftoss_core::registries::Registri
         "minecraft:goat" => {
             let screaming = level.random().next_f64() < 0.02;
             set(tag, "IsScreamingGoat", Tag::Byte(i8::from(screaming)));
+            // A grown goat one time in ten has lost a horn.
+            let baby = tag.get("Age").and_then(Tag::as_i64).is_some_and(|a| a < 0);
+            let random = level.random();
+            if !baby && random.next_f32() < 0.1 {
+                let horn = if random.next_bool() { "HasLeftHorn" } else { "HasRightHorn" };
+                set(tag, horn, Tag::Byte(0));
+            }
         }
         // `TropicalFish.finalizeSpawn`: nine times in ten a common pattern.
         "minecraft:tropical_fish" => {

@@ -85,6 +85,7 @@ pub struct MobEntity {
     pub frog: super::frogs::FrogState,
     pub bee: super::bees::BeeState,
     pub fox: super::foxes::FoxState,
+    pub goat: super::goats::GoatState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -630,6 +631,7 @@ impl EntityWorld {
             frog: Default::default(),
             bee: Default::default(),
             fox: Default::default(),
+            goat: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -723,6 +725,7 @@ impl EntityWorld {
                 items.sort_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)));
                 e.fox_prepare(bright, thundering, items);
             }
+            e.goat_prepare();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -866,6 +869,7 @@ impl EntityWorld {
                     if kind == Kind::Fox {
                         e.fox_settle();
                     }
+                    e.goat_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -967,6 +971,9 @@ impl EntityWorld {
         }
         if kind == Kind::Fox {
             self.fox_step(id, world);
+        }
+        if kind == Kind::Goat {
+            self.goat_step(id, world);
         }
         self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for

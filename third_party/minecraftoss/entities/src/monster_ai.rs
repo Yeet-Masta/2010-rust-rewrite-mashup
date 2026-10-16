@@ -583,6 +583,8 @@ pub struct MonsterGoalContext {
     pub fox_trusted: Vec<u64>,
     /// The items a fox sees within eight blocks, nearest first.
     pub fox_items: Vec<DVec3>,
+    /// A goat's ram (`world/goats`).
+    pub goat: crate::world::GoatCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -997,6 +999,7 @@ impl MonsterAi {
                 fox: Default::default(),
                 fox_trusted: Vec::new(),
                 fox_items: Vec::new(),
+                goat: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

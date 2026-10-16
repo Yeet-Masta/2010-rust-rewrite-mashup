@@ -934,6 +934,12 @@ pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.body.height = height * scale;
                 entity.ai.state.phantom.anchor = tag.get("anchor_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
             }
+            // `Goat.readAdditionalSaveData`.
+            if kind == Kind::Goat {
+                entity.goat.screaming = int(tag, "IsScreamingGoat").unwrap_or(0) != 0;
+                entity.goat.left_horn = int(tag, "HasLeftHorn").unwrap_or(1) != 0;
+                entity.goat.right_horn = int(tag, "HasRightHorn").unwrap_or(1) != 0;
+            }
             // `Bee.readAdditionalSaveData`.
             if kind == Kind::Bee {
                 let cell = |key: &str| tag.get(key).and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
@@ -1311,6 +1317,11 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             if e.variant_key.is_none() {
                 fields.push(("size", Tag::Int(0)));
             }
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Goat {
+            fields.push(("IsScreamingGoat", Tag::Byte(i8::from(e.goat.screaming))));
+            fields.push(("HasLeftHorn", Tag::Byte(i8::from(e.goat.left_horn))));
+            fields.push(("HasRightHorn", Tag::Byte(i8::from(e.goat.right_horn))));
         }
         if e.kind == minecraftoss_entities::species::Kind::Bee {
             let b = &e.bee;

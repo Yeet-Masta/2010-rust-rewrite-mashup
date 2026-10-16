@@ -622,7 +622,23 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             posed.with("right_tendril", |p| p.rotation.x = -tendril * PI * 0.1);
         }
         // `QuadrupedModel`s.
-        Kind::PolarBear | Kind::Panda | Kind::Goat => {
+        Kind::Goat => {
+            // `GoatModel.setupAnim`: horns as it keeps them, the head down
+            // for a charge.
+            posed.look("head", m.head_yaw, m.head_pitch);
+            quadruped_legs(posed, pos, speed, 1.4);
+            if !e.goat.left_horn {
+                posed.hide("left_horn");
+            }
+            if !e.goat.right_horn {
+                posed.hide("right_horn");
+            }
+            let ram = e.goat.ramming_head(e.baby(), m.age_in_ticks.fract());
+            if ram != 0.0 {
+                posed.with("head", |p| p.rotation.x = ram);
+            }
+        }
+        Kind::PolarBear | Kind::Panda => {
             posed.look("head", m.head_yaw, m.head_pitch);
             quadruped_legs(posed, pos, speed, 1.4);
         }

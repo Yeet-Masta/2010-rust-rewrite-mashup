@@ -307,6 +307,22 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.drops.push((rest, mob.body.position));
             }
         }
+        // `Goat.mobInteract`: a bucket filled with milk.
+        MobHit::Mob(id) if held.as_deref() == Some("minecraft:bucket") && world.milk_goat(id) => {
+            let milk = ItemStack::new("minecraft:milk_bucket", 1);
+            let at = world.mobs().iter().find(|e| e.id == id).map_or(glam::DVec3::ZERO, |e| e.body.position);
+            if !infinite {
+                minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+            }
+            if actor.inventory.slots[selected].is_none() {
+                actor.inventory.slots[selected] = Some(milk);
+            } else if let Some(rest) = actor.inventory.add_item(milk, selected) {
+                outcome.drops.push((rest, at));
+            }
+            outcome.inventory_changed = true;
+            outcome.handled = true;
+            outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
+        }
         MobHit::Mob(id) if held.as_deref() == Some("minecraft:gold_ingot") && world.piglin_take_gold(id, "minecraft:gold_ingot") => {
             // `PiglinAi.mobInteract`: one ingot goes to be admired.
             if !infinite {
