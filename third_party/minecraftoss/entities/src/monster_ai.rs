@@ -431,7 +431,7 @@ pub struct MeleeState {
     path: Option<PlannedPath>,
     pathed_target: DVec3,
     ticks_until_recalculation: i32,
-    ticks_until_attack: i32,
+    pub(crate) ticks_until_attack: i32,
     raise_arm_ticks: i32,
     /// `Mob.isAggressive` (a zombie raises its arms).
     pub aggressive: bool,
@@ -595,6 +595,8 @@ pub struct MonsterGoalContext {
     pub llama: crate::world::LlamaCtx,
     /// A rabbit's type and bite (`world/rabbits`).
     pub rabbit: crate::world::RabbitCtx,
+    /// A polar bear's rearing (`world/polar_bears`).
+    pub polar: crate::world::PolarCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1013,6 +1015,7 @@ impl MonsterAi {
                 trader: Default::default(),
                 llama: Default::default(),
                 rabbit: Default::default(),
+                polar: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

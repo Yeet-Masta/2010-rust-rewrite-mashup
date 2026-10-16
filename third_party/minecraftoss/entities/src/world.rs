@@ -56,6 +56,8 @@ pub use traders::{goals as trader_goals, TraderCtx, TraderDrink, TraderState};
 mod llamas;
 mod leashes;
 mod rabbits;
+mod polar_bears;
+pub use polar_bears::{goals as polar_bear_goals, targets as polar_bear_targets, PolarCtx, PolarState};
 pub use rabbits::{goals as rabbit_goals, targets as rabbit_targets, RabbitCtx, RabbitState, EVIL as KILLER_BUNNY};
 pub use leashes::{Leash, LeashHolder, LeashUse};
 pub use llamas::{goals as llama_goals, targets as llama_targets, CaravanLlama, LlamaCtx, LlamaState, TRADER_LLAMA_DESPAWN_DELAY};

@@ -644,6 +644,33 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
         Kind::PolarBear | Kind::Panda => {
             posed.look("head", m.head_yaw, m.head_pitch);
             quadruped_legs(posed, pos, speed, 1.4);
+            // `PolarBearModel.setupAnim`: rearing up on its hind legs.
+            if e.kind == Kind::PolarBear {
+                let stand = e.polar.stand_scale(m.age_in_ticks.fract());
+                let stand = stand * stand;
+                let age = if e.baby() { 0.5 } else { 1.0 };
+                posed.with("body", |p| {
+                    p.rotation.x -= stand * PI * 0.35;
+                    p.offset.y += stand * age * 2.0;
+                });
+                let mut front = (0.0, 0.0);
+                posed.with("right_front_leg", |p| {
+                    p.offset.y -= stand * age * 20.0;
+                    p.offset.z += stand * age * 4.0;
+                    p.rotation.x -= stand * PI * 0.45;
+                    front = (p.offset.y, p.offset.z);
+                });
+                posed.with("left_front_leg", |p| {
+                    p.offset.y = front.0;
+                    p.offset.z = front.1;
+                    p.rotation.x -= stand * PI * 0.45;
+                });
+                posed.with("head", |p| {
+                    p.offset.y -= stand * 24.0;
+                    p.offset.z += stand * 13.0;
+                    p.rotation.x += stand * PI * 0.15;
+                });
+            }
         }
         Kind::Turtle => {
             posed.look("head", m.head_yaw, m.head_pitch);

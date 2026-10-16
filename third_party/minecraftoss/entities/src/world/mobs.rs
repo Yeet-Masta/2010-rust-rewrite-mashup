@@ -89,6 +89,7 @@ pub struct MobEntity {
     pub trader: super::traders::TraderState,
     pub llama: super::llamas::LlamaState,
     pub rabbit: super::rabbits::RabbitState,
+    pub polar: super::polar_bears::PolarState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -638,6 +639,7 @@ impl EntityWorld {
             trader: Default::default(),
             llama: Default::default(),
             rabbit: Default::default(),
+            polar: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -684,6 +686,7 @@ impl EntityWorld {
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
         let frog_food = if kind == Kind::Frog { self.frog_food() } else { Vec::new() };
         let llama = if matches!(kind, Kind::Llama | Kind::TraderLlama) { self.llama_context(id) } else { Default::default() };
+        let cub_near = kind == Kind::PolarBear && self.polar_cub_near(id);
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -735,6 +738,7 @@ impl EntityWorld {
             e.goat_prepare();
             e.trader_prepare();
             e.llama_prepare(llama);
+            e.polar_prepare(cub_near);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -886,6 +890,7 @@ impl EntityWorld {
                     e.goat_settle();
                     e.trader_settle();
                     e.llama_settle();
+                    e.polar_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -999,6 +1004,10 @@ impl EntityWorld {
         }
         if kind == Kind::Rabbit {
             self.rabbit_step(id, world);
+        }
+        // `HurtByTargetGoal.alertOthers`.
+        if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {
+            self.alert_others(id, attacker);
         }
         self.mob_pick_up(id, world);
         // `Pufferfish.playerTouch`: 1 more than its puff, and poison for
@@ -1299,7 +1308,6 @@ impl EntityWorld {
             // `levelEvent(1039)`: the phantom's bite.
             Kind::Phantom => Some("entity.phantom.bite"),
             Kind::Warden => Some("entity.warden.attack_impact"),
-            Kind::PolarBear => Some("entity.polar_bear.warning"),
             Kind::Bee => Some("entity.bee.sting"),
             Kind::Creaking => Some("entity.creaking.attack"),
             Kind::Goat => Some("entity.goat.ram_impact"),
