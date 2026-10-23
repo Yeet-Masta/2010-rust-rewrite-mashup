@@ -657,6 +657,8 @@ impl Level<'_> {
                     self.beacon_tick(pos);
                 } else if self.is_a(state, "BeehiveBlock") {
                     self.beehive_tick(pos);
+                } else if self.is_a(state, "CreakingHeartBlock") {
+                    self.creaking_heart_tick(pos);
                 }
             }
             i += 1;

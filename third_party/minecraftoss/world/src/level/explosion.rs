@@ -337,7 +337,10 @@ impl Level<'_> {
             self.trigger_by_explosion(pos);
             return;
         }
-        for class in ["BeehiveBlock", "CreakingHeartBlock", "BellBlock", "AbstractCandleBlock"] {
+        if self.is_a(state, "CreakingHeartBlock") {
+            self.creaking_heart_exploded(pos);
+        }
+        for class in ["BeehiveBlock", "BellBlock", "AbstractCandleBlock"] {
             if self.is_a(state, class) {
                 self.unsupported.push(format!("explosion hitting {class}"));
             }

@@ -513,6 +513,9 @@ impl Level<'_> {
             };
             return Some(self.container_signal(container));
         }
+        if self.is_a(state, "CreakingHeartBlock") {
+            return Some(self.heart_output(state, pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -580,7 +583,7 @@ impl Level<'_> {
     }
 
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.state_analog_output(state).is_some()
+        self.store_of(state).is_some() || self.is_a(state, "CreakingHeartBlock") || self.state_analog_output(state).is_some()
     }
 
     // ---- block hooks --------------------------------------------------------

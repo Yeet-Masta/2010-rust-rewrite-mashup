@@ -9,6 +9,7 @@
 //! redstone components (`redstone`).
 
 pub mod container;
+pub mod creaking_heart;
 pub mod dispenser;
 pub mod drops;
 pub mod entity;
@@ -172,6 +173,11 @@ pub struct Level<'a> {
     beacons: HashMap<BlockPos, beacon::BeaconBeam>,
     /// The powers the beacons gave, for the server to send.
     beacon_effects: Vec<beacon::BeaconEffect>,
+    /// The creaking hearts' unsaved state; their creakings as the entity
+    /// world last showed them, by UUID; and the creakings to end.
+    hearts: HashMap<BlockPos, creaking_heart::HeartTicker>,
+    pub creakings: HashMap<[i32; 4], creaking_heart::CreakingLink>,
+    pub creaking_removals: Vec<creaking_heart::CreakingRemoval>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -306,6 +312,9 @@ impl<'a> Level<'a> {
             brewing_unsaved: HashMap::new(),
             beacons: HashMap::new(),
             beacon_effects: Vec::new(),
+            hearts: HashMap::new(),
+            creakings: HashMap::new(),
+            creaking_removals: Vec::new(),
             unsupported: Vec::new(),
             pending_thunder: Vec::new(),
             lightning_hits: Vec::new(),
@@ -1008,6 +1017,8 @@ impl<'a> Level<'a> {
             self.frogspawn_tick(state, pos);
         } else if self.name(state) == "minecraft:sniffer_egg" {
             self.sniffer_egg_tick(state, pos);
+        } else if self.is_a(state, "CreakingHeartBlock") {
+            self.creaking_heart_block_tick(state, pos);
         } else if self.is_a(state, "ComposterBlock") {
             // `ComposterBlock.tick`: a composter at 7 is ready (8); its
             // sound is the client's.

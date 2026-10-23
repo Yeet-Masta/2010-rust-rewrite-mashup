@@ -134,7 +134,11 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
         }
         Kind::Creaking => {
             out.push(layer("creaking", "creaking/creaking"));
-            if e.aggressive() {
+            // `CreakingRenderer.extractRenderState`: lit eyes while awake,
+            // flickering out as it crumbles (`checkEyeBlink`).
+            let c = &e.creaking;
+            let lit = if c.tearing_down { (c.death / (2 + c.death / 8)) % 2 == 0 } else { c.active };
+            if lit {
                 out.push(Layer { model: "minecraft:creaking#eyes".into(), glow: true, ..layer("creaking", "creaking/creaking_eyes") });
             }
         }
@@ -731,8 +735,24 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::Creaking => {
+            // `CreakingModel.setupAnim`: no walk while watched; the strike,
+            // the sway and the twitching death from their starts.
             posed.look("head", m.head_yaw, m.head_pitch);
-            walk_keyframes(posed, "CreakingAnimation.CREAKING_WALK", m, 1.0, 1.0);
+            let c = &e.creaking;
+            if !c.frozen {
+                walk_keyframes(posed, "CreakingAnimation.CREAKING_WALK", m, 1.0, 1.0);
+            }
+            let partial = age.fract();
+            let runs = [
+                (c.attack_anim > 0, 15 - c.attack_anim, "CreakingAnimation.CREAKING_ATTACK"),
+                (c.invulnerable_anim > 0, 8 - c.invulnerable_anim, "CreakingAnimation.CREAKING_INVULNERABLE"),
+                (c.tearing_down, c.death, "CreakingAnimation.CREAKING_DEATH"),
+            ];
+            for (on, since, name) in runs {
+                if let Some(a) = entity_model::animation(name).filter(|_| on) {
+                    a.apply(posed, (since as f32 + partial).max(0.0) * 50.0, 1.0);
+                }
+            }
         }
         Kind::CopperGolem => {
             posed.look("head", m.head_yaw, m.head_pitch);

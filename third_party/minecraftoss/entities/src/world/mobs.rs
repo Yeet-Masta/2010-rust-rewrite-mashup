@@ -98,6 +98,7 @@ pub struct MobEntity {
     pub breeze: super::breezes::BreezeState,
     pub sniffer: super::sniffers::SnifferState,
     pub patrol: super::patrols::PatrolState,
+    pub creaking: super::creakings::CreakingState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -314,6 +315,9 @@ impl MobEntity {
         if self.invulnerable() {
             return super::withers::UNHURT;
         }
+        if let Some(guarded) = self.creaking_guard() {
+            return guarded;
+        }
         if self.health > 0.0 && !self.damage.dead {
             self.no_action_time = 0;
         }
@@ -349,6 +353,7 @@ impl MobEntity {
         if let Some(by) = by {
             self.ai.state.hurt_by = Some((by, self.tick_count));
         }
+        self.creaking.blame = Some(false);
         let hit = self.hurt(amount);
         if !hit.applied {
             self.ai.state.hurt_by = had;
@@ -657,6 +662,7 @@ impl EntityWorld {
             polar: Default::default(),
             silverfish: Default::default(),
             hoglin: Default::default(),
+            creaking: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
@@ -714,6 +720,7 @@ impl EntityWorld {
         // The armadillo's scare sensor, four times a second.
         let scary = (kind == Kind::Armadillo && game_time % 5 == 0).then(|| self.armadillo_scared_by(id));
         let leashed = self.leash_holder(id).is_some();
+        let (kept, views) = if kind == Kind::Creaking { (self.creaking_kept(id), self.player_views.clone()) } else { (true, Vec::new()) };
         let thundering = world.thundering();
         let panda_items = if kind == Kind::Panda { self.panda_items(id, &*world) } else { Vec::new() };
         let companions = if super::patrols::patrols(kind) && self.mobs.iter().any(|e| e.id == id && e.patrol.patrolling) { self.patrol_companions(id) } else { Vec::new() };
@@ -776,6 +783,7 @@ impl EntityWorld {
             e.breeze_prepare();
             e.sniffer_prepare(&*world, leashed);
             e.patrol_prepare(companions);
+            e.creaking_prepare(&*world, players, &views, kept);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -847,6 +855,7 @@ impl EntityWorld {
                 }
             }
             let removed = e.damage.tick();
+            let removed = e.creaking_death(removed);
             if e.ai.state.hurt_by.is_some_and(|(_, when)| e.tick_count - when > 100) {
                 e.ai.state.hurt_by = None;
             }
@@ -861,7 +870,7 @@ impl EntityWorld {
                 }
             }
             let digging = e.kind == Kind::Sniffer && matches!(e.sniffer.phase, super::sniffers::SnifferPhase::Digging | super::sniffers::SnifferPhase::Searching);
-            if e.health > 0.0 && s.has_ambient() && !e.armadillo_scared() && !digging {
+            if e.health > 0.0 && s.has_ambient() && !e.armadillo_scared() && !digging && !(kind == Kind::Creaking && e.creaking.active) {
                 if (e.random.next_int(1000) as i32) < e.ambient_sound_time {
                     e.ambient_sound_time = -s.ambient_interval();
                     let baby = e.baby();
@@ -881,6 +890,7 @@ impl EntityWorld {
                     spawn_blast = e.wither_spawn_in(&*world);
                 } else if e.health > 0.0 && !e.no_ai {
                     let position = e.body.position;
+                    let facing = (e.yaw, e.pitch);
                     // A piglin admiring its gold stands still (`stopWalking`),
                     // as a spellcaster does while it casts.
                     // An axolotl playing dead lies still.
@@ -935,6 +945,7 @@ impl EntityWorld {
                     e.panda_settle(thundering);
                     e.breeze_settle();
                     e.sniffer_settle();
+                    e.creaking_settle(facing);
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1057,6 +1068,9 @@ impl EntityWorld {
         }
         if kind == Kind::Armadillo {
             self.armadillo_step(id);
+        }
+        if kind == Kind::Creaking {
+            self.creaking_step(id);
         }
         if kind == Kind::Parrot {
             self.parrot_step(id);

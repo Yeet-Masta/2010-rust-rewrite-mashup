@@ -524,7 +524,24 @@ impl ServerSim {
         if let Some((state, _)) = shared {
             *mobs.level_random_mut() = minecraftoss_player::rng::LegacyRandom::from_raw_state(state);
         }
+        // The creaking hearts and the creakings they keep, each told of
+        // the other.
+        {
+            let hearts = world.level.borrow().creaking_hearts();
+            mobs.set_creaking_hearts(hearts.into_iter().map(|(c, u)| (c, minecraftoss_entities::gossip::uuid_from_ints(u))).collect());
+        }
+        for removal in std::mem::take(&mut world.level.borrow_mut().creaking_removals) {
+            mobs.remove_creaking(minecraftoss_entities::gossip::uuid_from_ints(removal.uuid), removal.killed, removal.player);
+        }
         mobs.tick_with_players_where(&mut world, players, &ticks);
+        for (x, y, z) in mobs.take_heart_hurts() {
+            world.level.borrow_mut().creaking_heart_hurt(minecraftoss_core::BlockPos::new(x, y, z));
+        }
+        world.level.borrow_mut().creakings = mobs
+            .creakings()
+            .into_iter()
+            .map(|(uuid, p, min, max, persistent)| (minecraftoss_entities::gossip::uuid_to_ints(uuid), minecraftoss_world::level::creaking_heart::CreakingLink { position: p.to_array(), min: min.to_array(), max: max.to_array(), persistent }))
+            .collect();
         mobs.tick_wind_charges(&world, players);
         // Births and summons are listed for replays that tag them; the game
         // needs no list.

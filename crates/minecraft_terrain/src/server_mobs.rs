@@ -980,6 +980,10 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.patrol.leader = int(tag, "PatrolLeader").unwrap_or(0) != 0;
                 entity.patrol.patrolling = int(tag, "Patrolling").unwrap_or(0) != 0;
             }
+            if kind == minecraftoss_entities::species::Kind::Creaking {
+                // `Creaking.readAdditionalSaveData`: `setTransient`.
+                entity.creaking.home = tag.get("home_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
+            }
             // `Panda.readAdditionalSaveData`: the main gene is its variant.
             if kind == Kind::Panda {
                 if let Some(hidden) = text(tag, "HiddenGene").and_then(minecraftoss_entities::world::PandaGene::from_name) {
@@ -1407,6 +1411,9 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
             fields.push(("PatrolLeader", Tag::Byte(i8::from(e.patrol.leader))));
             fields.push(("Patrolling", Tag::Byte(i8::from(e.patrol.patrolling))));
+        }
+        if let Some((x, y, z)) = e.creaking.home {
+            fields.push(("home_pos", Tag::IntArray(vec![x, y, z])));
         }
         if e.kind == minecraftoss_entities::species::Kind::Panda && e.panda.ready {
             fields.push(("MainGene", Tag::String(e.panda.main.name().to_owned())));

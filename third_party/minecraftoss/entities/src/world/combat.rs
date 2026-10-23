@@ -537,7 +537,8 @@ impl EntityWorld {
         } else if let Some(e) = self.chickens.iter_mut().find(|e| e.id == id) {
             Some((&mut e.chicken.body, &mut e.random, 0.0))
         } else if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id) {
-            let resistance = e.kind.species().knockback_resistance;
+            // A watched creaking takes no knockback.
+            let resistance = if e.creaking.frozen { 1.0 } else { e.kind.species().knockback_resistance };
             Some((&mut e.body, &mut e.random, resistance))
         } else {
             None
@@ -568,6 +569,7 @@ impl EntityWorld {
             // A shut shulker's shell (`COVERED_ARMOR_MODIFIER`).
             let worn = s.armor + e.shulker_armor();
             let amount = if worn > 0.0 { armor(amount, worn, 0.0) } else { amount };
+            e.creaking.blame = Some(true);
             let hit = e.hurt(amount);
             if hit.applied {
                 e.ai.state.hurt_by = Some((crate::monster_ai::Target::Player(player), e.tick_count));

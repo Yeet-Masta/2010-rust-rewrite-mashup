@@ -65,7 +65,9 @@ mod pandas;
 mod breezes;
 mod sniffers;
 mod patrols;
+mod creakings;
 pub use patrols::{patrols, PatrolCtx, PatrolState};
+pub use creakings::{goals as creaking_goals, targets as creaking_targets, CreakingCtx, CreakingState};
 pub(crate) use patrols::PatrolGoal;
 pub use sniffers::{SnifferPhase, SnifferState};
 pub use breezes::{goals as breeze_goals, BreezeCtx, BreezePose, BreezeState};
@@ -2534,6 +2536,11 @@ pub struct EntityWorld {
     hives: Vec<((i32, i32, i32), usize, bool)>,
     bees_stay_in: bool,
     hive_entries: Vec<(u64, (i32, i32, i32))>,
+    /// The level's creaking hearts and the protector each keeps, and the
+    /// hearts whose creaking a player struck since the server last took
+    /// them.
+    creaking_hearts: Vec<((i32, i32, i32), u128)>,
+    heart_hurts: Vec<(i32, i32, i32)>,
     /// Hives robbed without smoke: where, by whom, and for how many more
     /// ticks bees about them turn on the robber.
     bee_anger_zones: Vec<((i32, i32, i32), u64, i32)>,
@@ -2632,6 +2639,8 @@ impl Default for EntityWorld {
             hives: Vec::new(),
             bees_stay_in: false,
             hive_entries: Vec::new(),
+            creaking_hearts: Vec::new(),
+            heart_hurts: Vec::new(),
             bee_anger_zones: Vec::new(),
             leashes: Vec::new(),
             knots: Vec::new(),
@@ -4632,6 +4641,8 @@ impl EntityWorld {
             hives: self.hives.clone(),
             bees_stay_in: self.bees_stay_in,
             hive_entries: Vec::new(),
+            creaking_hearts: self.creaking_hearts.clone(),
+            heart_hurts: Vec::new(),
             bee_anger_zones: Vec::new(),
             leashes: self.leashes.clone(),
             knots: self.knots.clone(),

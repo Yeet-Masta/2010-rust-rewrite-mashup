@@ -79,6 +79,8 @@ impl Level<'_> {
     /// and name (`ShulkerBoxBlock`; loot tables are not unpacked).
     pub fn player_will_destroy(&mut self, pos: BlockPos, creative: bool) {
         let state = self.block(pos);
+        // The one player of the game breaks it.
+        self.creaking_heart_will_destroy(pos, 0, creative);
         if !creative || self.store_of(state) != Some(super::container::Store::ShulkerBox) {
             return;
         }
@@ -176,6 +178,9 @@ impl Level<'_> {
     /// contents (`Containers.dropContents`). Shulker boxes keep theirs; a
     /// furnace also pops its used recipes' experience.
     pub(super) fn pre_remove_side_effects(&mut self, pos: BlockPos, old: BlockStateId) -> Vec<Stack> {
+        if self.is_a(old, "CreakingHeartBlock") {
+            self.creaking_heart_removed(pos);
+        }
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
             Some(super::container::Store::Furnace) => {
