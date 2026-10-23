@@ -1168,6 +1168,8 @@ pub struct TickInput {
     pub mob_players: Vec<minecraftoss_entities::tempt::PlayerCandidate>,
     /// Where each of those players looks (endermen read stares from it).
     pub mob_views: Vec<(u64, minecraftoss_entities::enderman::PlayerView)>,
+    /// What the riding player does with its mount this tick.
+    pub ride: minecraftoss_entities::world::RideInput,
     /// Each of those players' health, effects and motion (witches pick
     /// their potions by them).
     pub mob_vitals: Vec<(u64, minecraftoss_entities::monster_ai::PlayerVitals)>,
@@ -1261,6 +1263,9 @@ pub struct Output {
     pub entity_events: Vec<(u64, u8)>,
     /// The blocks pistons are moving, after a tick.
     pub moving_blocks: Option<Vec<MovingBlockView>>,
+    /// Where the player got off its mount (sneaking, or thrown), for its
+    /// client to stand it there.
+    pub dismounted: Option<[f64; 3]>,
     /// Blasts, creepers' and TNT's (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_world::level::explosion::ExplosionView>,
     /// Sounds mobs made this tick.
@@ -1767,6 +1772,7 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                         sim.mobs.player_hurt(0, source, kind);
                     }
                     sim.mobs.set_player_views(input.mob_views.clone());
+                    sim.mobs.set_ride_input(input.ride);
                     sim.mobs.set_player_vitals(input.mob_vitals.clone());
                     // What the player holds, as villagers see it
                     // (`ShowTradesToPlayer`).
@@ -1776,6 +1782,9 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     let armor: Vec<String> = input.pickup.as_ref().map(|(_, inventory, _)| inventory.slots.iter().skip(36).take(4).flatten().map(|s| s.id.clone()).collect()).unwrap_or_default();
                     sim.mobs.set_player_armor(0, &armor.iter().map(String::as_str).collect::<Vec<_>>());
                     sim.tick_mobs(&input.mob_players, input.bright_outside);
+                    if let Some(at) = sim.mobs.take_dismount() {
+                        out.dismounted = Some(at.to_array());
+                    }
                     sim.spawn_trade_experience();
                     out.menu.extend(sim.menu_tick(&input.mob_players));
                     out.player_hits.extend(sim.mobs.take_player_hits());

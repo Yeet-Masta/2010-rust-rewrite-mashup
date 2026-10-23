@@ -208,6 +208,11 @@ pub struct Game {
     overlay: Option<(serde_json::Value, u32)>,
     /// The jukebox songs, read when one first plays.
     songs: Option<Vec<minecraft_terrain::server::JukeboxSong>>,
+    /// `LocalPlayer.jumpRidingTicks`, `jumpRidingScale` and the jump key
+    /// as the last tick saw it, for a mount's charged leap.
+    jump_riding_ticks: i32,
+    pub jump_riding_scale: f32,
+    was_ride_jumping: bool,
     /// `LocalPlayer.spinningEffectTime` and `spinningEffectSpeed`, for
     /// nausea's warp.
     spin: (f32, f32),
@@ -377,6 +382,9 @@ impl Game {
             enchantment_seed,
             overlay: None,
             songs: None,
+            jump_riding_ticks: 0,
+            jump_riding_scale: 0.0,
+            was_ride_jumping: false,
             spin: (0.0, 0.0),
             health_blink: (0, 0, 0, Instant::now()),
         };
@@ -2771,6 +2779,70 @@ impl Game {
         }
     }
 
+    /// Riding (`LocalPlayer.aiStep`'s vehicle part): the player sits where
+    /// its mount holds it, its keys steer the mount and sneaking gets it
+    /// off, and the jump key charges a horse's leap, let go to jump. A
+    /// dismount from the server sets it down there.
+    fn ride_tick(&mut self, movement: &mut minecraftoss_player::Input) {
+        let seat = self.entities.seat();
+        if let Some(at) = self.entities.dismounted.take() {
+            if seat.is_none() {
+                self.player.seat = None;
+                self.player.pos = at;
+                self.player.velocity = DVec3::ZERO;
+            }
+        }
+        let Some((at, yaw)) = seat else {
+            self.player.seat = None;
+            self.jump_riding_scale = 0.0;
+            return;
+        };
+        if self.player.seat.is_none() {
+            // `doPlayerRide`: the rider takes the mount's facing.
+            self.player.yaw = f64::from(yaw);
+        }
+        self.player.seat = Some(at);
+        let jump_key = movement.jump;
+        let mut ride = minecraftoss_entities::world::RideInput {
+            forward: movement.forward as f32,
+            strafe: movement.strafe as f32,
+            dismount: movement.crouch,
+            yaw: self.player.yaw as f32,
+            pitch: self.player.pitch as f32,
+            ..Default::default()
+        };
+        if self.entities.vehicle_jumps() {
+            if self.jump_riding_ticks < 0 {
+                self.jump_riding_ticks += 1;
+                if self.jump_riding_ticks == 0 {
+                    self.jump_riding_scale = 0.0;
+                }
+            }
+            if self.was_ride_jumping && !jump_key {
+                // Let go: `onPlayerJump` and `sendRidingJump`.
+                self.jump_riding_ticks = -10;
+                let amount = (self.jump_riding_scale * 100.0).floor() as i32;
+                ride.jump = Some(amount);
+                ride.jump_started = amount > 0;
+            } else if !self.was_ride_jumping && jump_key {
+                self.jump_riding_ticks = 0;
+                self.jump_riding_scale = 0.0;
+            } else if self.was_ride_jumping {
+                self.jump_riding_ticks += 1;
+                self.jump_riding_scale = if self.jump_riding_ticks < 10 {
+                    self.jump_riding_ticks as f32 * 0.1
+                } else {
+                    0.8 + 2.0 / (self.jump_riding_ticks - 9) as f32 * 0.1
+                };
+            }
+        } else {
+            self.jump_riding_scale = 0.0;
+        }
+        self.was_ride_jumping = jump_key;
+        self.entities.ride = ride;
+        *movement = minecraftoss_player::Input::default();
+    }
+
     fn tick_movement(&mut self, input: Option<&Input>) {
         let held = self.entities.held().cloned();
         let mut movement = minecraftoss_player::Input::default();
@@ -2810,6 +2882,7 @@ impl Game {
                 self.player.sprinting = false;
             }
         }
+        self.ride_tick(&mut movement);
         let before = self.player.pos;
         let fall = self.player.fall_distance;
         let was_in_water = self.player.in_water;

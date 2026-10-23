@@ -96,6 +96,12 @@ pub struct HorseState {
     pub max_health: f32,
     pub movement_speed: f64,
     pub jump_strength: f64,
+    /// Wearing a saddle (`isSaddled`), who tamed it, the rider's charged
+    /// jump to come (`playerJumpPendingScale`) and `isJumping`.
+    pub saddled: bool,
+    pub owner: Option<u128>,
+    pub jump_pending: f32,
+    pub jumping: bool,
 }
 
 impl HorseState {
@@ -128,6 +134,10 @@ impl HorseState {
             max_health,
             movement_speed,
             jump_strength,
+            saddled: false,
+            owner: None,
+            jump_pending: 0.0,
+            jumping: false,
         }
     }
 

@@ -124,6 +124,10 @@ pub struct Entities {
     client: ClientMobs,
     /// Where the player holds leads this frame (`getRopeHoldPosition`).
     pub player_rope: Option<DVec3>,
+    /// What the riding player does with its mount, for the next tick, and
+    /// where the server last set it down off one.
+    pub ride: minecraftoss_entities::world::RideInput,
+    pub dismounted: Option<DVec3>,
     poof: PoofParticles,
     portal: PortalParticles,
     items: ItemVisuals,
@@ -213,6 +217,8 @@ impl Entities {
         Self {
             server,
             world: EntityWorld::default(),
+            ride: Default::default(),
+            dismounted: None,
             client: ClientMobs::default(),
             player_rope: None,
             poof: PoofParticles::default(),
@@ -918,6 +924,17 @@ impl Entities {
         self.server.jukebox_songs()
     }
 
+    /// Whether the mount leaps with a charged jump.
+    pub fn vehicle_jumps(&self) -> bool {
+        self.world.vehicle_jumps()
+    }
+
+    /// Where the riding player sits on its mount, as of the last server
+    /// tick, and the mount's facing.
+    pub fn seat(&self) -> Option<(DVec3, f32)> {
+        Some((self.world.player_seat()?, self.world.vehicle_yaw()?))
+    }
+
     /// A disc put in the jukebox at `pos`.
     pub fn jukebox_insert(&mut self, pos: (i32, i32, i32), stack: &ItemStack) {
         self.server.jukebox_insert(pos, stack);
@@ -1046,6 +1063,7 @@ impl Entities {
                 spawn_mobs: true,
                 creative: player.creative,
                 shields: player.shield.map(|yaw| vec![(PLAYER, yaw)]).unwrap_or_default(),
+                ride: std::mem::take(&mut self.ride),
             });
         }
         let mut events = Events::default();
@@ -1126,6 +1144,9 @@ impl Entities {
             events.mob_events.extend(output.entity_events.iter().copied());
             if let Some(moving) = output.moving_blocks {
                 self.moving_blocks = moving;
+            }
+            if let Some(at) = output.dismounted {
+                self.dismounted = Some(DVec3::from_array(at));
             }
             // `ClientLevel.blockEvent`: the containers' lids.
             for event in &output.block_events {

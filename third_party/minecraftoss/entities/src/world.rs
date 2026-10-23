@@ -68,9 +68,11 @@ mod patrols;
 mod creakings;
 mod allays;
 mod copper_golems;
+mod riding;
 pub use patrols::{patrols, PatrolCtx, PatrolState};
 pub use withers::{wither_friend, WitherState};
 pub use copper_golems::{goals as copper_golem_goals, CopperCtx, CopperGolemState, CopperUse, GolemAction, WEATHER_STATES};
+pub use riding::RideInput;
 pub use allays::{goals as allay_goals, AllayCtx, AllayState, AllayUse};
 pub use creakings::{goals as creaking_goals, targets as creaking_targets, CreakingCtx, CreakingState};
 pub(crate) use patrols::PatrolGoal;
@@ -153,6 +155,8 @@ pub struct CowEntity {
     pub effects: crate::effects::MobEffects,
     pub cow: Cow,
     pub mooshroom: Option<MushroomCowState>,
+    /// The last click asked it to take the player on (`doPlayerRide`).
+    pub mount_request: bool,
     /// A horse or donkey: its `AbstractHorse` state.
     pub horse: Option<crate::horse::HorseState>,
     pub previous_position: DVec3,
@@ -985,6 +989,7 @@ impl CowEntity {
     /// bool is whether it fell in love.
     pub fn interact_horse(&mut self, inventory: &mut minecraftoss_player::inventory::Inventory, hand: usize, infinite: bool, in_horse_food: impl Fn(&str) -> bool) -> Option<(crate::cow::InteractionResult, bool)> {
         use crate::cow::InteractionResult;
+        self.mount_request = false;
         let horse = self.horse.as_mut()?;
         let held = inventory.slots.get(hand).and_then(Option::as_ref).map(|stack| stack.id.clone());
         let baby = self.cow.age.baby();
@@ -996,7 +1001,10 @@ impl CowEntity {
         // The rest goes on to `AbstractHorse.mobInteract`: a foal passes,
         // a grown horse would be mounted.
         let ride = if baby { InteractionResult::Pass } else { InteractionResult::SuccessServer };
-        let Some(item) = held else { return Some((ride, false)) };
+        let Some(item) = held else {
+            self.mount_request = ride == InteractionResult::SuccessServer;
+            return Some((ride, false));
+        };
         if in_horse_food(&item) {
             let (used, love) = handle_eating(&mut self.cow, horse, &item, &mut self.random, &mut self.voices, position);
             if used && !infinite {
@@ -1029,6 +1037,17 @@ impl CowEntity {
             }
             return Some((InteractionResult::SuccessServer, false));
         }
+        // `Equippable.equipOnInteract` for a saddle (`canUseSlot(SADDLE)`:
+        // grown and tame).
+        if item == "minecraft:saddle" && !horse.saddled && !baby {
+            horse.saddled = true;
+            self.voices.push((Voice::Event("entity.horse.saddle", 0.5, 1.0), position));
+            if !infinite {
+                crate::animal::consume_one(inventory, hand);
+            }
+            return Some((InteractionResult::SuccessServer, false));
+        }
+        self.mount_request = ride == InteractionResult::SuccessServer;
         Some((ride, false))
     }
 }
@@ -2541,6 +2560,11 @@ pub struct EntityWorld {
     hives: Vec<((i32, i32, i32), usize, bool)>,
     bees_stay_in: bool,
     hive_entries: Vec<(u64, (i32, i32, i32))>,
+    /// What the player rides, its input this tick, and where it got off
+    /// since the server last asked.
+    player_vehicle: Option<EntityKey>,
+    ride_input: RideInput,
+    dismounted: Option<DVec3>,
     /// The level's creaking hearts and the protector each keeps, and the
     /// hearts whose creaking a player struck since the server last took
     /// them.
@@ -2644,6 +2668,9 @@ impl Default for EntityWorld {
             hives: Vec::new(),
             bees_stay_in: false,
             hive_entries: Vec::new(),
+            player_vehicle: None,
+            ride_input: RideInput::default(),
+            dismounted: None,
             creaking_hearts: Vec::new(),
             heart_hurts: Vec::new(),
             bee_anger_zones: Vec::new(),
@@ -4270,6 +4297,7 @@ impl EntityWorld {
         let previous_position = cow.body.position;
         let previous_yaw = cow.yaw;
         self.cows.push(CowEntity {
+            mount_request: false,
             effects: Default::default(),
             id,
             cow,
@@ -4650,6 +4678,9 @@ impl EntityWorld {
             hives: self.hives.clone(),
             bees_stay_in: self.bees_stay_in,
             hive_entries: Vec::new(),
+            player_vehicle: self.player_vehicle,
+            ride_input: RideInput::default(),
+            dismounted: None,
             creaking_hearts: self.creaking_hearts.clone(),
             heart_hurts: Vec::new(),
             bee_anger_zones: Vec::new(),
@@ -4833,6 +4864,8 @@ impl EntityWorld {
             body.needs_sync = false;
         }
         self.game_time += 1;
+        // The rider gets off first when it sneaks or its mount is gone.
+        self.tick_rider(&*world);
         let game_time = self.game_time;
         self.set_pushing_players(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();
@@ -6305,6 +6338,10 @@ impl EntityWorld {
                 })
                 .collect();
             let mut breeding_partner = None;
+            let cow_id = self.cows[index].id;
+            let ridden = self.player_vehicle == Some(EntityKey::Cow(cow_id));
+            // `getControllingPassenger`: a saddled horse's rider steers it.
+            let controlled = ridden && self.cows[index].horse.as_ref().is_some_and(|h| h.tame && h.saddled);
             let entity = &mut self.cows[index];
             entity.tick_count += 1;
             entity.update_fluid(world);
@@ -6404,7 +6441,25 @@ impl EntityWorld {
                     entity.hurt(damage, DamageSourceKind::Generic);
                 }
             }
-            if !entity.no_ai && !immobile {
+            if !entity.no_ai && !immobile && controlled {
+                entity.cow.body.trim_small_velocity();
+                entity.no_action_time = 0;
+                if let Some(damage) = self.ride_horse(index, world) {
+                    self.cows[index].hurt(damage, DamageSourceKind::Generic);
+                }
+                let entity = &mut self.cows[index];
+                let cow = &mut entity.cow;
+                let sounds = if let Some(horse) = &entity.horse {
+                    let family = horse.kind.sound_family(cow.age.baby());
+                    MovementSounds { horse_step: Some((if family == "baby_horse" { "entity.baby_horse.step" } else { "entity.horse.step" }, "entity.horse.step_wood")), ..MovementSounds::creature(None) }
+                } else {
+                    cow_sounds(false, cow.sound_variant)
+                };
+                play_movement(&mut cow.body, entity.tick_count, &mut entity.random, &mut entity.voices, sounds);
+                entity.body_rotation.tick(cow.yaw, &mut entity.look_control, entity.previous_position, cow.body.position);
+            }
+            let entity = &mut self.cows[index];
+            if !entity.no_ai && !immobile && !controlled {
                 entity.cow.body.trim_small_velocity();
                 // Mob.checkDespawn clears inactivity near a player before serverAiStep.
                 if players.iter().any(|player| {
@@ -6585,6 +6640,10 @@ impl EntityWorld {
                 let entity = &mut self.cows[index];
                 let old = entity.previous_position;
                 hazards::blocks_act(entity, &*world, old, game_time);
+            }
+            // An untamed horse under the player bucks or takes to it.
+            if ridden && !controlled {
+                self.buck_or_tame(index, &*world);
             }
             let id = self.cows[index].id;
             self.push_entities(EntityKey::Cow(id), &*world, game_time, ticks);

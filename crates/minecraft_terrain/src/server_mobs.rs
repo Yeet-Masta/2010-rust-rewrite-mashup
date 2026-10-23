@@ -500,6 +500,8 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             horse.bred = int(tag, "Bred").unwrap_or(0) != 0;
             horse.temper = int(tag, "Temper").unwrap_or(0);
             horse.eating = int(tag, "EatingHaystack").unwrap_or(0) != 0;
+            horse.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
+            horse.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
             if let Some(max_health) = attribute_base(tag, "minecraft:max_health") {
                 horse.max_health = max_health as f32;
             }
@@ -1618,6 +1620,13 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             fields.push(("Bred", Tag::Byte(i8::from(horse.bred))));
             fields.push(("Temper", Tag::Int(horse.temper)));
             fields.push(("Tame", Tag::Byte(i8::from(horse.tame))));
+            if let Some(owner) = horse.owner {
+                fields.push(("Owner", Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(owner).to_vec())));
+            }
+            if horse.saddled {
+                let saddle = [("id".to_owned(), text_tag("minecraft:saddle")), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+                fields.push(("equipment", Tag::Compound([("saddle".to_owned(), Tag::Compound(saddle))].into_iter().collect())));
+            }
             match horse.kind {
                 HorseKind::Horse => fields.push(("Variant", Tag::Int(horse.variant))),
                 HorseKind::Donkey => fields.push(("ChestedHorse", Tag::Byte(i8::from(horse.chest)))),

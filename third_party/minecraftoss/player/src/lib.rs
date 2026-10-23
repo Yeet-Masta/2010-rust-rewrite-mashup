@@ -1173,6 +1173,9 @@ pub struct IncomingHit {
 #[derive(Clone, Debug)]
 pub struct Player {
     pub pos: DVec3, // feet
+    /// Riding: where its mount holds its feet (`positionRider`). It does
+    /// not move by itself then.
+    pub seat: Option<DVec3>,
     pub velocity: DVec3,
     pub yaw: f64,   // Minecraft degrees: 0 south, 180 north
     pub pitch: f64, // degrees: positive down
@@ -1255,6 +1258,7 @@ impl Player {
         ];
         Self {
             pos,
+            seat: None,
             velocity: DVec3::ZERO,
             yaw: 180.0,
             pitch: 0.0,
@@ -1448,6 +1452,19 @@ impl Player {
             self.impulse_grace -= 1;
         }
         self.tick += 1;
+        // `Entity.rideTick`: a passenger sits where its vehicle holds it,
+        // with no motion of its own and no fall to come.
+        if let Some(seat) = self.seat {
+            self.pos = seat;
+            self.velocity = DVec3::ZERO;
+            self.fall_distance = 0.0;
+            self.on_ground = false;
+            self.sprinting = false;
+            if self.hurt_time > 0 {
+                self.hurt_time -= 1;
+            }
+            return;
+        }
         // `LivingEntity.baseTick`: `EnchantmentHelper.tickEffects` (soul
         // speed's souls and sounds).
         if !self.spectator {
@@ -1875,6 +1892,12 @@ impl Player {
         let jumped = input.jump && self.on_ground && !self.flying && !self.in_water;
         self.tick(world, input);
         self.apply_fire_from_blocks(world);
+        if self.seat.is_some() {
+            // Riding: no fall and no exhaustion from the mount's moves.
+            self.fall_distance = 0.0;
+            self.survival.tick_with_rules(natural_regeneration, difficulty, self.tick);
+            return;
+        }
         let motion = self.pos - before;
         if self.flying || self.in_water {
             self.fall_distance = 0.0;

@@ -237,6 +237,13 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 if love {
                     outcome.events.push((id, 18));
                 }
+                // `doPlayerRide` (a sneaking player opens a tame one's
+                // inventory instead, which is not simulated).
+                let tame = entity.horse.as_ref().is_some_and(|h| h.tame);
+                if std::mem::take(&mut entity.mount_request) && !(sneaking && tame) {
+                    world.mount_player(MobHit::Cow(id));
+                }
+                outcome.inventory_changed = true;
                 outcome.handled = true;
                 return outcome;
             }
