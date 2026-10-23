@@ -10,6 +10,7 @@
 
 pub mod container;
 pub mod creaking_heart;
+pub mod jukebox;
 pub mod dispenser;
 pub mod drops;
 pub mod entity;
@@ -180,6 +181,11 @@ pub struct Level<'a> {
     pub creaking_removals: Vec<creaking_heart::CreakingRemoval>,
     /// The note blocks that played since the server last took them.
     pub note_blocks_played: Vec<BlockPos>,
+    /// The jukebox songs, the jukeboxes' songs as they play, and what they
+    /// told the mobs since the server last took it.
+    pub songs: Vec<jukebox::JukeboxSong>,
+    jukeboxes: HashMap<BlockPos, Option<jukebox::SongPlayer>>,
+    pub jukebox_events: Vec<jukebox::JukeboxEvent>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -318,6 +324,9 @@ impl<'a> Level<'a> {
             creakings: HashMap::new(),
             creaking_removals: Vec::new(),
             note_blocks_played: Vec::new(),
+            songs: jukebox::load_songs(&lib.registries),
+            jukeboxes: HashMap::new(),
+            jukebox_events: Vec::new(),
             unsupported: Vec::new(),
             pending_thunder: Vec::new(),
             lightning_hits: Vec::new(),

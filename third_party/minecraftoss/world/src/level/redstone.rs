@@ -227,7 +227,7 @@ impl Level<'_> {
         self.registries().blocks.property(state, name)
     }
 
-    fn flag(&self, state: BlockStateId, name: &str) -> bool {
+    pub(super) fn flag(&self, state: BlockStateId, name: &str) -> bool {
         self.prop(state, name) == Some("true")
     }
 
@@ -243,7 +243,7 @@ impl Level<'_> {
         self.registries().blocks.with_property(state, name, value).unwrap_or(state)
     }
 
-    fn with_bool(&self, state: BlockStateId, name: &str, value: bool) -> BlockStateId {
+    pub(super) fn with_bool(&self, state: BlockStateId, name: &str, value: bool) -> BlockStateId {
         self.with(state, name, if value { "true" } else { "false" })
     }
 
@@ -323,6 +323,8 @@ impl Level<'_> {
             Some(Kind::PressurePlate) => self.plate_signal(state),
             // `TrappedChestBlock.ownSignal`: its openers, up to 15.
             Some(Kind::TrappedChest) => self.opener_count(pos).clamp(0, 15),
+            // `JukeboxBlock.ownSignal`: 15 while it plays.
+            _ if self.is_a(state, "JukeboxBlock") && self.jukebox_playing(pos) => 15,
             _ => 0,
         }
     }
@@ -516,6 +518,9 @@ impl Level<'_> {
         if self.is_a(state, "CreakingHeartBlock") {
             return Some(self.heart_output(state, pos));
         }
+        if self.is_a(state, "JukeboxBlock") {
+            return Some(self.jukebox_signal(pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -583,7 +588,7 @@ impl Level<'_> {
     }
 
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.is_a(state, "CreakingHeartBlock") || self.state_analog_output(state).is_some()
+        self.store_of(state).is_some() || self.is_a(state, "CreakingHeartBlock") || self.is_a(state, "JukeboxBlock") || self.state_analog_output(state).is_some()
     }
 
     // ---- block hooks --------------------------------------------------------
@@ -988,6 +993,9 @@ impl Level<'_> {
     /// Whether `use_block_facing` acts on a block in this state (with a
     /// player facing given): the state alone decides it.
     pub fn handles_use(&self, state: BlockStateId) -> bool {
+        if self.is_a(state, "JukeboxBlock") {
+            return self.flag(state, "has_record");
+        }
         let iron = matches!(self.name(state), "minecraft:iron_door" | "minecraft:iron_trapdoor");
         match self.redstone_kind(state) {
             Some(Kind::Door) | Some(Kind::TrapDoor) => !iron,
@@ -1003,6 +1011,10 @@ impl Level<'_> {
 
     pub fn use_block_facing(&mut self, pos: BlockPos, player_facing: Option<Direction>) -> bool {
         let state = self.block(pos);
+        // `JukeboxBlock.useWithoutItem`: its disc pops out.
+        if self.is_a(state, "JukeboxBlock") {
+            return self.flag(state, "has_record") && self.jukebox_pop(pos);
+        }
         let iron = matches!(self.name(state), "minecraft:iron_door" | "minecraft:iron_trapdoor");
         match self.redstone_kind(state) {
             Some(Kind::Door) if !iron => {

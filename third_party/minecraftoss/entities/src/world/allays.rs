@@ -11,6 +11,9 @@
 //!   three seconds between throws before it gathers again.
 //! - It keeps within sixteen blocks of whoever it delivers to, and heals one
 //!   every half second.
+//! - A jukebox playing within ten blocks sets it dancing until the song
+//!   stops or it strays; given an amethyst shard as it dances, it makes a
+//!   second allay, and neither can again for five minutes.
 use super::*;
 use super::mobs::MobEntity;
 use crate::goals::{Control, Controls, Goal, GoalSelector};
@@ -39,6 +42,10 @@ pub struct AllayState {
     pub pickup_cooldown: i32,
     /// Out: where it threw an item this tick.
     pub throw_at: Option<DVec3>,
+    /// `DATA_DANCING`, the jukebox it dances to, and `duplicationCooldown`.
+    pub dancing: bool,
+    pub jukebox: Option<Cell>,
+    pub duplication_cooldown: i64,
 }
 
 /// What the allay's goals share.
@@ -175,6 +182,12 @@ impl MobEntity {
         let a = &mut self.allay;
         a.note_block_cooldown = (a.note_block_cooldown - 1).max(0);
         a.pickup_cooldown = (a.pickup_cooldown - 1).max(0);
+        a.duplication_cooldown = (a.duplication_cooldown - 1).max(0);
+        // `setDancing(false)` while it panics.
+        if crate::mob_ai::panicking(&self.ai.state) {
+            self.allay.dancing = false;
+        }
+        let a = &mut self.allay;
         let p = self.body.position;
         // `canPickUpLoot` and `wantsToPickUp` for the item sensor.
         let wanted = match (&self.hand, a.pickup_cooldown) {
@@ -208,6 +221,20 @@ impl EntityWorld {
     pub(super) fn allay_deposit(&mut self, id: u64, world: &dyn World, players: &[PlayerCandidate]) -> Option<DVec3> {
         let e = self.mobs.iter().find(|e| e.id == id && e.kind == Kind::Allay)?;
         let p = e.body.position;
+        // `shouldStopDancing`, checked each second: its jukebox gone or
+        // more than ten blocks off.
+        if e.allay.dancing && e.tick_count % 20 == 0 {
+            let gone = e.allay.jukebox.is_none_or(|c| {
+                let centre = DVec3::new(f64::from(c.0) + 0.5, f64::from(c.1) + 0.5, f64::from(c.2) + 0.5);
+                centre.distance(p) >= 10.0 || world.block(c).is_none_or(|b| b.id != "minecraft:jukebox")
+            });
+            if gone {
+                let e = self.mob_mut(id)?;
+                e.allay.dancing = false;
+                e.allay.jukebox = None;
+            }
+        }
+        let e = self.mobs.iter().find(|e| e.id == id)?;
         if let Some(c) = e.allay.liked_note_block {
             let near = DVec3::new(f64::from(c.0), f64::from(c.1), f64::from(c.2)).distance(p) < 1024.0;
             if near && e.allay.note_block_cooldown > 0 && world.block(c).is_some_and(|b| b.id == "minecraft:note_block") {
@@ -236,13 +263,41 @@ impl EntityWorld {
         }
     }
 
-    /// `Allay.mobInteract`: an item given (one of it), or its item taken
-    /// back with what it gathered dropped. The item the player gets back,
-    /// if any, or `None` when the click is not the allay's.
+    /// `Allay.setJukeboxPlaying` for the allays within ten blocks of a
+    /// jukebox that plays (`JUKEBOX_PLAY`) or stopped.
+    pub fn jukebox_heard(&mut self, c: Cell, playing: bool) {
+        let at = DVec3::new(f64::from(c.0) + 0.5, f64::from(c.1) + 0.5, f64::from(c.2) + 0.5);
+        for e in self.mobs.iter_mut().filter(|e| e.kind == Kind::Allay && e.health > 0.0 && e.body.position.distance(at) <= 10.0) {
+            let panicking = crate::mob_ai::panicking(&e.ai.state);
+            if playing {
+                if !e.allay.dancing && !panicking {
+                    e.allay.jukebox = Some(c);
+                    e.allay.dancing = true;
+                }
+            } else if e.allay.jukebox.is_none_or(|j| j == c) {
+                e.allay.jukebox = None;
+                e.allay.dancing = false;
+            }
+        }
+    }
+
+    /// `Allay.mobInteract`: an amethyst shard to a dancing allay that may
+    /// duplicate, an item given (one of it), or its item taken back with
+    /// what it gathered dropped. `None` when the click is not the allay's.
     pub fn allay_interact(&mut self, id: u64, player: u64, held: Option<&str>) -> Option<AllayUse> {
         let liked = self.uuid_of(PLAYER_TARGET + player);
         let e = self.mobs.iter_mut().find(|e| e.id == id && e.kind == Kind::Allay && e.health > 0.0)?;
         let at = e.body.position;
+        // `#duplicates_allays`, and `canDuplicate`.
+        if e.allay.dancing && held == Some("minecraft:amethyst_shard") && e.allay.duplication_cooldown == 0 {
+            // `duplicateAllay`: a new allay where it is, both resting from it.
+            e.allay.duplication_cooldown = 6000;
+            let yaw = e.yaw;
+            e.voices.push((Voice::Event("block.amethyst_block.chime", 2.0, 1.0), at));
+            self.spawned.mobs.push(("minecraft:allay".to_owned(), at, yaw, "{PersistenceRequired:1b,DuplicationCooldown:6000L}".to_owned()));
+            self.entity_events.push((id, 18));
+            return Some(AllayUse::Duplicated);
+        }
         match (&e.hand, held) {
             (None, Some(item)) => {
                 e.hand = Some(item.to_owned());
@@ -318,4 +373,6 @@ pub enum AllayUse {
     Given,
     /// It handed back its item.
     Taken(String),
+    /// It made a second allay of an amethyst shard.
+    Duplicated,
 }

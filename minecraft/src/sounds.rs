@@ -34,6 +34,8 @@ pub struct Sounds {
     ear: DVec3,
     right: Vec3,
     pub volume: f32,
+    /// The jukeboxes' songs as they play, and where.
+    records: HashMap<(i32, i32, i32), (rodio::Player, DVec3)>,
 }
 
 impl Sounds {
@@ -104,6 +106,7 @@ impl Sounds {
             ear: DVec3::ZERO,
             right: Vec3::X,
             volume: 1.0,
+            records: HashMap::new(),
         }
     }
 
@@ -117,6 +120,80 @@ impl Sounds {
     pub fn set_listener(&mut self, ear: DVec3, right: Vec3) {
         self.ear = ear;
         self.right = right;
+        self.update_records();
+    }
+
+    /// `LevelRenderer.playJukeboxSong`: the song from the jukebox at `pos`
+    /// (`forJukeboxSong`: volume 4, so heard to 64 blocks, falling off
+    /// linearly), until it stops or ends.
+    pub fn play_record(&mut self, packs: &PackStack, pos: (i32, i32, i32), event: &str) {
+        self.stop_record(pos);
+        let Some((samples, rate)) = self.resolve_clip(packs, event, 0) else {
+            return;
+        };
+        let Some(output) = &self.output else {
+            return;
+        };
+        let mut stereo = Vec::with_capacity(samples.len() * 2);
+        for &sample in samples.iter() {
+            stereo.push(sample);
+            stereo.push(sample);
+        }
+        let (Some(channels), Some(rate)) = (std::num::NonZero::new(2u16), std::num::NonZero::new(rate)) else {
+            return;
+        };
+        let player = rodio::Player::connect_new(output.mixer());
+        player.append(rodio::buffer::SamplesBuffer::new(channels, rate, stereo));
+        let at = DVec3::new(f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5);
+        self.records.insert(pos, (player, at));
+        self.update_records();
+    }
+
+    /// `stopJukeboxSong`.
+    pub fn stop_record(&mut self, pos: (i32, i32, i32)) {
+        if let Some((player, _)) = self.records.remove(&pos) {
+            player.stop();
+        }
+    }
+
+    /// Each song's loudness as the listener moves; finished ones go.
+    fn update_records(&mut self) {
+        let (ear, master) = (self.ear, self.volume);
+        self.records.retain(|_, (player, _)| !player.empty());
+        for (player, at) in self.records.values() {
+            let falloff = (1.0 - at.distance(ear) / 64.0).clamp(0.0, 1.0) as f32;
+            player.set_volume(falloff * master);
+        }
+    }
+
+    /// A sound event's file (one of its variants by weight, through the
+    /// events it names), decoded.
+    fn resolve_clip(&mut self, packs: &PackStack, event: &str, depth: u8) -> Option<(Arc<[f32]>, u32)> {
+        let key = event.strip_prefix("minecraft:").unwrap_or(event);
+        let total: u32 = self.events.get(key).map_or(0, |e| e.iter().map(|x| x.weight).sum());
+        if total == 0 || depth > 4 {
+            return None;
+        }
+        let mut pick = (self.random() * total as f32) as u32;
+        let entry = self.events.get(key)?.iter().find(|entry| {
+            if pick < entry.weight {
+                true
+            } else {
+                pick -= entry.weight;
+                false
+            }
+        })?;
+        let (name, is_event) = (entry.name.clone(), entry.event);
+        if is_event {
+            return self.resolve_clip(packs, &name, depth + 1);
+        }
+        let clip = self.clips.entry(name.clone()).or_insert_with(|| {
+            let (namespace, path) = name.split_once(':').unwrap_or(("minecraft", &name));
+            let id = ResourceId::parse(&format!("{namespace}:{path}")).ok()?;
+            let bytes = packs.get(&id, &format!("sounds/{path}.ogg")).ok().flatten()?;
+            decode(bytes)
+        });
+        clip.as_ref().map(|c| (c.samples.clone(), c.rate))
     }
 
     /// Plays `event` at a point in blocks (or at the listener), picking one

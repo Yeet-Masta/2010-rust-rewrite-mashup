@@ -181,6 +181,10 @@ impl Level<'_> {
         if self.is_a(old, "CreakingHeartBlock") {
             self.creaking_heart_removed(pos);
         }
+        if self.is_a(old, "JukeboxBlock") {
+            self.jukebox_removed(pos, old);
+            return Vec::new();
+        }
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
             Some(super::container::Store::Furnace) => {

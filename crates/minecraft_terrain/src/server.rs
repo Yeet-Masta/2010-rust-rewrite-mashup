@@ -9,6 +9,7 @@ use crate::terrain::BlockStates;
 use minecraftoss_core::{BlockStateId, Chunk, ChunkPos};
 use minecraftoss_world::chunk_map::WorldGen;
 use minecraftoss_world::level::{update, Level};
+pub use minecraftoss_world::level::jukebox::JukeboxSong;
 use minecraftoss_world::natural_spawner::tick::{CensusMob, SpawnPlayer};
 use std::sync::Arc;
 
@@ -553,6 +554,9 @@ impl ServerSim {
         }
         for c in std::mem::take(&mut world.level.borrow_mut().note_blocks_played) {
             mobs.note_block_played((c.x, c.y, c.z));
+        }
+        for event in std::mem::take(&mut world.level.borrow_mut().jukebox_events) {
+            mobs.jukebox_heard((event.pos.x, event.pos.y, event.pos.z), event.playing);
         }
         for removal in std::mem::take(&mut world.level.borrow_mut().creaking_removals) {
             mobs.remove_creaking(minecraftoss_entities::gossip::uuid_from_ints(removal.uuid), removal.killed, removal.player);
@@ -1101,6 +1105,10 @@ pub enum Command {
     /// Flint and steel (or a fire charge) used on a clicked face.
     UseIgniter { pos: BlockPos, face: &'static str, flint_and_steel: bool },
     UseHive { pos: BlockPos, shears: bool },
+    /// A disc put in a jukebox (`JukeboxPlayable.tryInsertIntoJukebox`), or
+    /// a jukebox's disc taken out (`useWithoutItem`).
+    JukeboxInsert { pos: BlockPos, stack: minecraftoss_player::inventory::ItemStack },
+    JukeboxPop(BlockPos),
     /// The saved weather, as the world loads (`prepareWeather`).
     LoadWeather(Weather),
     /// `/weather`: rain, and thunder with it, for vanilla's default time.
@@ -1444,6 +1452,22 @@ impl ServerHandle {
         self.send(Command::UseIgniter { pos, face, flint_and_steel });
     }
 
+    /// The jukebox songs in registry order: level event 1010 names one by
+    /// its place.
+    pub fn jukebox_songs(&self) -> Vec<minecraftoss_world::level::jukebox::JukeboxSong> {
+        minecraftoss_world::level::jukebox::load_songs(&self.states.registries())
+    }
+
+    /// A disc put in the jukebox at `pos`.
+    pub fn jukebox_insert(&mut self, pos: BlockPos, stack: &minecraftoss_player::inventory::ItemStack) {
+        self.send(Command::JukeboxInsert { pos, stack: stack.clone() });
+    }
+
+    /// The jukebox at `pos` gives its disc back.
+    pub fn jukebox_pop(&mut self, pos: BlockPos) {
+        self.send(Command::JukeboxPop(pos));
+    }
+
     /// Shears or a bottle on a hive; `Output.hives_harvested` says if it
     /// took.
     pub fn use_hive(&mut self, pos: BlockPos, shears: bool) {
@@ -1657,6 +1681,13 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     if let Some(at) = sim.use_igniter(pos, face, flint_and_steel) {
                         out.ignited.push((at, flint_and_steel));
                     }
+                }
+                Command::JukeboxInsert { pos, stack } => {
+                    let stack = crate::stacks::to_level(&stack);
+                    sim.level.jukebox_insert(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2), &stack);
+                }
+                Command::JukeboxPop(pos) => {
+                    sim.level.jukebox_pop(minecraftoss_core::BlockPos::new(pos.0, pos.1, pos.2));
                 }
                 Command::UseHive { pos, shears } => {
                     if sim.use_hive(pos, shears) {

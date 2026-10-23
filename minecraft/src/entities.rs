@@ -913,6 +913,16 @@ impl Entities {
 
     /// Shears or a glass bottle on a full hive; whether it took arrives
     /// with the server's output.
+    /// The jukebox songs, by the number level event 1010 carries.
+    pub fn jukebox_songs(&self) -> Vec<minecraft_terrain::server::JukeboxSong> {
+        self.server.jukebox_songs()
+    }
+
+    /// A disc put in the jukebox at `pos`.
+    pub fn jukebox_insert(&mut self, pos: (i32, i32, i32), stack: &ItemStack) {
+        self.server.jukebox_insert(pos, stack);
+    }
+
     pub fn use_hive(&mut self, pos: (i32, i32, i32), shears: bool) {
         self.server.use_hive(pos, shears);
     }

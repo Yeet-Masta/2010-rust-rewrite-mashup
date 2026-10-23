@@ -206,6 +206,8 @@ pub struct Game {
     enchantment_seed: i32,
     /// The action bar's message, and the ticks it has left.
     overlay: Option<(serde_json::Value, u32)>,
+    /// The jukebox songs, read when one first plays.
+    songs: Option<Vec<minecraft_terrain::server::JukeboxSong>>,
     /// `LocalPlayer.spinningEffectTime` and `spinningEffectSpeed`, for
     /// nausea's warp.
     spin: (f32, f32),
@@ -374,6 +376,7 @@ impl Game {
             ender_items,
             enchantment_seed,
             overlay: None,
+            songs: None,
             spin: (0.0, 0.0),
             health_blink: (0, 0, 0, Instant::now()),
         };
@@ -914,6 +917,20 @@ impl Game {
             f64::from(pos.1) + 0.5,
             f64::from(pos.2) + 0.5,
         );
+        // `LevelEventHandler` 1010 and 1011: a jukebox's song starts, with
+        // "Now Playing" over the hotbar, or stops.
+        if id == 1010 {
+            let songs = self.songs.get_or_insert_with(|| self.entities.jukebox_songs());
+            if let Some(song) = usize::try_from(data).ok().and_then(|i| songs.get(i)).cloned() {
+                self.sounds.play_record(&self.world.packs, pos, &song.sound_event);
+                self.overlay = Some((serde_json::json!({ "translate": "record.nowPlaying", "with": [song.description] }), 60));
+            }
+            return;
+        }
+        if id == 1011 {
+            self.sounds.stop_record(pos);
+            return;
+        }
         // `globalLevelEvent` 1023: the wither's arrival, heard by everyone
         // two blocks from the camera toward it.
         if id == 1023 {
@@ -2021,6 +2038,27 @@ impl Game {
                 f64::from(hit.pos.2 + dz) + 0.5,
             ];
             self.entities.summon(kind, at);
+            self.start_swing();
+            if !self.creative {
+                let selected = self.entities.selected;
+                if let Some(held) = self.entities.inventory.slots[selected].as_mut() {
+                    held.count -= 1;
+                    if held.count == 0 {
+                        self.entities.inventory.slots[selected] = None;
+                    }
+                }
+            }
+            return;
+        }
+        // `JukeboxPlayable.tryInsertIntoJukebox`: a disc into an empty
+        // jukebox, used up unless in creative.
+        if stack.id.starts_with("minecraft:music_disc_")
+            && let Some(hit) = target.as_ref()
+            && self.world.block(hit.pos).is_some_and(|b| {
+                b.id.path == "jukebox" && b.properties.get("has_record").map(String::as_str) == Some("false")
+            })
+        {
+            self.entities.jukebox_insert(hit.pos, stack);
             self.start_swing();
             if !self.creative {
                 let selected = self.entities.selected;

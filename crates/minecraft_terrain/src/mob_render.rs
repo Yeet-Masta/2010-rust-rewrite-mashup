@@ -1205,6 +1205,23 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             let arm = 0.436_332_32 - cos(idle + PI * 1.5) * PI * 0.075 * (1.0 - flying) * (1.0 - holding);
             posed.with("left_arm", |p| p.rotation = Vec3::new(arm_x, -0.279_252_68 * holding, -arm));
             posed.with("right_arm", |p| p.rotation = Vec3::new(arm_x, 0.279_252_68 * holding, arm));
+            // `AllayModel.setupAnim` dancing: the body sways and the head
+            // jiggles, with a spin for 15 of every 55 ticks.
+            if e.allay.dancing {
+                let dance = age * 8.0 * PI / 180.0 + speed;
+                let spinning = (e.tick_count % 55) < 15;
+                let spin = if spinning { ((e.tick_count % 55) as f32 + age.fract()) / 15.0 } else { 0.0 };
+                posed.with("root", |p| {
+                    if spinning {
+                        p.rotation.y = 4.0 * PI * spin;
+                    }
+                    p.rotation.z = cos(dance) * 16.0 * PI / 180.0 * (1.0 - spin);
+                });
+                posed.with("head", |p| {
+                    p.rotation.y = cos(dance) * 30.0 * PI / 180.0 * (1.0 - spin);
+                    p.rotation.z = cos(dance) * 14.0 * PI / 180.0 * (1.0 - spin);
+                });
+            }
         }
         Kind::Bee => {
             if !e.body.on_ground {

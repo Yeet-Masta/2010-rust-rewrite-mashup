@@ -988,6 +988,7 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 let memory = |name: &str| tag.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get(name)).and_then(|m| m.get("value")).cloned();
                 entity.allay.liked_player = memory("minecraft:liked_player").and_then(|v| v.as_ints().filter(|u| u.len() == 4).map(|u| minecraftoss_entities::gossip::uuid_from_ints([u[0], u[1], u[2], u[3]])));
                 entity.allay.liked_note_block = memory("minecraft:liked_noteblock").and_then(|v| v.get("pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2])));
+                entity.allay.duplication_cooldown = tag.get("DuplicationCooldown").and_then(Tag::as_i64).unwrap_or(0);
                 entity.allay.note_block_cooldown = tag.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get("minecraft:liked_noteblock_cooldown_ticks")).and_then(|m| m.get("value")).and_then(Tag::as_i64).unwrap_or(0) as i32;
             }
             if kind == minecraftoss_entities::species::Kind::Creaking {
@@ -1427,6 +1428,7 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
                 let item = [("id".to_owned(), text_tag(id)), ("count".to_owned(), Tag::Int(*count))].into_iter().collect();
                 fields.push(("Inventory", Tag::List(vec![Tag::Compound(item)])));
             }
+            fields.push(("DuplicationCooldown", Tag::Long(e.allay.duplication_cooldown)));
             let mut memories = std::collections::BTreeMap::new();
             let value = |v: Tag| Tag::Compound([("value".to_owned(), v)].into_iter().collect());
             if let Some(uuid) = e.allay.liked_player {

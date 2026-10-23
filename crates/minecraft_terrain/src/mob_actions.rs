@@ -163,7 +163,7 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     if let MobHit::Mob(id) = hit {
         use minecraftoss_entities::world::AllayUse;
         match world.allay_interact(id, 0, held.as_deref()) {
-            Some(AllayUse::Given) => {
+            Some(AllayUse::Given | AllayUse::Duplicated) => {
                 if !infinite {
                     minecraftoss_entities::animal::consume_one(actor.inventory, selected);
                 }
