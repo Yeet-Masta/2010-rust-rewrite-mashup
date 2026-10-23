@@ -1398,6 +1398,19 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
                 p.rotation.x = (0.265 + 0.1 * anim) * PI;
             });
             posed.look("center_head", m.head_yaw, m.head_pitch);
+            // `WitherBossModel.setupHeadRotation`: the side heads turn to
+            // their own targets, against the body's facing.
+            let body = e.ai.body_rotation.body_yaw;
+            let partial = age.fract();
+            for (i, part) in ["right_head", "left_head"].into_iter().enumerate() {
+                let (yaw, pitch) = e.wither.head_rot[i];
+                let (yaw_o, pitch_o) = e.wither.head_rot_o[i];
+                let (yaw, pitch) = (yaw_o + (yaw - yaw_o) * partial, pitch_o + (pitch - pitch_o) * partial);
+                posed.with(part, |p| {
+                    p.rotation.y = (yaw - body).to_radians();
+                    p.rotation.x = pitch.to_radians();
+                });
+            }
         }
         Kind::MagmaCube | Kind::SulfurCube | Kind::EnderDragon => {}
     }

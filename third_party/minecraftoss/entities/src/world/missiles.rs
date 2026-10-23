@@ -67,6 +67,8 @@ pub struct MissileEntity {
     pub alive: bool,
     /// A shulker bullet's quarry.
     pub target: Option<Target>,
+    /// A blue wither skull (`isDangerous`).
+    pub dangerous: bool,
 }
 
 impl MissileEntity {
@@ -132,7 +134,7 @@ impl EntityWorld {
     pub fn launch_missile(&mut self, kind: MissileKind, owner: Option<u64>, position: DVec3, direction: DVec3, speed: f64, target: Option<Target>) -> u64 {
         self.next_id += 1;
         let velocity = direction.normalize_or_zero() * speed;
-        self.missiles.push(MissileEntity { id: self.next_id, kind, owner, position, previous_position: position, velocity, tick_count: 0, alive: true, target });
+        self.missiles.push(MissileEntity { id: self.next_id, kind, owner, position, previous_position: position, velocity, tick_count: 0, alive: true, target, dangerous: false });
         self.next_id
     }
 
@@ -169,9 +171,10 @@ impl EntityWorld {
             let in_water = world.block((missile.position.x.floor() as i32, missile.position.y.floor() as i32, missile.position.z.floor() as i32)).is_some_and(|b| b.id == "minecraft:water");
             match missile.kind {
                 MissileKind::SmallFireball | MissileKind::LargeFireball | MissileKind::WitherSkull => {
-                    // `getInertia` (a wither skull's 0.73, else 0.95; 0.8 in
-                    // water) and the steady push along its heading.
-                    let inertia = if missile.kind == MissileKind::WitherSkull { 0.73 } else if in_water { 0.8 } else { 0.95 };
+                    // `getInertia` (a dangerous wither skull's 0.73, else
+                    // 0.95; 0.8 in water) and the steady push along its
+                    // heading.
+                    let inertia = if missile.kind == MissileKind::WitherSkull && missile.dangerous { 0.73 } else if in_water { 0.8 } else { 0.95 };
                     let push = missile.velocity.normalize_or_zero() * 0.1;
                     missile.velocity = (missile.velocity + push) * inertia;
                 }

@@ -922,6 +922,13 @@ impl Game {
             self.play("minecraft:entity.wither.spawn", Some(eye + toward * 2.0), 1.0, 1.0);
             return;
         }
+        // The wither's block breaking and its skull's shot, loud.
+        if matches!(id, 1022 | 1024) {
+            let event = if id == 1022 { "minecraft:entity.wither.break_block" } else { "minecraft:entity.wither.shoot" };
+            let pitch = (self.sounds.random() - self.sounds.random()) * 0.2 + 1.0;
+            self.play(event, Some(at), 2.0, pitch);
+            return;
+        }
         let (event, pitch) = match id {
             1029 => ("minecraft:block.anvil.destroy", None),
             1035 => ("minecraft:block.brewing_stand.brew", Some(1.0)),

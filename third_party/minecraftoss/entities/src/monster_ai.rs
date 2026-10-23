@@ -421,6 +421,9 @@ pub(crate) enum Prey {
     Skeleton,
     /// Mobs of these types.
     Kinds(&'static [&'static str]),
+    /// The wither's (`LIVING_ENTITY_SELECTOR`): anything living but
+    /// `#wither_friends`.
+    NotWitherFriend,
 }
 
 /// `MeleeAttackGoal`'s state (and `ZombieAttackGoal`'s raised arms).
@@ -2527,6 +2530,13 @@ impl Goal<MonsterGoalContext> for NearestTargetGoal {
             Prey::AngryPlayer => ctx.players.iter().map(|p| Target::Player(p.id)).filter(|&t| ctx.enderman.anger_target == Some(t)).collect(),
             Prey::WolfPrey => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:sheep" | "minecraft:rabbit" | "minecraft:fox")).map(|m| Target::Mob(m.id)).collect(),
             Prey::Kinds(kinds) => ctx.mobs.iter().filter(|m| kinds.contains(&m.kind)).map(|m| Target::Mob(m.id)).collect(),
+            Prey::NotWitherFriend => ctx
+                .players
+                .iter()
+                .map(|p| Target::Player(p.id))
+                .chain(ctx.villagers.iter().map(|v| Target::Villager(v.id)))
+                .chain(ctx.mobs.iter().filter(|m| !crate::world::wither_friend(m.kind)).map(|m| Target::Mob(m.id)))
+                .collect(),
             Prey::Skeleton => ctx.mobs.iter().filter(|m| matches!(m.kind, "minecraft:skeleton" | "minecraft:stray" | "minecraft:bogged" | "minecraft:parched" | "minecraft:wither_skeleton")).map(|m| Target::Mob(m.id)).collect(),
         };
         let mut best: Option<(f64, Target)> = None;

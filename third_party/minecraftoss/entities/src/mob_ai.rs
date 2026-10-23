@@ -649,6 +649,14 @@ pub fn targets(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     if kind == Kind::Creaking {
         return crate::world::creaking_targets();
     }
+    if kind == Kind::Wither {
+        // `HurtByTargetGoal` and `NearestAttackableTargetGoal(LivingEntity,
+        // 0, false, false, LIVING_ENTITY_SELECTOR)`.
+        let mut selector = GoalSelector::default();
+        selector.add(1, HurtByTargetGoal { timestamp: 0, unseen_ticks: 0, target_mob: None, alert_others: false });
+        selector.add(2, NearestTargetGoal::every(Prey::NotWitherFriend, false, 1));
+        return selector;
+    }
     let s = kind.species();
     let mut selector = GoalSelector::default();
     if s.attack_kind == AttackKind::None || s.temper == Temper::Passive && !matches!(kind, Kind::Fox | Kind::Ocelot | Kind::Cat | Kind::Axolotl) {

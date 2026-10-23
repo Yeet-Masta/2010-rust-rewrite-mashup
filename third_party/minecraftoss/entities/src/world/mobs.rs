@@ -99,6 +99,7 @@ pub struct MobEntity {
     pub sniffer: super::sniffers::SnifferState,
     pub patrol: super::patrols::PatrolState,
     pub creaking: super::creakings::CreakingState,
+    pub wither: super::withers::WitherState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -318,6 +319,7 @@ impl MobEntity {
         if let Some(guarded) = self.creaking_guard() {
             return guarded;
         }
+        self.wither_hurt();
         if self.health > 0.0 && !self.damage.dead {
             self.no_action_time = 0;
         }
@@ -663,6 +665,7 @@ impl EntityWorld {
             silverfish: Default::default(),
             hoglin: Default::default(),
             creaking: Default::default(),
+            wither: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
@@ -708,6 +711,7 @@ impl EntityWorld {
     /// One generic mob's tick, as the spider's (`LivingEntity.tick`).
     pub(super) fn tick_mob(&mut self, id: u64, world: &mut impl World, players: &[PlayerCandidate], ticks: &dyn Fn(DVec3) -> bool) {
         let (game_time, difficulty, monsters_burn) = (self.game_time, self.difficulty, self.monsters_burn);
+        let mob_griefing = self.mob_griefing;
         let Some(kind) = self.mobs.iter().find(|e| e.id == id).map(|e| e.kind) else { return };
         let mobs = self.mob_candidates();
         let tempters = self.tempters(kind);
@@ -784,6 +788,7 @@ impl EntityWorld {
             e.sniffer_prepare(&*world, leashed);
             e.patrol_prepare(companions);
             e.creaking_prepare(&*world, players, &views, kept);
+            e.wither_motion();
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -946,6 +951,7 @@ impl EntityWorld {
                     e.breeze_settle();
                     e.sniffer_settle();
                     e.creaking_settle(facing);
+                    e.wither_settle(&*world, difficulty, mob_griefing);
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1071,6 +1077,9 @@ impl EntityWorld {
         }
         if kind == Kind::Creaking {
             self.creaking_step(id);
+        }
+        if kind == Kind::Wither {
+            self.wither_step(id, world);
         }
         if kind == Kind::Parrot {
             self.parrot_step(id);
@@ -1465,9 +1474,16 @@ impl EntityWorld {
                 sound = Some(("entity.ghast.shoot", 10.0));
             }
             AttackKind::WitherSkull => {
+                // `performRangedAttack(0, target)`: from the middle head, one
+                // in a thousand a dangerous (blue) skull, with level event
+                // 1024 for the sound.
                 let start = feet + DVec3::new(0.0, 3.0, 0.0);
-                self.launch_missile(MissileKind::WitherSkull, Some(id), start, aim - start, 0.1, None);
-                sound = Some(("entity.wither.shoot", 1.0));
+                let dangerous = self.mob_mut(id).is_some_and(|e| e.random.next_float() < 0.001);
+                let skull = self.launch_missile(MissileKind::WitherSkull, Some(id), start, aim - start, 0.1, None);
+                if let Some(m) = self.missiles.iter_mut().find(|m| m.id == skull) {
+                    m.dangerous = dangerous;
+                }
+                self.spawned.global_events.push((1024, (feet.x.floor() as i32, feet.y.floor() as i32, feet.z.floor() as i32), 0));
             }
             AttackKind::ShulkerBullet => {
                 let start = feet + DVec3::new(0.0, 0.5, 0.0);

@@ -67,6 +67,7 @@ mod sniffers;
 mod patrols;
 mod creakings;
 pub use patrols::{patrols, PatrolCtx, PatrolState};
+pub use withers::{wither_friend, WitherState};
 pub use creakings::{goals as creaking_goals, targets as creaking_targets, CreakingCtx, CreakingState};
 pub(crate) use patrols::PatrolGoal;
 pub use sniffers::{SnifferPhase, SnifferState};
@@ -3934,6 +3935,10 @@ impl EntityWorld {
                 -1 | -2 => animal(&mut death, &mut e.random),
                 xp if earns(&death, monster) => death.experience = if baby && monster { xp * 5 / 2 } else { xp },
                 _ => {}
+            }
+            // `WitherBoss.dropCustomDeathLoot`: its nether star.
+            if e.kind == crate::species::Kind::Wither {
+                death.equipment.push(ItemStack::new("minecraft:nether_star", 1));
             }
             deaths.push((order, death));
         }

@@ -248,7 +248,7 @@ fn approach_degrees(from: f32, to: f32, step: f32) -> f32 {
 }
 
 /// `Mth.wrapDegrees`.
-fn wrap_degrees(angle: f32) -> f32 {
+pub(super) fn wrap_degrees(angle: f32) -> f32 {
     let mut a = angle % 360.0;
     if a >= 180.0 {
         a -= 360.0;

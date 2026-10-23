@@ -569,6 +569,11 @@ impl EntityWorld {
             // A shut shulker's shell (`COVERED_ARMOR_MODIFIER`).
             let worn = s.armor + e.shulker_armor();
             let amount = if worn > 0.0 { armor(amount, worn, 0.0) } else { amount };
+            // `WitherBoss.hurtServer`: arrows and wind charges glance off a
+            // powered wither.
+            if e.wither_powered() && matches!(damage_type, "minecraft:arrow" | "minecraft:trident" | "minecraft:wind_charge") {
+                return Some(super::withers::UNHURT);
+            }
             e.creaking.blame = Some(true);
             let hit = e.hurt(amount);
             if hit.applied {
