@@ -17,6 +17,7 @@
 //! sends its input and the server moves the vehicle for it.
 use super::*;
 use crate::horse::HorseKind;
+use crate::species::Kind;
 
 /// What the riding player does this tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -32,6 +33,8 @@ pub struct RideInput {
     pub dismount: bool,
     /// A carrot on a stick used (`FoodOnAStickItem.use`).
     pub boost: bool,
+    /// The sprint key (a camel's quicker gait).
+    pub sprint: bool,
     pub yaw: f32,
     pub pitch: f32,
 }
@@ -59,6 +62,7 @@ impl EntityWorld {
         match self.player_vehicle? {
             EntityKey::Cow(id) => Some(MobHit::Cow(id)),
             EntityKey::Pig(id) => Some(MobHit::Pig(id)),
+            EntityKey::Mob(id) => Some(MobHit::Mob(id)),
             _ => None,
         }
     }
@@ -76,6 +80,12 @@ impl EntityWorld {
                 (e.cow.body.position, attach)
             }
             EntityKey::Pig(id) => (self.pigs.iter().find(|e| e.id == id)?.pig.body.position, 0.86875),
+            EntityKey::Mob(id) => {
+                let e = self.mobs.iter().find(|e| e.id == id)?;
+                let (up, ahead) = mounts::seat(e.kind)?;
+                let yaw = f64::from(e.yaw.to_radians());
+                (e.body.position + DVec3::new(-yaw.sin() * ahead, 0.0, yaw.cos() * ahead), up)
+            }
             _ => return None,
         };
         Some(position + DVec3::new(0.0, attach - PLAYER_VEHICLE_ATTACHMENT, 0.0))
@@ -86,6 +96,7 @@ impl EntityWorld {
     pub fn vehicle_jumps(&self) -> bool {
         match self.player_vehicle {
             Some(EntityKey::Cow(id)) => self.cows.iter().find(|e| e.id == id).and_then(|e| e.horse.as_ref()).is_some_and(|h| h.saddled),
+            Some(EntityKey::Mob(id)) => self.mob_steered(id) && self.mobs.iter().any(|e| e.id == id && e.kind != Kind::Strider),
             _ => false,
         }
     }
@@ -103,6 +114,7 @@ impl EntityWorld {
     pub fn vehicle_boostable(&self) -> bool {
         match self.player_vehicle {
             Some(EntityKey::Pig(id)) => self.pig_controlled(id) && self.pigs.iter().any(|e| e.id == id && !e.pig.boosting),
+            Some(EntityKey::Mob(id)) => self.mob_steered(id) && self.mobs.iter().any(|e| e.id == id && e.kind == Kind::Strider && !e.mount.boosting),
             _ => false,
         }
     }
@@ -112,6 +124,7 @@ impl EntityWorld {
         match self.player_vehicle? {
             EntityKey::Cow(id) => self.cows.iter().find(|e| e.id == id).map(|e| e.cow.yaw),
             EntityKey::Pig(id) => self.pigs.iter().find(|e| e.id == id).map(|e| e.pig.yaw),
+            EntityKey::Mob(id) => self.mobs.iter().find(|e| e.id == id).map(|e| e.yaw),
             _ => None,
         }
     }
@@ -122,6 +135,7 @@ impl EntityWorld {
         let key = match hit {
             MobHit::Cow(id) | MobHit::Mooshroom(id) => EntityKey::Cow(id),
             MobHit::Pig(id) => EntityKey::Pig(id),
+            MobHit::Mob(id) => EntityKey::Mob(id),
             _ => return,
         };
         if self.player_vehicle.is_some() {
@@ -148,6 +162,7 @@ impl EntityWorld {
         match key {
             EntityKey::Cow(id) => self.cows.iter().find(|e| e.id == id && e.cow.health > 0.0).map(|e| &e.cow.body),
             EntityKey::Pig(id) => self.pigs.iter().find(|e| e.id == id && e.pig.health > 0.0).map(|e| &e.pig.body),
+            EntityKey::Mob(id) => self.mobs.iter().find(|e| e.id == id && e.health > 0.0).map(|e| &e.body),
             _ => None,
         }
     }
@@ -186,6 +201,8 @@ impl EntityWorld {
         let Some(key) = self.player_vehicle else { return };
         if self.ride_input.dismount || self.vehicle_body(key).is_none() {
             self.eject_player(world);
+        } else if let EntityKey::Mob(id) = key {
+            self.buck_mob(id, world);
         }
     }
 

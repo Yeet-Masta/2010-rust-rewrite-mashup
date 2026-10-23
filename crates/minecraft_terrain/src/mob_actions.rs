@@ -10,7 +10,7 @@ use minecraftoss_entities::cow::{CowEvent, InteractionResult};
 use minecraftoss_entities::loot::{EntityLootBook, ShearingLootBook};
 use minecraftoss_entities::mooshroom::flower_effects;
 use minecraftoss_entities::sheep::ShearsResult;
-use minecraftoss_entities::world::{EntityWorld, MobHit, PlayerAttack};
+use minecraftoss_entities::world::{EntityWorld, MobHit, MountUse, PlayerAttack};
 use minecraftoss_player::inventory::{Inventory, ItemStack};
 
 /// A sound a mob action plays, with its sound category option.
@@ -451,10 +451,18 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
                 outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
                 return outcome;
             }
-            let Some((used, events)) = world.feed_mob(id, actor.inventory, selected, infinite) else { return outcome };
-            if !used {
+            let Some((true, events)) = world.feed_mob(id, actor.inventory, selected, infinite) else {
+                // Past feeding, a mount takes a saddle or its rider
+                // (`AbstractHorse`, `Camel`, `Strider.mobInteract`).
+                match world.mount_interact(id, held.as_deref(), sneaking) {
+                    MountUse::Pass => return outcome,
+                    MountUse::Saddled if !infinite => minecraftoss_entities::animal::consume_one(actor.inventory, selected),
+                    _ => {}
+                }
+                outcome.handled = true;
+                outcome.inventory_changed = true;
                 return outcome;
-            }
+            };
             outcome.inventory_changed = true;
             if events.contains(&AnimalEvent::Hearts) {
                 outcome.events.push((id, 18));

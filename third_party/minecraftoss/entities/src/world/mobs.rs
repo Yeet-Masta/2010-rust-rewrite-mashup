@@ -102,6 +102,7 @@ pub struct MobEntity {
     pub wither: super::withers::WitherState,
     pub allay: super::allays::AllayState,
     pub copper: super::copper_golems::CopperGolemState,
+    pub mount: super::mounts::MountState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -131,7 +132,7 @@ impl MobEntity {
     /// came from above (`LiquidBlock.STABLE_SHAPE` for `canStandOnFluid`),
     /// standing there it is on the ground, and deeper in it rises
     /// (`floatStrider`). Lava, at its feet or below them, keeps it warm.
-    fn float_strider(&mut self, world: &impl World) {
+    pub(super) fn float_strider(&mut self, world: &impl World) {
         let position = self.body.position;
         let cell = (position.x.floor() as i32, position.y.floor() as i32, position.z.floor() as i32);
         let lava = |pos| world.block(pos).is_some_and(|b| b.id == "minecraft:lava");
@@ -670,6 +671,7 @@ impl EntityWorld {
             wither: Default::default(),
             allay: Default::default(),
             copper: Default::default(),
+            mount: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
@@ -718,6 +720,8 @@ impl EntityWorld {
         let mob_griefing = self.mob_griefing;
         let Some(kind) = self.mobs.iter().find(|e| e.id == id).map(|e| e.kind) else { return };
         let mobs = self.mob_candidates();
+        // The player steering it, if it does (`getControllingPassenger`).
+        let steer = self.mob_steered(id).then_some(self.ride_input);
         let tempters = self.tempters(kind);
         let gilded = self.gilded_players.clone();
         let vitals = if kind == Kind::Dolphin { self.player_vitals.clone() } else { Vec::new() };
@@ -918,6 +922,11 @@ impl EntityWorld {
                     let still = e.axolotl_step_still();
                     let motion = if still || e.admire_ticks > 0 || e.spells.casting() || e.ravager.immobile() || e.armadillo_scared() || e.kind == Kind::Sniffer && e.sniffer.busy() { Motion::Stationary } else { s.motion };
                     match motion {
+                        _ if steer.is_some() => {
+                            if let Some(damage) = steer.and_then(|input| e.tick_ridden(&*world, input)) {
+                                e.hurt(damage);
+                            }
+                        }
                         _ if matches!(e.kind, Kind::Guardian | Kind::ElderGuardian) => {
                             if let Some(damage) = e.tick_guardian(&*world, players, &villagers, game_time, difficulty) {
                                 e.hurt(damage);

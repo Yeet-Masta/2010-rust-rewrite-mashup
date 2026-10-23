@@ -1109,6 +1109,8 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.owner = tag.get("Owner").and_then(Tag::as_ints).and_then(|ints| <[i32; 4]>::try_from(ints).ok()).map(minecraftoss_entities::gossip::uuid_from_ints);
             entity.ordered_to_sit = int(tag, "Sitting").unwrap_or(0) != 0;
             entity.trusting = int(tag, "Trusting").unwrap_or(0) != 0;
+            entity.mount.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
+            entity.mount.temper = int(tag, "Temper").unwrap_or(0);
             if let Some(health) = health {
                 entity.health = health;
             }
@@ -1450,6 +1452,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         }
         if let Some(stack) = e.copper.carried.as_ref().filter(|_| e.kind == minecraftoss_entities::species::Kind::CopperGolem) {
             equipment.insert("mainhand".to_owned(), stack_tag(stack));
+        }
+        if e.mount.saddled {
+            let saddle = [("id".to_owned(), text_tag("minecraft:saddle")), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+            equipment.insert("saddle".to_owned(), Tag::Compound(saddle));
+        }
+        if minecraftoss_entities::world::mount_seat(e.kind).is_some() {
+            fields.push(("Temper", Tag::Int(e.mount.temper)));
+            fields.push(("Tame", Tag::Byte(i8::from(e.owner.is_some()))));
         }
         if !equipment.is_empty() {
             fields.push(("equipment", Tag::Compound(equipment)));

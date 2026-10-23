@@ -1912,16 +1912,23 @@ impl Game {
         pressed: bool,
         sneaking: bool,
     ) {
-        // `FoodOnAStickItem.use`: the stick spurs on the pig its rider
-        // steers, worn by seven (left a fishing rod once it breaks).
-        if held.is_some_and(|s| s.id == "minecraft:carrot_on_a_stick")
+        // `FoodOnAStickItem.use`: the stick spurs on the pig or strider its
+        // rider steers, worn by seven or one (left a fishing rod once it
+        // breaks).
+        let stick = held.and_then(|s| match s.id.as_str() {
+            "minecraft:carrot_on_a_stick" => Some(7),
+            "minecraft:warped_fungus_on_a_stick" => Some(1),
+            _ => None,
+        });
+        if let Some(wear) = stick
             && !self.entities.ride_boost
             && self.entities.vehicle_boostable()
         {
             self.entities.ride_boost = true;
             let selected = self.entities.selected;
-            if !self.creative && self.entities.inventory.wear_tool(selected, 7) {
-                self.item_broke("minecraft:carrot_on_a_stick");
+            if !self.creative && self.entities.inventory.wear_tool(selected, wear) {
+                let id = held.map_or_else(String::new, |s| s.id.clone());
+                self.item_broke(&id);
                 self.entities.inventory.slots[selected] = Some(ItemStack::new("minecraft:fishing_rod", 1));
             }
             self.start_swing();
@@ -2822,6 +2829,7 @@ impl Game {
             forward: movement.forward as f32,
             strafe: movement.strafe as f32,
             dismount: movement.crouch,
+            sprint: movement.sprint,
             yaw: self.player.yaw as f32,
             pitch: self.player.pitch as f32,
             ..Default::default()
