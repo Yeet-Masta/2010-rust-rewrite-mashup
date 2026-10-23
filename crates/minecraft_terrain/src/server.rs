@@ -2231,6 +2231,50 @@ mod tests {
         assert_eq!(golem.crackiness(), minecraftoss_entities::iron_golem::Crackiness::Medium);
     }
 
+    /// Soul sand in a T with three wither skeleton skulls placed on top
+    /// makes a wither, and the shape's blocks go.
+    #[test]
+    fn wither_skulls_on_soul_sand_make_a_wither() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        if registries.entities.is_none() {
+            return;
+        }
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        server.load_chunk(&map.load_now(ChunkPos::new(20, 128)));
+        server.set_players(&[[328.5, 200.0, 2056.5]], 2);
+        let (x, y, z) = (325, 200, 2050);
+        let sand = Block::new("minecraft:soul_sand");
+        for pos in [(x + 1, y, z), (x, y + 1, z), (x + 1, y + 1, z), (x + 2, y + 1, z)] {
+            server.player_edit_block_by(pos, Some(&sand), PlayerEdit::Place, Some(&EditBy::Placing(minecraftoss_player::inventory::ItemStack::new("minecraft:soul_sand", 1))));
+        }
+        let skull = Block::new("minecraft:wither_skeleton_skull").with("rotation", "0").with("powered", "false");
+        for dx in 0..3 {
+            server.player_edit_block_by((x + dx, y + 2, z), Some(&skull), PlayerEdit::Place, Some(&EditBy::Placing(minecraftoss_player::inventory::ItemStack::new("minecraft:wither_skeleton_skull", 1))));
+        }
+        assert!(server.level.registries().blocks.is_air(server.level.block(minecraftoss_core::BlockPos::new(x + 1, y + 2, z))), "the skulls went");
+        server.tick();
+        server.take_spawned();
+        server.tick_mobs(&[], true);
+        assert!(server.mobs.mobs().iter().any(|e| e.kind == minecraftoss_entities::species::Kind::Wither), "a wither came");
+        // The same along Z, the middle skull last.
+        let (x, z) = (330, 2060);
+        for pos in [(x, y, z + 1), (x, y + 1, z), (x, y + 1, z + 1), (x, y + 1, z + 2)] {
+            server.player_edit_block_by(pos, Some(&sand), PlayerEdit::Place, Some(&EditBy::Placing(minecraftoss_player::inventory::ItemStack::new("minecraft:soul_sand", 1))));
+        }
+        for dz in [0, 2, 1] {
+            server.player_edit_block_by((x, y + 2, z + dz), Some(&skull), PlayerEdit::Place, Some(&EditBy::Placing(minecraftoss_player::inventory::ItemStack::new("minecraft:wither_skeleton_skull", 1))));
+        }
+        server.tick();
+        server.take_spawned();
+        let withers = server.mobs.mobs().iter().filter(|e| e.kind == minecraftoss_entities::species::Kind::Wither).count();
+        assert_eq!(withers, 2, "a second wither came");
+    }
+
     /// A summoned wolf wanders about, and comes back from its saved tag
     /// with its variant, voice, collar, owner and sitting order.
     #[test]

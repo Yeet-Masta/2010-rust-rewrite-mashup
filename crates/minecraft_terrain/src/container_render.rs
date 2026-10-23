@@ -264,7 +264,7 @@ impl ContainerLids {
                     lid.trigger(b);
                 }
             }
-            Some(Renderer::EnchantingTable) | None => {}
+            Some(Renderer::EnchantingTable | Renderer::Skull(..)) | None => {}
         }
     }
 
@@ -374,7 +374,22 @@ enum Renderer {
     ShulkerBox(Option<&'static str>),
     /// `EnchantTableRenderer`.
     EnchantingTable,
+    /// `SkullBlockRenderer`: the head's model and skin, and whether it
+    /// hangs on a wall.
+    Skull(&'static str, &'static str, bool),
 }
+
+/// `SkullBlockRenderer.SKIN_BY_TYPE` with each type's model: the floor
+/// block's path, its wall block's, the model and the skin.
+const SKULLS: [(&str, &str, &str, &str); 7] = [
+    ("skeleton_skull", "skeleton_wall_skull", "minecraft:skeleton_skull#main", "minecraft:entity/skeleton/skeleton"),
+    ("wither_skeleton_skull", "wither_skeleton_wall_skull", "minecraft:wither_skeleton_skull#main", "minecraft:entity/skeleton/wither_skeleton"),
+    ("zombie_head", "zombie_wall_head", "minecraft:zombie_head#main", "minecraft:entity/zombie/zombie"),
+    ("creeper_head", "creeper_wall_head", "minecraft:creeper_head#main", "minecraft:entity/creeper/creeper"),
+    ("dragon_head", "dragon_wall_head", "minecraft:dragon_skull#main", "minecraft:entity/enderdragon/dragon"),
+    ("piglin_head", "piglin_wall_head", "minecraft:piglin_head#main", "minecraft:entity/piglin/piglin"),
+    ("player_head", "player_wall_head", "minecraft:player_head#main", "minecraft:entity/player/wide/steve"),
+];
 
 /// `DyeColor`'s names, in order.
 const DYES: [&str; 16] = [
@@ -383,6 +398,9 @@ const DYES: [&str; 16] = [
 ];
 
 fn renderer_of(path: &str) -> Option<Renderer> {
+    if let Some(&(floor, _, model, skin)) = SKULLS.iter().find(|(floor, wall, _, _)| *floor == path || *wall == path) {
+        return Some(Renderer::Skull(model, skin, floor != path));
+    }
     Some(Renderer::Chest(match path {
         "chest" => ChestMaterial::Regular,
         "trapped_chest" => ChestMaterial::Trapped,
@@ -443,6 +461,7 @@ pub fn sheets() -> Vec<String> {
     sheets.extend(DYES.iter().map(|dye| format!("minecraft:entity/shulker/shulker_{dye}")));
     sheets.push(BOOK_SHEET.to_owned());
     sheets.push(BEAM_SHEET.to_owned());
+    sheets.extend(SKULLS.iter().map(|(_, _, _, skin)| (*skin).to_owned()));
     sheets
 }
 
@@ -621,6 +640,39 @@ pub fn append_container<S: Scene>(
                 * Mat4::from_rotation_z(80f32.to_radians());
             let state = book_state(time, flip, open);
             append_book(culled, pose, atlas.entity_region(&sheet), &entity_shade, light_at(light, pos), state);
+        }
+        Some(Renderer::Skull(model, skin, wall)) => {
+            let (Some(model), Ok(sheet)) = (crate::entity_model::model(model), ResourceId::parse(skin)) else {
+                return;
+            };
+            if !atlas.contains(&sheet) {
+                return;
+            }
+            // `createGroundTransformation` (the middle of the floor, turned
+            // to its sixteenth) and `createWallTransformation` (a quarter
+            // out from the wall, a quarter up, facing away from it), both
+            // in the model's flipped space.
+            let (at, degrees) = if wall {
+                let facing = property("facing").unwrap_or("north");
+                let (dx, _, dz) = step(facing);
+                (Vec3::new(0.5 - dx as f32 * 0.25, 0.25, 0.5 - dz as f32 * 0.25), y_rot(opposite(facing)))
+            } else {
+                let segment = property("rotation").and_then(|r| r.parse::<f32>().ok()).unwrap_or(0.0);
+                (Vec3::new(0.5, 0.0, 0.5), segment * 22.5)
+            };
+            let [sky, block_light] = light_at(light, pos);
+            let feet = (cell + at).as_dvec3() - DVec3::Y * 1.501;
+            let posed = crate::entity_model::Posed::new(model);
+            let placement = crate::entity_model::Placement {
+                feet,
+                rotation: Quat::from_rotation_y((-degrees).to_radians()),
+                scale: Vec3::ONE,
+                region: atlas.entity_region(&sheet),
+                sky,
+                block: block_light,
+                tint: [1.0; 4],
+            };
+            crate::entity_model::draw(cutout, &posed, &placement);
         }
         None => {}
     }

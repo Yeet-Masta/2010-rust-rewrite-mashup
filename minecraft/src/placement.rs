@@ -213,6 +213,26 @@ pub fn place(world: &mut World, player: &Player, item: &str, hit: &Hit) -> Optio
             opposite(look)
         };
         placed.push((pos, full(Block::new(&id).with("facing", facing))?));
+    } else if matches!(
+        path,
+        "skeleton_skull" | "wither_skeleton_skull" | "zombie_head" | "creeper_head" | "piglin_head" | "player_head" | "dragon_head"
+    ) {
+        // `StandingAndWallBlockItem`: on a block's side the wall skull,
+        // facing out; otherwise the floor skull turned to the sixteenth
+        // the player faces (`SkullBlock.getStateForPlacement`).
+        let block = match hit.face {
+            Face::Up | Face::Down => Block::new(&id).with(
+                "rotation",
+                &((player.yaw * 16.0 / 360.0 + 0.5).floor() as i32)
+                    .rem_euclid(16)
+                    .to_string(),
+            ),
+            face => {
+                let wall = id.replace("_skull", "_wall_skull").replace("_head", "_wall_head");
+                Block::new(&wall).with("facing", face_name(face))
+            }
+        };
+        placed.push((pos, full(block)?));
     } else if path.ends_with("_sign") && !path.contains("hanging") {
         let block = match hit.face {
             Face::Up => Block::new(&id).with(
