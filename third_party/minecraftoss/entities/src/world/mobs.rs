@@ -772,7 +772,9 @@ impl EntityWorld {
             e.ai.state.wolf.tame = e.owner.is_some();
             e.ai.state.wolf.owner = owner;
             e.ai.state.wolf.ordered_to_sit = e.ordered_to_sit;
-            e.ai.state.mobs = mobs;
+            // `TargetingConditions.test`: never itself (a wither its own
+            // skull caught would chase itself upward).
+            e.ai.state.mobs = mobs.into_iter().filter(|m| m.id != id).collect();
             e.ai.state.tempters = tempters;
             e.ai.state.gilded = gilded.clone();
             if kind == Kind::Dolphin {
