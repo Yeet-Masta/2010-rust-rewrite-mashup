@@ -551,6 +551,9 @@ impl ServerSim {
             let hearts = world.level.borrow().creaking_hearts();
             mobs.set_creaking_hearts(hearts.into_iter().map(|(c, u)| (c, minecraftoss_entities::gossip::uuid_from_ints(u))).collect());
         }
+        for c in std::mem::take(&mut world.level.borrow_mut().note_blocks_played) {
+            mobs.note_block_played((c.x, c.y, c.z));
+        }
         for removal in std::mem::take(&mut world.level.borrow_mut().creaking_removals) {
             mobs.remove_creaking(minecraftoss_entities::gossip::uuid_from_ints(removal.uuid), removal.killed, removal.player);
         }

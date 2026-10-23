@@ -158,6 +158,32 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         return outcome;
     }
+    // `Allay.mobInteract`: one of the held item given, or its item handed
+    // back to an empty hand.
+    if let MobHit::Mob(id) = hit {
+        use minecraftoss_entities::world::AllayUse;
+        match world.allay_interact(id, 0, held.as_deref()) {
+            Some(AllayUse::Given) => {
+                if !infinite {
+                    minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+                }
+                outcome.inventory_changed = true;
+                outcome.handled = true;
+                return outcome;
+            }
+            Some(AllayUse::Taken(item)) => {
+                if let Some(left) = actor.inventory.add_item(ItemStack::new(item, 1), selected) {
+                    if let Some(at) = world.mobs().iter().find(|e| e.id == id).map(|e| e.body.position) {
+                        outcome.drops.push((left, at));
+                    }
+                }
+                outcome.inventory_changed = true;
+                outcome.handled = true;
+                return outcome;
+            }
+            None => {}
+        }
+    }
     // `Panda.mobInteract`: up off its back, or sat down to eat the bamboo
     // it is given.
     if let MobHit::Mob(id) = hit {

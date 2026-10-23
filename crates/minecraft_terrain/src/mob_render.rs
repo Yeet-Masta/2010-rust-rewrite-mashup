@@ -1199,9 +1199,12 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             posed.with("left_wing", |p| p.rotation = Vec3::new(0.436_332_32 * (1.0 - flying), PI / 4.0 - flap, p.rotation.z));
             posed.with("body", |p| p.rotation.x = flying * PI / 4.0);
             posed.with("root", |p| p.offset.y += cos(idle) * 0.25 * (1.0 - flying));
-            let arm = 0.436_332_32 - cos(idle + PI * 1.5) * PI * 0.075 * (1.0 - flying);
-            posed.with("left_arm", |p| p.rotation.z = -arm);
-            posed.with("right_arm", |p| p.rotation.z = arm);
+            // Holding an item, both arms reach forward and in.
+            let holding = if e.hand.is_some() { 1.0 } else { 0.0 };
+            let arm_x = holding * (-PI / 3.0 + (-1.134_464 + PI / 3.0) * flying);
+            let arm = 0.436_332_32 - cos(idle + PI * 1.5) * PI * 0.075 * (1.0 - flying) * (1.0 - holding);
+            posed.with("left_arm", |p| p.rotation = Vec3::new(arm_x, -0.279_252_68 * holding, -arm));
+            posed.with("right_arm", |p| p.rotation = Vec3::new(arm_x, 0.279_252_68 * holding, arm));
         }
         Kind::Bee => {
             if !e.body.on_ground {

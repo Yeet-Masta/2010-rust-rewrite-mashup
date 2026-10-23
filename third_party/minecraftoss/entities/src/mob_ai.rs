@@ -254,12 +254,12 @@ pub(crate) fn random_open(world: &dyn World, ctx: &mut MonsterGoalContext, horiz
 /// `RandomFloatAroundGoal`: now and then, a random open spot to drift to.
 #[derive(Clone)]
 pub(crate) struct WanderGoal {
-    speed: f64,
+    pub(crate) speed: f64,
     /// One roll in this many (`interval`).
-    interval: u32,
-    horizontal: i32,
-    vertical: i32,
-    water: bool,
+    pub(crate) interval: u32,
+    pub(crate) horizontal: i32,
+    pub(crate) vertical: i32,
+    pub(crate) water: bool,
 }
 
 impl WanderGoal {
@@ -494,6 +494,9 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
     }
     if kind == Kind::Creaking {
         return crate::world::creaking_goals();
+    }
+    if kind == Kind::Allay {
+        return crate::world::allay_goals();
     }
     let s = kind.species();
     let mut selector = GoalSelector::default();

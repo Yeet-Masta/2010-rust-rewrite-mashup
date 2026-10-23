@@ -606,6 +606,8 @@ pub struct MonsterGoalContext {
     pub hoglin: crate::world::HoglinCtx,
     /// A creaking's freeze and strikes (`world/creakings`).
     pub creaking: crate::world::CreakingCtx,
+    /// An allay's deliveries (`world/allays`).
+    pub allay: crate::world::AllayCtx,
     /// A panda's nature and doings (`world/pandas`).
     pub panda: crate::world::PandaCtx,
     /// A breeze's pose (`world/breezes`).
@@ -1034,6 +1036,7 @@ impl MonsterAi {
                 silverfish: Default::default(),
                 hoglin: Default::default(),
                 creaking: Default::default(),
+                allay: Default::default(),
                 panda: Default::default(),
                 breeze: Default::default(),
                 patrol: Default::default(),

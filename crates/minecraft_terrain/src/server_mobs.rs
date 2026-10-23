@@ -980,6 +980,16 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.patrol.leader = int(tag, "PatrolLeader").unwrap_or(0) != 0;
                 entity.patrol.patrolling = int(tag, "Patrolling").unwrap_or(0) != 0;
             }
+            if kind == minecraftoss_entities::species::Kind::Allay {
+                // `InventoryCarrier.readInventoryFromTag` and the brain's
+                // `liked_player` and `liked_noteblock` memories.
+                let item = tag.get("Inventory").and_then(Tag::as_list).and_then(|l| l.first().cloned());
+                entity.allay.stored = item.and_then(|i| Some((i.get("id").and_then(Tag::as_str)?.to_owned(), int(&i, "count").unwrap_or(1))));
+                let memory = |name: &str| tag.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get(name)).and_then(|m| m.get("value")).cloned();
+                entity.allay.liked_player = memory("minecraft:liked_player").and_then(|v| v.as_ints().filter(|u| u.len() == 4).map(|u| minecraftoss_entities::gossip::uuid_from_ints([u[0], u[1], u[2], u[3]])));
+                entity.allay.liked_note_block = memory("minecraft:liked_noteblock").and_then(|v| v.get("pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2])));
+                entity.allay.note_block_cooldown = tag.get("Brain").and_then(|b| b.get("memories")).and_then(|m| m.get("minecraft:liked_noteblock_cooldown_ticks")).and_then(|m| m.get("value")).and_then(Tag::as_i64).unwrap_or(0) as i32;
+            }
             if kind == minecraftoss_entities::species::Kind::Creaking {
                 // `Creaking.readAdditionalSaveData`: `setTransient`.
                 entity.creaking.home = tag.get("home_pos").and_then(Tag::as_ints).filter(|p| p.len() == 3).map(|p| (p[0], p[1], p[2]));
@@ -1411,6 +1421,25 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
             }
             fields.push(("PatrolLeader", Tag::Byte(i8::from(e.patrol.leader))));
             fields.push(("Patrolling", Tag::Byte(i8::from(e.patrol.patrolling))));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::Allay {
+            if let Some((id, count)) = &e.allay.stored {
+                let item = [("id".to_owned(), text_tag(id)), ("count".to_owned(), Tag::Int(*count))].into_iter().collect();
+                fields.push(("Inventory", Tag::List(vec![Tag::Compound(item)])));
+            }
+            let mut memories = std::collections::BTreeMap::new();
+            let value = |v: Tag| Tag::Compound([("value".to_owned(), v)].into_iter().collect());
+            if let Some(uuid) = e.allay.liked_player {
+                memories.insert("minecraft:liked_player".to_owned(), value(Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(uuid).to_vec())));
+            }
+            if let Some((x, y, z)) = e.allay.liked_note_block {
+                let global = [("dimension".to_owned(), text_tag("minecraft:overworld")), ("pos".to_owned(), Tag::IntArray(vec![x, y, z]))].into_iter().collect();
+                memories.insert("minecraft:liked_noteblock".to_owned(), value(Tag::Compound(global)));
+                memories.insert("minecraft:liked_noteblock_cooldown_ticks".to_owned(), value(Tag::Int(e.allay.note_block_cooldown)));
+            }
+            if !memories.is_empty() {
+                fields.push(("Brain", Tag::Compound([("memories".to_owned(), Tag::Compound(memories))].into_iter().collect())));
+            }
         }
         if let Some((x, y, z)) = e.creaking.home {
             fields.push(("home_pos", Tag::IntArray(vec![x, y, z])));

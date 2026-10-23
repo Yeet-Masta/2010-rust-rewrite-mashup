@@ -1106,6 +1106,8 @@ impl Level<'_> {
         if head || self.registries().blocks.is_air(self.block(pos.above())) {
             let block = self.block_id(state);
             self.block_event(pos, block, 0, 0);
+            // `GameEvent.NOTE_BLOCK_PLAY`, for the allays that hear it.
+            self.note_blocks_played.push(pos);
         }
     }
 

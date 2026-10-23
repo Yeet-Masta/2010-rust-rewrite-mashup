@@ -100,6 +100,7 @@ pub struct MobEntity {
     pub patrol: super::patrols::PatrolState,
     pub creaking: super::creakings::CreakingState,
     pub wither: super::withers::WitherState,
+    pub allay: super::allays::AllayState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -666,6 +667,7 @@ impl EntityWorld {
             hoglin: Default::default(),
             creaking: Default::default(),
             wither: Default::default(),
+            allay: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
@@ -725,6 +727,14 @@ impl EntityWorld {
         let scary = (kind == Kind::Armadillo && game_time % 5 == 0).then(|| self.armadillo_scared_by(id));
         let leashed = self.leash_holder(id).is_some();
         let (kept, views) = if kind == Kind::Creaking { (self.creaking_kept(id), self.player_views.clone()) } else { (true, Vec::new()) };
+        // An allay's delivery and the items about it (`NearestItemSensor`).
+        let (allay_deposit, allay_items) = if kind == Kind::Allay {
+            let p = self.mobs.iter().find(|e| e.id == id).map_or(DVec3::ZERO, |e| e.body.position);
+            let items = world.items_in(p - DVec3::new(32.0, 16.0, 32.0), p + DVec3::new(32.0, 16.0, 32.0)).into_iter().filter(|i| i.pickup_delay <= 0 && i.count > 0).map(|i| (i.position, i.item)).collect();
+            (self.allay_deposit(id, &*world, players), items)
+        } else {
+            (None, Vec::new())
+        };
         let thundering = world.thundering();
         let panda_items = if kind == Kind::Panda { self.panda_items(id, &*world) } else { Vec::new() };
         let companions = if super::patrols::patrols(kind) && self.mobs.iter().any(|e| e.id == id && e.patrol.patrolling) { self.patrol_companions(id) } else { Vec::new() };
@@ -789,6 +799,7 @@ impl EntityWorld {
             e.patrol_prepare(companions);
             e.creaking_prepare(&*world, players, &views, kept);
             e.wither_motion();
+            e.allay_prepare(allay_deposit, &allay_items);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -952,6 +963,7 @@ impl EntityWorld {
                     e.sniffer_settle();
                     e.creaking_settle(facing);
                     e.wither_settle(&*world, difficulty, mob_griefing);
+                    e.allay_settle();
                     melee = e.ai.state.attack.take().map(|target| (target, position));
                     // A blaze's volley carries on a shot every six ticks.
                     if e.burst.0 > 0 {
@@ -1080,6 +1092,9 @@ impl EntityWorld {
         }
         if kind == Kind::Wither {
             self.wither_step(id, world);
+        }
+        if kind == Kind::Allay {
+            self.allay_step(id, world);
         }
         if kind == Kind::Parrot {
             self.parrot_step(id);

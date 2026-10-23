@@ -178,6 +178,8 @@ pub struct Level<'a> {
     hearts: HashMap<BlockPos, creaking_heart::HeartTicker>,
     pub creakings: HashMap<[i32; 4], creaking_heart::CreakingLink>,
     pub creaking_removals: Vec<creaking_heart::CreakingRemoval>,
+    /// The note blocks that played since the server last took them.
+    pub note_blocks_played: Vec<BlockPos>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -315,6 +317,7 @@ impl<'a> Level<'a> {
             hearts: HashMap::new(),
             creakings: HashMap::new(),
             creaking_removals: Vec::new(),
+            note_blocks_played: Vec::new(),
             unsupported: Vec::new(),
             pending_thunder: Vec::new(),
             lightning_hits: Vec::new(),
