@@ -290,6 +290,15 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         }
         MobHit::Pig(id) => {
             let Some(entity) = world.pig_mut(id) else { return outcome };
+            // `Pig.mobInteract`: a saddled pig takes on a player not
+            // feeding it nor sneaking.
+            let food = held.as_deref().is_some_and(|item| recipes.item_in_tag("minecraft:pig_food", item));
+            if entity.pig.saddled && !food && !sneaking {
+                world.mount_player(MobHit::Pig(id));
+                outcome.handled = true;
+                return outcome;
+            }
+            let Some(entity) = world.pig_mut(id) else { return outcome };
             let was_saddled = entity.pig.saddled;
             let (result, events) = if held.as_deref() == Some("minecraft:saddle") {
                 (entity.pig.interact_saddle(actor.inventory, selected, infinite), Vec::new())

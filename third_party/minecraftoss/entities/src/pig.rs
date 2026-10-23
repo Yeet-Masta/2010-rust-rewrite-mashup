@@ -46,6 +46,11 @@ pub struct Pig {
     pub variant: PigVariant,
     pub sound_variant: PigSoundVariant,
     pub saddled: bool,
+    /// `ItemBasedSteering`: a carrot on a stick's spurt, how far through
+    /// it and how long it lasts.
+    pub boosting: bool,
+    pub boost_time: i32,
+    pub boost_total: i32,
 }
 
 impl Pig {
@@ -86,6 +91,9 @@ impl Pig {
             variant: PigVariant::Temperate,
             sound_variant: PigSoundVariant::Classic,
             saddled: false,
+            boosting: false,
+            boost_time: 0,
+            boost_total: 0,
         }
     }
 

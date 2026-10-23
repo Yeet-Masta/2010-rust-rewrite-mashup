@@ -127,6 +127,8 @@ pub struct Entities {
     /// What the riding player does with its mount, for the next tick, and
     /// where the server last set it down off one.
     pub ride: minecraftoss_entities::world::RideInput,
+    /// A carrot on a stick used, for the next riding input.
+    pub ride_boost: bool,
     pub dismounted: Option<DVec3>,
     poof: PoofParticles,
     portal: PortalParticles,
@@ -218,6 +220,7 @@ impl Entities {
             server,
             world: EntityWorld::default(),
             ride: Default::default(),
+            ride_boost: false,
             dismounted: None,
             client: ClientMobs::default(),
             player_rope: None,
@@ -927,6 +930,10 @@ impl Entities {
     /// Whether the mount leaps with a charged jump.
     pub fn vehicle_jumps(&self) -> bool {
         self.world.vehicle_jumps()
+    }
+
+    pub fn vehicle_boostable(&self) -> bool {
+        self.world.vehicle_boostable()
     }
 
     /// Where the riding player sits on its mount, as of the last server

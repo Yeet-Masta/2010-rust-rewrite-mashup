@@ -8,6 +8,9 @@
 //!   steered by the rider: forward and to the sides (backward at a quarter),
 //!   turned to the rider's facing, and it leaps with the jump the rider
 //!   charged.
+//! - A saddled pig takes the player on too, and goes where its rider
+//!   looks while the rider holds a carrot on a stick; using the stick
+//!   spurs it on for a while.
 //! - Sneaking gets the rider off beside the mount, where there is room.
 //!
 //! The rider's own client moves the vehicle in vanilla; here the client
@@ -27,6 +30,8 @@ pub struct RideInput {
     pub jump_started: bool,
     /// The sneak key: get off.
     pub dismount: bool,
+    /// A carrot on a stick used (`FoodOnAStickItem.use`).
+    pub boost: bool,
     pub yaw: f32,
     pub pitch: f32,
 }
@@ -81,6 +86,23 @@ impl EntityWorld {
     pub fn vehicle_jumps(&self) -> bool {
         match self.player_vehicle {
             Some(EntityKey::Cow(id)) => self.cows.iter().find(|e| e.id == id).and_then(|e| e.horse.as_ref()).is_some_and(|h| h.saddled),
+            _ => false,
+        }
+    }
+
+    /// `Pig.getControllingPassenger`: a saddled pig's rider steers it with
+    /// a carrot on a stick in hand.
+    pub(super) fn pig_controlled(&self, id: u64) -> bool {
+        self.player_vehicle == Some(EntityKey::Pig(id))
+            && self.pigs.iter().any(|e| e.id == id && e.pig.saddled)
+            && self.player_main_hands.get(&0).is_some_and(|i| i == "minecraft:carrot_on_a_stick")
+    }
+
+    /// Whether using a carrot on a stick now spurs the rider's pig on
+    /// (`ItemSteerable.boost`): one it steers, not spurred already.
+    pub fn vehicle_boostable(&self) -> bool {
+        match self.player_vehicle {
+            Some(EntityKey::Pig(id)) => self.pig_controlled(id) && self.pigs.iter().any(|e| e.id == id && !e.pig.boosting),
             _ => false,
         }
     }
@@ -235,6 +257,52 @@ impl EntityWorld {
         if !was_water {
             entity.fluid = FluidFrame::sample(world, cow.body.position, cow.body.width, cow.body.height);
             entity.was_touching_water = cow.body.touching_water;
+        }
+        fall
+    }
+
+    /// `Pig.tickRidden` and its ridden travel: turned to the rider, always
+    /// walking ahead at its speed times 0.225, faster through a spurt
+    /// (`ItemBasedSteering`).
+    pub(super) fn ride_pig(&mut self, index: usize, world: &impl World) -> Option<f32> {
+        let input = self.ride_input;
+        let entity = &mut self.pigs[index];
+        let pig = &mut entity.pig;
+        // `boost`.
+        if input.boost && !pig.boosting {
+            pig.boosting = true;
+            pig.boost_time = 0;
+            pig.boost_total = entity.random.next_int(841) as i32 + 140;
+        }
+        pig.yaw = input.yaw;
+        entity.body_rotation.body_yaw = input.yaw;
+        entity.look_control.head_yaw = input.yaw;
+        entity.look_control.pitch = input.pitch * 0.5;
+        // `tickBoost`.
+        if pig.boosting {
+            let past = pig.boost_time > pig.boost_total;
+            pig.boost_time += 1;
+            if past {
+                pig.boosting = false;
+            }
+        }
+        let factor = if pig.boosting { 1.0 + 1.15 * (pig.boost_time as f32 / pig.boost_total as f32 * std::f32::consts::PI).sin() } else { 1.0 };
+        let speed = (entity.effects.movement_speed(0.25) * 0.225) as f32 * factor;
+        let travel = DVec3::new(0.0, 0.0, 1.0);
+        let was_water = entity.fluid.in_water();
+        let mut fall = None;
+        if was_water {
+            pig.body.travel_water(world, travel, pig.yaw);
+        } else if entity.fluid.in_lava() {
+            pig.body.travel_lava(world, travel, pig.yaw, entity.fluid.lava_height);
+        } else if let Some(fallen) = pig.body.travel_air(world, travel, speed, pig.yaw) {
+            fall = fall_damage(&pig.body, &*world, fallen, false, &mut entity.voices);
+        }
+        pig.forward = 1.0;
+        pig.sideways = 0.0;
+        if !was_water {
+            entity.fluid = FluidFrame::sample(world, pig.body.position, pig.body.width, pig.body.height);
+            entity.was_touching_water = pig.body.touching_water;
         }
         fall
     }

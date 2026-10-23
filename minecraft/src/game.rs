@@ -1912,6 +1912,21 @@ impl Game {
         pressed: bool,
         sneaking: bool,
     ) {
+        // `FoodOnAStickItem.use`: the stick spurs on the pig its rider
+        // steers, worn by seven (left a fishing rod once it breaks).
+        if held.is_some_and(|s| s.id == "minecraft:carrot_on_a_stick")
+            && !self.entities.ride_boost
+            && self.entities.vehicle_boostable()
+        {
+            self.entities.ride_boost = true;
+            let selected = self.entities.selected;
+            if !self.creative && self.entities.inventory.wear_tool(selected, 7) {
+                self.item_broke("minecraft:carrot_on_a_stick");
+                self.entities.inventory.slots[selected] = Some(ItemStack::new("minecraft:fishing_rod", 1));
+            }
+            self.start_swing();
+            return;
+        }
         let eye = self.player.eye();
         let look = self.player.look();
         if at_mob {
@@ -2839,6 +2854,7 @@ impl Game {
             self.jump_riding_scale = 0.0;
         }
         self.was_ride_jumping = jump_key;
+        ride.boost = std::mem::take(&mut self.entities.ride_boost);
         self.entities.ride = ride;
         *movement = minecraftoss_player::Input::default();
     }

@@ -5730,6 +5730,7 @@ impl EntityWorld {
                         })
                         .collect();
                     let mut breeding_partner = None;
+                    let controlled = self.pig_controlled(id);
                     let entity = &mut self.pigs[index];
                     entity.tick_count += 1;
                     entity.update_fluid(world);
@@ -5777,7 +5778,21 @@ impl EntityWorld {
                         // `LivingEntity.aiStep` still settles small motion.
                         entity.pig.body.trim_small_velocity();
                     }
-                    if !entity.no_ai {
+                    if !entity.no_ai && controlled {
+                        entity.previous_position = entity.pig.body.position;
+                        entity.previous_yaw = entity.pig.yaw;
+                        entity.pig.body.trim_small_velocity();
+                        entity.no_action_time = 0;
+                        if let Some(damage) = self.ride_pig(index, world) {
+                            self.pigs[index].hurt(damage, DamageSourceKind::Generic);
+                        }
+                        let entity = &mut self.pigs[index];
+                        let pig = &mut entity.pig;
+                        play_movement(&mut pig.body, entity.tick_count, &mut entity.random, &mut entity.voices, pig_sounds(pig.age.baby()));
+                        entity.body_rotation.tick(pig.yaw, &mut entity.look_control, entity.previous_position, pig.body.position);
+                    }
+                    let entity = &mut self.pigs[index];
+                    if !entity.no_ai && !controlled {
                         entity.previous_position = entity.pig.body.position;
                         entity.previous_yaw = entity.pig.yaw;
                         entity.pig.body.trim_small_velocity();
