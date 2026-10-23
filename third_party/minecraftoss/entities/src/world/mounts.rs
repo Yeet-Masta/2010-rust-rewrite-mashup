@@ -5,6 +5,8 @@
 //!   horse only once tame, a sneaking player never). One tamed by riding
 //!   (a mule, a zombie horse, a llama) bucks the rider off now and then
 //!   until it takes to it.
+//! - A harness goes on a grown happy ghast, which then takes its rider
+//!   where it looks, up with the jump key, turning slowly after it.
 //! - A saddle goes on a tame horse, any grown camel or strider. A saddled
 //!   one is steered: a horse or camel by the rider's keys, with the
 //!   charged jump (a camel's is a dash, then a rest); a strider walks
@@ -32,6 +34,8 @@ pub struct MountState {
     /// `Camel.dashCooldown` and `DASH`.
     pub dash_cooldown: i32,
     pub dashing: bool,
+    /// A happy ghast's harness (its body slot), the item.
+    pub harness: Option<String>,
 }
 
 /// What using a mount did.
@@ -63,6 +67,7 @@ pub fn seat(kind: Kind) -> Option<(f64, f64)> {
         // `getBodyAnchorAnimationYOffset` standing: its height less 0.375.
         Kind::Camel | Kind::CamelHusk => (2.0, 0.5),
         Kind::Strider => (1.7, 0.0),
+        Kind::HappyGhast => (4.0, 1.7),
         _ => return None,
     })
 }
@@ -78,6 +83,7 @@ impl MobEntity {
             Kind::Mule | Kind::SkeletonHorse | Kind::ZombieHorse => self.tame() && self.mount.saddled,
             Kind::Camel | Kind::CamelHusk => self.mount.saddled,
             Kind::Strider => self.mount.saddled && main_hand == Some("minecraft:warped_fungus_on_a_stick"),
+            Kind::HappyGhast => self.mount.harness.is_some(),
             _ => false,
         }
     }
@@ -99,6 +105,10 @@ impl MobEntity {
     /// turned to the rider, then moved by its input at its speed. The fall
     /// damage a landing deals.
     pub(super) fn tick_ridden(&mut self, world: &impl World, input: RideInput) -> Option<f32> {
+        if self.kind == Kind::HappyGhast {
+            self.fly_ridden(world, input);
+            return None;
+        }
         let s = self.species();
         let kind = self.kind;
         let position = self.body.position;
@@ -202,6 +212,49 @@ impl MobEntity {
     }
 }
 
+impl MobEntity {
+    /// `HappyGhast.tickRidden` and `travel`: it turns slowly after its
+    /// rider and flies along the rider's look (back at half), rising with
+    /// the jump key, then drifts on through the air's drag.
+    fn fly_ridden(&mut self, world: &impl World, input: RideInput) {
+        let pitch = input.pitch.to_radians();
+        let (mut forward, mut up) = (0.0_f32, 0.0_f32);
+        if input.forward != 0.0 {
+            let (mut f, mut u) = (pitch.cos(), -pitch.sin());
+            if input.forward < 0.0 {
+                f *= -0.5;
+                u *= -0.5;
+            }
+            forward = f;
+            up = u;
+        }
+        if input.jumping {
+            up += 0.5;
+        }
+        // `FLYING_SPEED` 0.05.
+        let wanted = DVec3::new(f64::from(input.strafe), f64::from(up), f64::from(forward)) * (3.9 * 0.05);
+        let yaw = self.yaw + super::phantoms::wrap_degrees(input.yaw - self.yaw) * 0.08;
+        self.yaw = yaw;
+        self.ai.yaw = yaw;
+        self.ai.body_rotation.body_yaw = yaw;
+        self.ai.state.look_control.head_yaw = yaw;
+        self.pitch = input.pitch * 0.5;
+        // `moveRelative` at `travelFlying`'s speed.
+        let length = wanted.length_squared();
+        if length > 1.0e-7 {
+            let along = if length > 1.0 { wanted.normalize() } else { wanted } * f64::from(0.05_f32 * 5.0 / 3.0);
+            let (sin, cos) = (f64::from(yaw.to_radians().sin()), f64::from(yaw.to_radians().cos()));
+            self.body.velocity += DVec3::new(along.x * cos - along.z * sin, along.y, along.z * cos + along.x * sin);
+        }
+        let gravity = self.body.gravity;
+        self.body.gravity = 0.0;
+        let _ = self.body.travel_air_jumping(world, DVec3::ZERO, 0.0, yaw, false);
+        self.body.gravity = gravity;
+        self.body.velocity.y *= 0.91 / 0.98;
+        self.body.fall_distance = 0.0;
+    }
+}
+
 impl EntityWorld {
     /// Whether the player steers the mob it rides.
     pub(super) fn mob_steered(&self, id: u64) -> bool {
@@ -219,6 +272,22 @@ impl EntityWorld {
         let kind = e.kind;
         if seat(kind).is_none() || e.baby() || kind == Kind::SkeletonHorse && !e.tame() {
             return MountUse::Pass;
+        }
+        // `HappyGhast.mobInteract`: a harness goes on, then it is ridden.
+        if kind == Kind::HappyGhast {
+            let position = e.body.position;
+            if let Some(harness) = held.filter(|h| h.ends_with("_harness") && e.mount.harness.is_none()) {
+                e.mount.harness = Some(harness.to_owned());
+                e.voices.push((Voice::Event("entity.happy_ghast.equip", 1.0, 1.0), position));
+                return MountUse::Saddled;
+            }
+            if e.mount.harness.is_none() || sneaking {
+                return MountUse::Pass;
+            }
+            e.voices.push((Voice::Event("entity.happy_ghast.harness_goggles_down", 1.0, 1.0), position));
+            self.player_vehicle = Some(EntityKey::Mob(id));
+            self.dismounted = None;
+            return MountUse::Rode;
         }
         // A tame horse or a camel opens its inventory to a sneaking
         // player (not simulated); a strider is not got on sneaking.

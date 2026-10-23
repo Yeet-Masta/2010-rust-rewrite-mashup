@@ -46,6 +46,9 @@ pub fn all_textures() -> Vec<ResourceId> {
             out.push(ResourceId::parse(&format!("minecraft:entity/horse/{name}{suffix}")).unwrap());
         }
     }
+    for kind in ["horse", "donkey"] {
+        out.push(ResourceId::parse(&format!("minecraft:entity/equipment/{kind}_saddle/saddle")).unwrap());
+    }
     out
 }
 
@@ -179,7 +182,25 @@ fn setup(anim: &Anim, tuning: Tuning, front: [f32; 2]) -> Posed {
 }
 
 /// The posed model's cuboids, each with its part.
-fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cube)> {
+/// `EquineSaddleModel.createSaddleLayer`'s own cubes, on the parts they
+/// hang from; the reins only while it is ridden.
+fn saddle(body: Part, head_parts: Part, ridden: bool) -> Vec<(Part, Cube)> {
+    let mut out = vec![
+        (body, Cube { grow: 0.5, ..cube([-5.0, -8.0, -9.0], [10.0, 9.0, 9.0], [26.0, 0.0]) }),
+        (head_parts, cube([2.0, -9.0, -6.0], [1.0, 2.0, 2.0], [29.0, 5.0])),
+        (head_parts, cube([-3.0, -9.0, -6.0], [1.0, 2.0, 2.0], [29.0, 5.0])),
+        (head_parts, Cube { grow: 0.22, ..cube([-3.0, -11.0, -1.9], [6.0, 5.0, 6.0], [1.0, 1.0]) }),
+        (head_parts, Cube { grow: 0.2, ..cube([-2.0, -11.0, -4.0], [4.0, 5.0, 2.0], [19.0, 0.0]) }),
+    ];
+    if ridden {
+        let line = head_parts.child([0.0; 3], [-PI / 6.0, 0.0, 0.0]);
+        out.push((line, cube([3.1, -6.0, -8.0], [0.0, 3.0, 16.0], [32.0, 2.0])));
+        out.push((line, cube([-3.1, -6.0, -8.0], [0.0, 3.0, 16.0], [32.0, 2.0])));
+    }
+    out
+}
+
+fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim, saddled: Option<bool>, saddle_out: &mut Vec<(Part, Cube)>) -> Vec<(Part, Cube)> {
     let mut out = Vec::new();
     let root = Part::ROOT;
     match (kind, baby) {
@@ -199,6 +220,9 @@ fn model(kind: HorseKind, baby: bool, chest: bool, anim: &Anim) -> Vec<(Part, Cu
             let head_parts_y = 4.0 + lerp(anim.eat, lerp(anim.stand, 0.0, -8.0), 7.0);
             let head_parts_z = lerp(anim.stand, -12.0, -4.0);
             let head_parts = root.child([0.0, head_parts_y, head_parts_z], [p.head_x, p.head_y, 0.0]);
+            if let Some(ridden) = saddled {
+                *saddle_out = saddle(body, head_parts, ridden);
+            }
             out.push((head_parts, cube([-2.05, -6.0, -2.0], [4.0, 12.0, 7.0], [0.0, 35.0])));
             let head = head_parts.child([0.0; 3], [0.0; 3]);
             out.push((head, cube([-3.0, -11.0, -2.0], [6.0, 5.0, 7.0], [0.0, 13.0])));
@@ -287,6 +311,7 @@ pub fn append_horses<'a>(
     atlas: &Atlas,
     light: &SkyLight,
     partial: f32,
+    ridden: Option<u64>,
 ) {
     let mut marks = Vec::new();
     for entity in horses {
@@ -314,18 +339,25 @@ pub fn append_horses<'a>(
         let sky = light.get(pos) as f32;
         let block = light.get_block(pos) as f32;
         let (texture, markings) = texture_ids(horse, baby);
-        let cubes = model(horse.kind, baby, horse.chest, &anim);
-        let emit = |target: &mut ChunkMesh, texture: &ResourceId| {
+        let mut saddle_cubes = Vec::new();
+        let saddled = horse.saddled.then_some(ridden == Some(entity.id));
+        let cubes = model(horse.kind, baby, horse.chest, &anim, saddled, &mut saddle_cubes);
+        let emit = |target: &mut ChunkMesh, texture: &ResourceId, cubes: &[(Part, Cube)]| {
             let region = atlas.entity_region(texture);
-            for (part, c) in &cubes {
+            for (part, c) in cubes {
                 let from = c.from.map(|v| v - c.grow);
                 let to = [c.from[0] + c.size[0] + c.grow, c.from[1] + c.size[1] + c.grow, c.from[2] + c.size[2] + c.grow];
                 cube_scaled(target, mob.feet, rotation, scale, region, sky, block, from, to, c.uv, part.pivot.to_array(), part.rotation, [1.0; 3], [64.0; 2], Some(c.size), c.mirror);
             }
         };
-        emit(mesh, &texture);
+        emit(mesh, &texture, &cubes);
         if let Some(markings) = markings {
-            emit(translucent, &markings);
+            emit(translucent, &markings, &cubes);
+        }
+        if !saddle_cubes.is_empty() {
+            let kind = if horse.kind == HorseKind::Donkey { "donkey" } else { "horse" };
+            let saddle = ResourceId::parse(&format!("minecraft:entity/equipment/{kind}_saddle/saddle")).unwrap();
+            emit(mesh, &saddle, &saddle_cubes);
         }
     }
     crate::cow_render::apply_overlays(mesh, &marks);
@@ -343,7 +375,7 @@ mod tests {
     fn a_horse_stands_on_its_hooves() {
         // A leg's foot at its pivot plus the cube's bottom (Y 14 - 1.01 +
         // 11), scaled about the model's feet (24.016), meets the ground.
-        let cubes = model(HorseKind::Horse, false, false, &still());
+        let cubes = model(HorseKind::Horse, false, false, &still(), None, &mut Vec::new());
         let (leg, cube) = cubes.last().unwrap();
         let foot = leg.pivot.y + cube.from[1] + cube.size[1];
         assert!((foot - 23.99).abs() < 1e-4);
@@ -354,12 +386,12 @@ mod tests {
     fn grazing_lowers_the_head_and_rearing_lifts_the_body() {
         let mut anim = still();
         anim.eat = 1.0;
-        let grazing = model(HorseKind::Horse, false, false, &anim);
+        let grazing = model(HorseKind::Horse, false, false, &anim, None, &mut Vec::new());
         let (head_parts, _) = &grazing[2];
         assert_eq!(head_parts.pivot.y, 11.0, "the neck drops seven pixels");
         anim.eat = 0.0;
         anim.stand = 1.0;
-        let rearing = model(HorseKind::Horse, false, false, &anim);
+        let rearing = model(HorseKind::Horse, false, false, &anim, None, &mut Vec::new());
         let (body, _) = &rearing[0];
         assert!((body.rotation.to_euler(EulerRot::XYZ).0 + PI / 4.0).abs() < 1e-6);
     }

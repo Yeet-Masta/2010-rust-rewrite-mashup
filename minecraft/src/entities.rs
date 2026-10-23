@@ -1321,7 +1321,11 @@ impl Entities {
             light,
             partial,
         );
-        let mob_items = mob_render::append_mobs(&mut out.models, w.mobs().iter(), poses, atlas, light, partial);
+        let ridden_mob = match w.player_vehicle() {
+            Some(minecraftoss_entities::world::MobHit::Mob(id)) => Some(id),
+            _ => None,
+        };
+        let mob_items = mob_render::append_mobs(&mut out.models, w.mobs().iter(), poses, atlas, light, partial, ridden_mob);
         let skeleton_items = skeleton_render::append_skeletons(
             &mut out.models,
             w.skeletons().iter(),
@@ -1339,6 +1343,10 @@ impl Entities {
             light,
             partial,
         );
+        let ridden = match w.player_vehicle() {
+            Some(minecraftoss_entities::world::MobHit::Cow(id)) => Some(id),
+            _ => None,
+        };
         horse_render::append_horses(
             &mut out.models,
             &mut out.translucent,
@@ -1347,6 +1355,7 @@ impl Entities {
             atlas,
             light,
             partial,
+            ridden,
         );
         slime_render::append_slimes(
             &mut out.models,

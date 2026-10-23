@@ -2830,6 +2830,7 @@ impl Game {
             strafe: movement.strafe as f32,
             dismount: movement.crouch,
             sprint: movement.sprint,
+            jumping: jump_key,
             yaw: self.player.yaw as f32,
             pitch: self.player.pitch as f32,
             ..Default::default()

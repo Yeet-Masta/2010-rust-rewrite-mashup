@@ -1111,6 +1111,7 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
             entity.trusting = int(tag, "Trusting").unwrap_or(0) != 0;
             entity.mount.saddled = tag.get("equipment").and_then(|e| e.get("saddle")).and_then(|s| s.get("id")).and_then(Tag::as_str) == Some("minecraft:saddle");
             entity.mount.temper = int(tag, "Temper").unwrap_or(0);
+            entity.mount.harness = tag.get("equipment").and_then(|e| e.get("body")).and_then(|s| s.get("id")).and_then(Tag::as_str).filter(|id| id.ends_with("_harness")).map(str::to_owned);
             if let Some(health) = health {
                 entity.health = health;
             }
@@ -1456,6 +1457,10 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         if e.mount.saddled {
             let saddle = [("id".to_owned(), text_tag("minecraft:saddle")), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
             equipment.insert("saddle".to_owned(), Tag::Compound(saddle));
+        }
+        if let Some(harness) = &e.mount.harness {
+            let body = [("id".to_owned(), text_tag(harness)), ("count".to_owned(), Tag::Int(1))].into_iter().collect();
+            equipment.insert("body".to_owned(), Tag::Compound(body));
         }
         if minecraftoss_entities::world::mount_seat(e.kind).is_some() {
             fields.push(("Temper", Tag::Int(e.mount.temper)));

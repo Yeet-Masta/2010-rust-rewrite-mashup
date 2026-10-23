@@ -31,6 +31,8 @@ pub struct RideInput {
     pub jump_started: bool,
     /// The sneak key: get off.
     pub dismount: bool,
+    /// The jump key held (a happy ghast rises with it).
+    pub jumping: bool,
     /// A carrot on a stick used (`FoodOnAStickItem.use`).
     pub boost: bool,
     /// The sprint key (a camel's quicker gait).
@@ -96,7 +98,7 @@ impl EntityWorld {
     pub fn vehicle_jumps(&self) -> bool {
         match self.player_vehicle {
             Some(EntityKey::Cow(id)) => self.cows.iter().find(|e| e.id == id).and_then(|e| e.horse.as_ref()).is_some_and(|h| h.saddled),
-            Some(EntityKey::Mob(id)) => self.mob_steered(id) && self.mobs.iter().any(|e| e.id == id && e.kind != Kind::Strider),
+            Some(EntityKey::Mob(id)) => self.mob_steered(id) && self.mobs.iter().any(|e| e.id == id && !matches!(e.kind, Kind::Strider | Kind::HappyGhast)),
             _ => false,
         }
     }
@@ -173,6 +175,13 @@ impl EntityWorld {
     /// on; else on top of it.
     pub(super) fn eject_player(&mut self, world: &dyn World) {
         let Some(key) = self.player_vehicle.take() else { return };
+        // `HappyGhast.removePassenger`: up go its goggles.
+        if let EntityKey::Mob(id) = key {
+            if let Some(e) = self.mobs.iter_mut().find(|e| e.id == id && e.kind == Kind::HappyGhast) {
+                let position = e.body.position;
+                e.voices.push((Voice::Event("entity.happy_ghast.harness_goggles_up", 1.0, 1.0), position));
+            }
+        }
         let Some(body) = self.vehicle_body(key) else {
             self.dismounted = Some(self.player_seat_fallback());
             return;

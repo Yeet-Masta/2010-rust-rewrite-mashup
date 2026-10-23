@@ -323,6 +323,27 @@ fn layers(e: &MobEntity) -> (Vec<Layer>, bool) {
             add("zoglin", format!("hoglin/zoglin{b}"), &mut out);
         }
     }
+    // `SimpleEquipmentLayer`: the saddle, or a happy ghast's harness.
+    if !baby {
+        let saddle = match e.kind {
+            Kind::Mule => Some("mule"),
+            Kind::SkeletonHorse => Some("skeleton_horse"),
+            Kind::ZombieHorse => Some("zombie_horse"),
+            Kind::Camel => Some("camel"),
+            Kind::CamelHusk => Some("camel_husk"),
+            Kind::Strider => Some("strider"),
+            Kind::Nautilus | Kind::ZombieNautilus => Some("nautilus"),
+            _ => None,
+        };
+        if let Some(name) = saddle.filter(|_| e.mount.saddled) {
+            let model = if e.kind == Kind::ZombieNautilus { "nautilus" } else { name };
+            out.push(Layer { model: format!("minecraft:{model}#saddle"), texture: format!("minecraft:entity/equipment/{name}_saddle/saddle"), tint: [1.0; 4], glow: false });
+        }
+        if let Some(harness) = e.mount.harness.as_deref().filter(|_| e.kind == Kind::HappyGhast) {
+            let color = harness.trim_start_matches("minecraft:");
+            out.push(Layer { model: "minecraft:happy_ghast_harness#main".into(), texture: format!("minecraft:entity/equipment/happy_ghast_body/{color}"), tint: [1.0; 4], glow: false });
+        }
+    }
     (out, baby_model)
 }
 
@@ -343,6 +364,12 @@ pub fn textures() -> Vec<String> {
         "skeleton/wither_skeleton", "shulker/shulker",
     ] {
         add(t);
+    }
+    for t in ["mule", "skeleton_horse", "zombie_horse", "camel", "camel_husk", "strider", "nautilus"] {
+        add(&format!("equipment/{t}_saddle/saddle"));
+    }
+    for color in ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"] {
+        add(&format!("equipment/happy_ghast_body/{color}_harness"));
     }
     for c in ["lucy", "wild", "gold", "cyan", "blue"] {
         add(&format!("axolotl/axolotl_{c}"));
@@ -1572,7 +1599,7 @@ fn held_in_hands(e: &MobEntity, posed: &Posed, m: &MobPose, rotation: Quat, scal
 }
 
 /// Draws the generic mobs into the model mesh; returns what they hold.
-pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a MobEntity>, poses: &ClientMobs, atlas: &Atlas, light: &SkyLight, partial: f32) -> Vec<crate::mesh::HeldItem> {
+pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a MobEntity>, poses: &ClientMobs, atlas: &Atlas, light: &SkyLight, partial: f32, ridden: Option<u64>) -> Vec<crate::mesh::HeldItem> {
     let partial = partial.clamp(0.0, 1.0);
     let mut marks = Vec::new();
     let mut held = Vec::new();
@@ -1615,6 +1642,19 @@ pub fn append_mobs<'a>(mesh: &mut ChunkMesh, mobs: impl IntoIterator<Item = &'a 
             }
             let mut posed = Posed::new(model);
             animate(&mut posed, e, &m);
+            // `EquineSaddleModel` and `HappyGhastHarnessModel.setupAnim`:
+            // the reins only, and the goggles down, while it is ridden.
+            let is_ridden = ridden == Some(e.id);
+            if l.model.ends_with("#saddle") && !is_ridden {
+                posed.hide("left_saddle_line");
+                posed.hide("right_saddle_line");
+            }
+            if l.model == "minecraft:happy_ghast_harness#main" {
+                posed.with("goggles", |p| {
+                    p.rotation.x = if is_ridden { 0.0 } else { -0.7854 };
+                    p.offset.y = if is_ridden { 14.0 } else { 9.0 };
+                });
+            }
             let mut m = m.clone();
             m.feet += copy.as_dvec3();
             if std::ptr::eq(l, &layers[0]) {
