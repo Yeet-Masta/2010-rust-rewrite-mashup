@@ -605,6 +605,8 @@ pub struct MonsterGoalContext {
     pub panda: crate::world::PandaCtx,
     /// A breeze's pose (`world/breezes`).
     pub breeze: crate::world::BreezeCtx,
+    /// A patroller's errand (`world/patrols`).
+    pub patrol: crate::world::PatrolCtx,
     pub fox_pitch: f32,
     pub fox_reset_crouch: bool,
     pub fox_took_berry: bool,
@@ -1028,6 +1030,7 @@ impl MonsterAi {
                 hoglin: Default::default(),
                 panda: Default::default(),
                 breeze: Default::default(),
+                patrol: Default::default(),
                 fox_pitch: 0.0,
                 fox_reset_crouch: false,
                 fox_took_berry: false,

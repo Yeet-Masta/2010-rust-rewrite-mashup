@@ -25,6 +25,8 @@ pub struct SpawnPlayer {
     pub time_since_rest: i32,
     /// The nearest meeting point (a village's bell) within 48 blocks.
     pub meeting: Option<[i32; 3]>,
+    /// `isCloseToVillage(pos, 2)`: a village's points within two sections.
+    pub near_village: bool,
 }
 
 /// `WanderingTraderSpawner`'s clock and `WanderingTraderData`.

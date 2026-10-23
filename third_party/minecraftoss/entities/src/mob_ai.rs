@@ -598,6 +598,10 @@ pub fn goals(kind: Kind) -> GoalSelector<MonsterGoalContext> {
         selector.add(6, LookAtPlayerGoal { range: 8.0 });
         selector.add(7, RandomLookGoal);
     }
+    // `PatrollingMonster.registerGoals`.
+    if crate::world::patrols(kind) {
+        selector.add(4, crate::world::PatrolGoal::new());
+    }
     selector
 }
 

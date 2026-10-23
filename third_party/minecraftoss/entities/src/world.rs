@@ -64,6 +64,9 @@ mod parrots;
 mod pandas;
 mod breezes;
 mod sniffers;
+mod patrols;
+pub use patrols::{patrols, PatrolCtx, PatrolState};
+pub(crate) use patrols::PatrolGoal;
 pub use sniffers::{SnifferPhase, SnifferState};
 pub use breezes::{goals as breeze_goals, BreezeCtx, BreezePose, BreezeState};
 pub use pandas::{goals as panda_goals, targets as panda_targets, Gene as PandaGene, PandaCtx, PandaState};
@@ -4755,6 +4758,12 @@ impl EntityWorld {
                 Category::Ambient => AMBIENT,
                 other => (other.despawn_distance(), true, true),
             };
+            // `PatrollingMonster.removeWhenFarAway`: a patroller only past
+            // 128 blocks.
+            if e.patrol.patrolling && listed(e.body.position) && !(peaceful && category == Category::Monster) {
+                let far = players.iter().map(|p| p.distance_squared(e.body.position)).min_by(f64::total_cmp).is_some_and(|d| d > 16384.0);
+                return !(far && !e.persistence_required);
+            }
             // `Monster`s in a peaceful world go, but not every kind is a monster.
             !check(e.body.position, e.persistence_required || e.species().boss, rule, &mut e.no_action_time, &mut e.random)
         });

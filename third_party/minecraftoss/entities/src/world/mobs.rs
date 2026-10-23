@@ -97,6 +97,7 @@ pub struct MobEntity {
     pub panda: super::pandas::PandaState,
     pub breeze: super::breezes::BreezeState,
     pub sniffer: super::sniffers::SnifferState,
+    pub patrol: super::patrols::PatrolState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -661,6 +662,7 @@ impl EntityWorld {
             panda: Default::default(),
             breeze: Default::default(),
             sniffer: Default::default(),
+            patrol: Default::default(),
             no_ai,
             tick_count: 0,
             ambient_sound_time: 0,
@@ -714,6 +716,7 @@ impl EntityWorld {
         let leashed = self.leash_holder(id).is_some();
         let thundering = world.thundering();
         let panda_items = if kind == Kind::Panda { self.panda_items(id, &*world) } else { Vec::new() };
+        let companions = if super::patrols::patrols(kind) && self.mobs.iter().any(|e| e.id == id && e.patrol.patrolling) { self.patrol_companions(id) } else { Vec::new() };
         let bright_now = self.bright_outside;
         let (hives, bees_stay_in, zones) = if kind == Kind::Bee { (self.hives.clone(), self.bees_stay_in, self.bee_anger_zones.clone()) } else { (Vec::new(), false, Vec::new()) };
         let villagers: Vec<MobCandidate> = self
@@ -772,6 +775,7 @@ impl EntityWorld {
             e.panda_prepare(thundering, panda_items);
             e.breeze_prepare();
             e.sniffer_prepare(&*world, leashed);
+            e.patrol_prepare(companions);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -1062,6 +1066,9 @@ impl EntityWorld {
         }
         if kind == Kind::Sniffer {
             self.sniffer_step(id);
+        }
+        if super::patrols::patrols(kind) {
+            self.patrol_step(id);
         }
         // `HurtByTargetGoal.alertOthers`.
         if let Some(attacker) = self.mob_mut(id).and_then(|e| e.ai.state.alert.take()) {

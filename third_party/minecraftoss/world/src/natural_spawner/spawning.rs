@@ -832,6 +832,80 @@ impl CreatureSpawns {
         }
     }
 
+    /// `PatrolSpawner.tick`: every ten minutes or so, by day, one try in
+    /// five near a random player away from villages: a pillager patrol
+    /// 24 to 47 blocks off along each axis, its leader first and one more
+    /// for each step of the place's difficulty, each a few blocks from the
+    /// last.
+    pub fn tick_patrols(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, players: &[super::tick::SpawnPlayer], spawn_enemies: bool, next_tick: &mut i32) {
+        if !spawn_enemies {
+            return;
+        }
+        *next_tick -= 1;
+        if *next_tick > 0 {
+            return;
+        }
+        *next_tick += 12000 + level.random().next_i32_bound(1200);
+        if level.sky_darken() >= 4 || level.random().next_i32_bound(5) != 0 || players.is_empty() {
+            return;
+        }
+        let player = &players[level.random().next_i32_bound(players.len() as i32) as usize];
+        if player.spectator || player.near_village {
+            return;
+        }
+        let sign = |level: &mut dyn SpawnLevel| if level.random().next_bool() { -1 } else { 1 };
+        let x = (24 + level.random().next_i32_bound(24)) * sign(level);
+        let z = (24 + level.random().next_i32_bound(24)) * sign(level);
+        let mut spawn = BlockPos::new(player.pos[0].floor() as i32 + x, player.pos[1].floor() as i32, player.pos[2].floor() as i32 + z);
+        // `CAN_PILLAGER_PATROL_SPAWN`: everywhere but the mushroom fields.
+        let biome = level.biome(spawn);
+        if self.registries.biomes.get(biome).name.as_str() == "minecraft:mushroom_fields" {
+            return;
+        }
+        let kind = "minecraft:pillager";
+        let Some(info) = type_info(kind) else { return };
+        let difficulty = Self::difficulty_at(level, context, spawn);
+        let size = difficulty.effective.ceil() as i32 + 1;
+        let mut group = MonsterGroup::None;
+        for i in 0..size {
+            spawn.y = level.height(minecraftoss_core::chunk::HeightmapKind::MotionBlockingNoLeaves, spawn.x, spawn.z);
+            let placed = self.spawn_patroller(level, context, spawn, &info, i == 0, &mut group);
+            if i == 0 && !placed {
+                break;
+            }
+            spawn.x += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+            spawn.z += level.random().next_i32_bound(5) - level.random().next_i32_bound(5);
+        }
+    }
+
+    /// `PatrolSpawner.spawnPatrolMember`: room to stand, no more than block
+    /// light 8, ground to stand on; the leader gets a target five hundred
+    /// blocks off at most.
+    fn spawn_patroller(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, pos: BlockPos, info: &TypeInfo, leader: bool, group: &mut MonsterGroup) -> bool {
+        let kind = "minecraft:pillager";
+        if !self.is_valid_empty_spawn_block(&self.registries, level.block(pos), kind, info) {
+            return false;
+        }
+        if level.block_brightness(pos) > 8 || !self.is_valid_spawn(&self.registries, level.block(pos.below()), kind, info) {
+            return false;
+        }
+        let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag(kind)) else { return false };
+        let uuid = level.next_uuid();
+        place(&mut tag, [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)], 0.0, 0.0, uuid);
+        set(&mut tag, "Patrolling", Tag::Byte(1));
+        if leader {
+            set(&mut tag, "PatrolLeader", Tag::Byte(1));
+            // `findPatrolTarget`.
+            let tx = pos.x - 500 + level.random().next_i32_bound(1000);
+            let tz = pos.z - 500 + level.random().next_i32_bound(1000);
+            set(&mut tag, "patrol_target", Tag::IntArray(vec![tx, pos.y, tz]));
+        }
+        let difficulty = Self::difficulty_at(level, context, pos);
+        let tag = self.finalize_monster(level, context, kind, tag, pos, difficulty, group, true);
+        level.add_entity(tag);
+        true
+    }
+
     /// `WanderingTraderSpawner.tick`: once a minute the day's wait runs
     /// down; each day there is a chance (25%, rising by 25 to 75% each day
     /// without one) that a trader comes, one try in ten, near a random

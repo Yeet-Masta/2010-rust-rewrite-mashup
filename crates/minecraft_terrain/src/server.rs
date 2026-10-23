@@ -422,7 +422,15 @@ impl ServerSim {
             let at = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
             pois.find_first(&|t| t == minecraftoss_entities::poi::PoiType::Meeting, &|_| true, at, 48, minecraftoss_entities::poi::Occupancy::Any).map(|(x, y, z)| [x, y, z])
         };
-        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest, meeting: meeting(p.position) }).collect();
+        // `isCloseToVillage(pos, 2)`: a village point (a bed, bell or job
+        // site) within two sections.
+        let near_village = |p: glam::DVec3| {
+            use minecraftoss_entities::poi::PoiType;
+            let at = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            let village = |t: PoiType| !matches!(t, PoiType::Beehive | PoiType::BeeNest | PoiType::NetherPortal | PoiType::Lodestone | PoiType::TestInstance | PoiType::LightningRod);
+            pois.find_first(&village, &|_| true, at, 40, minecraftoss_entities::poi::Occupancy::Any).is_some()
+        };
+        let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest, meeting: meeting(p.position), near_village: near_village(p.position) }).collect();
         let Some(natural) = &mut self.level.natural_spawning else { return };
         natural.set_players(&spawn_players);
         let mut census: Vec<CensusMob> = self
