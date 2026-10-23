@@ -212,6 +212,9 @@ pub struct Game {
     /// as the last tick saw it, for a mount's charged leap.
     jump_riding_ticks: i32,
     pub jump_riding_scale: f32,
+    /// The crosshair mob's name, where it is in clip space, and the
+    /// projection's vertical scale (`EntityRenderer.submitNameTag`).
+    name_plate: Option<(String, glam::Vec4, f32)>,
     was_ride_jumping: bool,
     /// `LocalPlayer.spinningEffectTime` and `spinningEffectSpeed`, for
     /// nausea's warp.
@@ -384,6 +387,7 @@ impl Game {
             songs: None,
             jump_riding_ticks: 0,
             jump_riding_scale: 0.0,
+            name_plate: None,
             was_ride_jumping: false,
             spin: (0.0, 0.0),
             health_blink: (0, 0, 0, Instant::now()),
@@ -660,6 +664,11 @@ impl Game {
         let bob = self.bob_matrix(partial);
         let view_matrix = bob * self.nausea_matrix(partial) * Mat4::look_to_rh(Vec3::ZERO, forward, up);
         let projection = Mat4::perspective_infinite_reverse_rh(fov.to_radians(), aspect, 0.05);
+        // `Mob.shouldShowName`: a named mob under the crosshair.
+        self.name_plate = self.entities.name_plate(eye, look.as_dvec3(), self.entity_reach()).and_then(|(name, at)| {
+            let clip = projection * view_matrix * (at - eye).as_vec3().extend(1.0);
+            (clip.w > 0.0).then_some((name, clip, projection.y_axis.y))
+        });
         self.world.vision = self.vision(partial);
         let camera = CullCamera {
             position: eye,
@@ -3771,6 +3780,7 @@ impl Game {
                 effects: &self.player.survival.effects,
                 hearts,
                 screen_lists_effects,
+                name_plate: self.name_plate.clone(),
                 vehicle: self.entities.vehicle_health().map(|(health, max_health)| crate::gui::VehicleHud {
                     health,
                     max_health,

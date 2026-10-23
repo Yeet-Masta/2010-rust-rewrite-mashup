@@ -428,6 +428,7 @@ fn seed(tag: &Tag) -> u64 {
 /// type it does not simulate yet.
 pub fn spawn_saved(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
     let id = spawn_saved_mob(world, tag)?;
+    world.set_custom_name(id, tag.get("CustomName").map(name_text));
     // `Leashable.readLeashData`: `{UUID: [I; ...]}` for an entity holder,
     // the knot's block otherwise.
     match tag.get("leash") {
@@ -1327,6 +1328,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
         map.insert("PersistenceRequired".into(), Tag::Byte(i8::from(persistent)));
         // The UUID gossip about it is kept by.
         map.entry("UUID".into()).or_insert_with(|| Tag::IntArray(minecraftoss_entities::gossip::uuid_to_ints(world.uuid_of(id)).to_vec()));
+        match world.custom_name(id) {
+            Some(name) => {
+                map.insert("CustomName".into(), Tag::String(name.to_owned()));
+            }
+            None => {
+                map.remove("CustomName");
+            }
+        }
         // `writeLeashData`.
         match world.leash_save(id) {
             Some(Ok(uuid)) => {
@@ -2005,4 +2014,21 @@ fn head_item(tag: &Tag) -> Option<bool> {
 /// Whether a position lies in a chunk.
 pub fn in_chunk(position: DVec3, chunk: ChunkPos) -> bool {
     (position.x.floor() as i32) >> 4 == chunk.x && (position.z.floor() as i32) >> 4 == chunk.z
+}
+
+/// A saved text component's plain text (`CustomName`): a string, or a
+/// compound's `text` and its `extra`s.
+fn name_text(tag: &Tag) -> String {
+    match tag {
+        Tag::String(text) => text.clone(),
+        Tag::List(parts) => parts.iter().map(name_text).collect(),
+        Tag::Compound(map) => {
+            let mut out = map.get("text").and_then(Tag::as_str).unwrap_or_default().to_owned();
+            if let Some(extra) = map.get("extra") {
+                out.push_str(&name_text(extra));
+            }
+            out
+        }
+        _ => String::new(),
+    }
 }

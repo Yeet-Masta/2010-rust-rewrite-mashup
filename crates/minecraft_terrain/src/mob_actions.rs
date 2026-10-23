@@ -158,6 +158,21 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         return outcome;
     }
+    // `Mob.checkAndHandleImportantInteractions`: a name tag named at an
+    // anvil names the mob (`NameTagItem.interactLivingEntity`).
+    if held.as_deref() == Some("minecraft:name_tag") {
+        let name = actor.inventory.slots[selected].as_ref().and_then(|s| s.components.as_ref()).and_then(|c| c.get("minecraft:custom_name")).map(component_text);
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            if world.name_tag(hit, &name) {
+                if !infinite {
+                    minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+                }
+                outcome.inventory_changed = true;
+                outcome.handled = true;
+                return outcome;
+            }
+        }
+    }
     // `CopperGolem.mobInteract`: its load to an empty hand, wax, or a
     // scrape of wax or weathering.
     if let MobHit::Mob(id) = hit {
@@ -475,4 +490,21 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
     outcome.handled = true;
     outcome.inventory_changed = true;
     outcome
+}
+
+/// A text component's plain text: a string, or its `text` and its
+/// `extra`s run together.
+pub fn component_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts.iter().map(component_text).collect(),
+        serde_json::Value::Object(map) => {
+            let mut out = map.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+            if let Some(extra) = map.get("extra") {
+                out.push_str(&component_text(extra));
+            }
+            out
+        }
+        _ => String::new(),
+    }
 }

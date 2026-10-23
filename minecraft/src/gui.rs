@@ -116,6 +116,9 @@ pub struct Hud<'a> {
     pub screen_lists_effects: bool,
     /// What the player rides, if it is alive.
     pub vehicle: Option<VehicleHud>,
+    /// A mob's name over its head: the text, its anchor in clip space, and
+    /// the projection's vertical scale.
+    pub name_plate: Option<(String, glam::Vec4, f32)>,
 }
 
 /// A ridden mount on the HUD: its hearts where the food was, and for one
@@ -1111,6 +1114,16 @@ impl Gui {
     pub fn hud(&mut self, ui: &mut UiList, packs: &PackStack, hud: &Hud<'_>) {
         let (w, h) = (self.width, self.height);
         let center = (w / 2.0).floor();
+        // `EntityRenderer.submitNameTag`: the name at 0.025 of a block to a
+        // font pixel, centred over the anchor and hanging below it, on a
+        // quarter-dark backing (`getBackgroundOpacity(0.25)`).
+        if let Some((name, clip, focal)) = &hud.name_plate {
+            let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * w, (0.5 - clip.y / clip.w * 0.5) * h);
+            let scale = 0.025 * focal * (h / 2.0) / clip.w;
+            let half = self.font.width(name) / 2.0;
+            self.fill(ui, x - (half + 1.0) * scale, y - scale, (half * 2.0 + 1.0) * scale, 9.0 * scale, [0.0, 0.0, 0.0, 0.25]);
+            self.font.draw(ui, name, (x - half * scale) * self.scale, y * self.scale, scale * self.scale, [1.0; 4], false);
+        }
         if hud.eyes_in_water {
             self.sprite_tinted(ui, "underwater", 0.0, 0.0, w, h, [1.0, 1.0, 1.0, 0.1]);
         }

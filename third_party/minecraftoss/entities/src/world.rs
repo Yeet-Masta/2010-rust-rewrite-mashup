@@ -70,6 +70,7 @@ mod allays;
 mod copper_golems;
 mod riding;
 mod mounts;
+mod names;
 pub use patrols::{patrols, PatrolCtx, PatrolState};
 pub use withers::{wither_friend, WitherState};
 pub use copper_golems::{goals as copper_golem_goals, CopperCtx, CopperGolemState, CopperUse, GolemAction, WEATHER_STATES};
@@ -2565,6 +2566,8 @@ pub struct EntityWorld {
     /// What the player rides, its input this tick, and where it got off
     /// since the server last asked.
     player_vehicle: Option<EntityKey>,
+    /// `CustomName`s, by entity.
+    custom_names: HashMap<u64, String>,
     ride_input: RideInput,
     dismounted: Option<DVec3>,
     /// The level's creaking hearts and the protector each keeps, and the
@@ -2671,6 +2674,7 @@ impl Default for EntityWorld {
             bees_stay_in: false,
             hive_entries: Vec::new(),
             player_vehicle: None,
+            custom_names: HashMap::new(),
             ride_input: RideInput::default(),
             dismounted: None,
             creaking_hearts: Vec::new(),
@@ -4681,6 +4685,7 @@ impl EntityWorld {
             bees_stay_in: self.bees_stay_in,
             hive_entries: Vec::new(),
             player_vehicle: self.player_vehicle,
+            custom_names: self.custom_names.clone(),
             ride_input: RideInput::default(),
             dismounted: None,
             creaking_hearts: self.creaking_hearts.clone(),
@@ -4868,6 +4873,7 @@ impl EntityWorld {
         self.game_time += 1;
         // The rider gets off first when it sneaks or its mount is gone.
         self.tick_rider(&*world);
+        self.forget_names();
         let game_time = self.game_time;
         self.set_pushing_players(players);
         let ticking: HashSet<u64> = self.positions().filter(|&(_, position)| ticks(position)).map(|(id, _)| id).collect();

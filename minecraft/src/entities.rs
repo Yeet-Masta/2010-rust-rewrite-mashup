@@ -936,6 +936,10 @@ impl Entities {
         self.world.vehicle_boostable()
     }
 
+    pub fn name_plate(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<(String, DVec3)> {
+        self.world.name_plate(eye, look, reach)
+    }
+
     pub fn vehicle_health(&self) -> Option<(f32, f32)> {
         self.world.vehicle_health()
     }
