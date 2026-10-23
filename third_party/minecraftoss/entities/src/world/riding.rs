@@ -121,6 +121,25 @@ impl EntityWorld {
         }
     }
 
+    /// The mount's health and its most, for the hearts that stand in for
+    /// the rider's food (`Gui.getVehicleMaxHearts`).
+    pub fn vehicle_health(&self) -> Option<(f32, f32)> {
+        match self.player_vehicle? {
+            EntityKey::Cow(id) => self.cows.iter().find(|e| e.id == id).map(|e| (e.cow.health, e.horse.as_ref().map_or(e.cow.max_health, |h| h.max_health))),
+            EntityKey::Pig(id) => self.pigs.iter().find(|e| e.id == id).map(|e| (e.pig.health, 10.0)),
+            EntityKey::Mob(id) => self.mobs.iter().find(|e| e.id == id).map(|e| (e.health, e.max_health())),
+            _ => None,
+        }
+    }
+
+    /// `getJumpCooldown`: a camel rests after a dash, its jump bar grey.
+    pub fn vehicle_jump_cooldown(&self) -> bool {
+        match self.player_vehicle {
+            Some(EntityKey::Mob(id)) => self.mobs.iter().any(|e| e.id == id && e.mount.dash_cooldown > 0),
+            _ => false,
+        }
+    }
+
     /// The vehicle's yaw, for the rider's view as it mounts.
     pub fn vehicle_yaw(&self) -> Option<f32> {
         match self.player_vehicle? {

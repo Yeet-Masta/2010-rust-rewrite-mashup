@@ -16,6 +16,8 @@ use crate::render::GuiModel;
 /// What the model shows of the player.
 pub struct Pose {
     pub crouching: bool,
+    /// Sitting on a mount (`isPassenger`).
+    pub riding: bool,
     /// Whether the right (main) and left hands hold something
     /// (`HumanoidModel.ArmPose.ITEM`).
     pub holding: [bool; 2],
@@ -285,6 +287,13 @@ pub fn model(
         -0.005,
         -0.005,
     );
+    // A rider's arms reach forward and its legs bend out before it.
+    if pose.riding {
+        right_arm.rotation.x += -pi / 5.0;
+        left_arm.rotation.x += -pi / 5.0;
+        right_leg.rotation = Vec3::new(-1.4137167, pi / 10.0, 0.07853982);
+        left_leg.rotation = Vec3::new(-1.4137167, -pi / 10.0, -0.07853982);
+    }
     for (arm, holding) in [
         (&mut right_arm, pose.holding[0]),
         (&mut left_arm, pose.holding[1]),
@@ -489,6 +498,7 @@ mod tests {
     fn faces_the_viewer_and_turns_toward_the_mouse() {
         let pose = Pose {
             crouching: false,
+            riding: false,
             holding: [false; 2],
             age: 0.0,
             walk: (0.0, 0.0),

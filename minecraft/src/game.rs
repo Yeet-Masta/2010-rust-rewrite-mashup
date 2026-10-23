@@ -3771,6 +3771,11 @@ impl Game {
                 effects: &self.player.survival.effects,
                 hearts,
                 screen_lists_effects,
+                vehicle: self.entities.vehicle_health().map(|(health, max_health)| crate::gui::VehicleHud {
+                    health,
+                    max_health,
+                    jump: self.entities.vehicle_jumps().then(|| (self.jump_riding_scale, self.entities.vehicle_jump_cooldown())),
+                }),
                 inventory: self.shown_inventory(),
                 selected: self.entities.selected,
                 survival: (!self.creative).then_some(&self.player.survival),
@@ -3788,7 +3793,8 @@ impl Game {
         {
             let inventory = &self.entities.inventory;
             let pose = crate::inventory_player::Pose {
-                crouching: self.player.crouching,
+                crouching: self.player.crouching && self.player.seat.is_none(),
+                riding: self.player.seat.is_some(),
                 holding: [
                     inventory.slots[self.entities.selected].is_some(),
                     inventory.slots[40].is_some(),

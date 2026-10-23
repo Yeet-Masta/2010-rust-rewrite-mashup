@@ -936,6 +936,14 @@ impl Entities {
         self.world.vehicle_boostable()
     }
 
+    pub fn vehicle_health(&self) -> Option<(f32, f32)> {
+        self.world.vehicle_health()
+    }
+
+    pub fn vehicle_jump_cooldown(&self) -> bool {
+        self.world.vehicle_jump_cooldown()
+    }
+
     /// Where the riding player sits on its mount, as of the last server
     /// tick, and the mount's facing.
     pub fn seat(&self) -> Option<(DVec3, f32)> {

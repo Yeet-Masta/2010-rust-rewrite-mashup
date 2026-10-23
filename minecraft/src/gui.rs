@@ -114,6 +114,18 @@ pub struct Hud<'a> {
     pub hearts: Hearts,
     /// The open screen lists the effects itself (`showsActiveEffects`).
     pub screen_lists_effects: bool,
+    /// What the player rides, if it is alive.
+    pub vehicle: Option<VehicleHud>,
+}
+
+/// A ridden mount on the HUD: its hearts where the food was, and for one
+/// that leaps the jump bar where the experience was.
+#[derive(Clone, Copy, Debug)]
+pub struct VehicleHud {
+    pub health: f32,
+    pub max_health: f32,
+    /// The charged jump (0 to 1) and whether it rests (`getJumpCooldown`).
+    pub jump: Option<(f32, bool)>,
 }
 
 /// `Hud.extractPlayerHealth`'s state: the GUI's tick count, whether the
@@ -208,6 +220,12 @@ const SPRITES: &[(&str, &str, f32)] = &[
     ("food_empty", "gui/sprites/hud/food_empty", 0.0),
     ("food_half", "gui/sprites/hud/food_half", 0.0),
     ("food_full", "gui/sprites/hud/food_full", 0.0),
+    ("heart_vehicle_container", "gui/sprites/hud/heart/vehicle_container", 0.0),
+    ("heart_vehicle_full", "gui/sprites/hud/heart/vehicle_full", 0.0),
+    ("heart_vehicle_half", "gui/sprites/hud/heart/vehicle_half", 0.0),
+    ("jump_bar_background", "gui/sprites/hud/jump_bar_background", 0.0),
+    ("jump_bar_cooldown", "gui/sprites/hud/jump_bar_cooldown", 0.0),
+    ("jump_bar_progress", "gui/sprites/hud/jump_bar_progress", 0.0),
     ("armor_empty", "gui/sprites/hud/armor_empty", 0.0),
     ("armor_half", "gui/sprites/hud/armor_half", 0.0),
     ("armor_full", "gui/sprites/hud/armor_full", 0.0),
@@ -1134,18 +1152,34 @@ impl Gui {
         if let Some(stack) = offhand {
             self.item(ui, packs, hud.inventory, stack, center - 91.0 - 26.0, h - 16.0 - 3.0);
         }
+        // `JumpableVehicleBarRenderer`: a leaping mount's charge stands in
+        // for the experience bar.
+        let jump = hud.vehicle.and_then(|v| v.jump);
+        if let Some((scale, resting)) = jump {
+            self.sprite(ui, "jump_bar_background", center - 91.0, h - 32.0 + 3.0, 182.0, 5.0);
+            if resting {
+                self.sprite(ui, "jump_bar_cooldown", center - 91.0, h - 32.0 + 3.0, 182.0, 5.0);
+            } else {
+                let progress = (scale * 182.0).floor() as i32;
+                if progress > 0 {
+                    self.sprite_part(ui, "jump_bar_progress", center - 91.0, h - 32.0 + 3.0, 0.0, 0.0, progress.min(182) as f32, 5.0);
+                }
+            }
+        }
         if let Some(status) = hud.survival {
             // Experience.
-            self.sprite(
-                ui,
-                "xp_background",
-                center - 91.0,
-                h - 32.0 + 3.0,
-                182.0,
-                5.0,
-            );
+            if jump.is_none() {
+                self.sprite(
+                    ui,
+                    "xp_background",
+                    center - 91.0,
+                    h - 32.0 + 3.0,
+                    182.0,
+                    5.0,
+                );
+            }
             let progress = (status.experience_progress * 183.0) as i32;
-            if progress > 0 {
+            if progress > 0 && jump.is_none() {
                 self.sprite_part(
                     ui,
                     "xp_progress",
@@ -1236,11 +1270,32 @@ impl Gui {
                 }
             }
             // Hunger (`extractFood`): the hunger effect's sickly shanks,
-            // trembling at no saturation.
+            // trembling at no saturation; a mount's hearts instead while
+            // riding one (`extractVehicleHealth`), row on row upward.
             let right = center + 91.0;
             let food = i32::from(status.food.level);
             let sick = if hud.effects.has(MobEffect::Hunger) { "_hunger" } else { "" };
-            for i in 0..10 {
+            let vehicle_hearts = hud.vehicle.map_or(0, |v| (((v.max_health + 0.5) as i32) / 2).min(30));
+            if let Some(v) = hud.vehicle.filter(|_| vehicle_hearts > 0) {
+                let health = v.health.ceil() as i32;
+                let (mut left_hearts, mut base, mut y) = (vehicle_hearts, 0, top);
+                while left_hearts > 0 {
+                    let row = left_hearts.min(10);
+                    left_hearts -= row;
+                    for i in 0..row {
+                        let x = right - i as f32 * 8.0 - 9.0;
+                        self.sprite(ui, "heart_vehicle_container", x, y, 9.0, 9.0);
+                        if i * 2 + 1 + base < health {
+                            self.sprite(ui, "heart_vehicle_full", x, y, 9.0, 9.0);
+                        } else if i * 2 + 1 + base == health {
+                            self.sprite(ui, "heart_vehicle_half", x, y, 9.0, 9.0);
+                        }
+                    }
+                    y -= 10.0;
+                    base += 20;
+                }
+            }
+            for i in (0..10).filter(|_| vehicle_hearts == 0) {
                 let x = right - i as f32 * 8.0 - 9.0;
                 let mut y = top;
                 if status.food.saturation <= 0.0 && hud.hearts.tick.is_multiple_of(food as u64 * 3 + 1) {
@@ -1264,7 +1319,8 @@ impl Gui {
                         ui,
                         if i < full { "air" } else { "air_empty" },
                         x,
-                        top - 10.0,
+                        // Above a mount's rows of hearts.
+                        top - 10.0 - (((vehicle_hearts + 9) / 10).max(1) - 1) as f32 * 10.0,
                         9.0,
                         9.0,
                     );
