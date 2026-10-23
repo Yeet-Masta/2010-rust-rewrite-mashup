@@ -431,8 +431,29 @@ impl ServerSim {
             pois.find_first(&village, &|_| true, at, 40, minecraftoss_entities::poi::Occupancy::Any).is_some()
         };
         let spawn_players: Vec<SpawnPlayer> = players.iter().map(|p| SpawnPlayer { pos: p.position.to_array(), spectator: p.spectator, time_since_rest: rest, meeting: meeting(p.position), near_village: near_village(p.position) }).collect();
+        // The village points within reach of the cats' and sieges' spots
+        // (32 out, 48 about), and the beds slept in among them.
+        let mut village_pois: Vec<minecraftoss_world::natural_spawner::spawning::VillagePoi> = Vec::new();
+        {
+            use minecraftoss_entities::poi::PoiType;
+            let village = |t: PoiType| !matches!(t, PoiType::Beehive | PoiType::BeeNest | PoiType::NetherPortal | PoiType::Lodestone | PoiType::TestInstance | PoiType::LightningRod);
+            for p in players.iter().filter(|p| !p.spectator) {
+                let at = (p.position.x.floor() as i32, p.position.y.floor() as i32, p.position.z.floor() as i32);
+                for r in pois.in_range(&village, at, 96, minecraftoss_entities::poi::Occupancy::Any) {
+                    let pos = [r.pos.0, r.pos.1, r.pos.2];
+                    if !village_pois.iter().any(|v| v.pos == pos) {
+                        let occupied_home = r.kind == PoiType::Home && r.free_tickets != r.kind.max_tickets();
+                        village_pois.push(minecraftoss_world::natural_spawner::spawning::VillagePoi { pos, occupied_home });
+                    }
+                }
+            }
+        }
+        // `getMoonBrightness` at 1 (the first of the eight phases).
+        let full_moon = (self.level.overworld_clock() / 24000).rem_euclid(8) == 0;
         let Some(natural) = &mut self.level.natural_spawning else { return };
         natural.set_players(&spawn_players);
+        natural.village_pois = village_pois;
+        natural.full_moon = full_moon;
         let mut census: Vec<CensusMob> = self
             .mobs
             .census()

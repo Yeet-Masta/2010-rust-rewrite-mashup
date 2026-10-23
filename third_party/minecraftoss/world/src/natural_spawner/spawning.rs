@@ -906,6 +906,143 @@ impl CreatureSpawns {
         true
     }
 
+    /// `CatSpawner.tick`: once a minute, a spot 8 to 31 blocks out on each
+    /// axis from a random player, at the player's height, where a cat may
+    /// stand; in a village (a village point within two sections) with more
+    /// than four beds slept in within 48 blocks and fewer than five cats
+    /// about, a cat. (`spawnInHut` needs the swamp hut's structure, which
+    /// loaded chunks do not keep; huts get their cat as they generate.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_cats(&self, level: &mut dyn SpawnLevel, players: &[super::tick::SpawnPlayer], pois: &[VillagePoi], census: &[super::tick::CensusMob], full_moon: bool, loaded: &dyn Fn(ChunkPos) -> bool, next_tick: &mut i32) {
+        *next_tick -= 1;
+        if *next_tick > 0 {
+            return;
+        }
+        *next_tick = 1200;
+        let alive: Vec<&super::tick::SpawnPlayer> = players.iter().filter(|p| !p.spectator).collect();
+        if alive.is_empty() {
+            return;
+        }
+        let player = alive[level.random().next_i32_bound(alive.len() as i32) as usize];
+        let sign = |level: &mut dyn SpawnLevel| if level.random().next_bool() { -1 } else { 1 };
+        let x = (8 + level.random().next_i32_bound(24)) * sign(level);
+        let z = (8 + level.random().next_i32_bound(24)) * sign(level);
+        let at = BlockPos::new(player.pos[0].floor() as i32 + x, player.pos[1].floor() as i32, player.pos[2].floor() as i32 + z);
+        // `hasChunksAt` ten blocks about.
+        if !(((at.x - 10) >> 4)..=((at.x + 10) >> 4)).all(|cx| (((at.z - 10) >> 4)..=((at.z + 10) >> 4)).all(|cz| loaded(ChunkPos::new(cx, cz)))) {
+            return;
+        }
+        let kind = "minecraft:cat";
+        let Some(info) = type_info(kind) else { return };
+        if !self.is_spawn_position_ok(level, kind, &info, at) || !close_to_village(pois, at, 2) {
+            return;
+        }
+        // `spawnInVillage`.
+        let homes = pois.iter().filter(|p| p.occupied_home && dist_sqr(p.pos, at) <= 48.0 * 48.0).count();
+        let cats = census.iter().filter(|m| m.kind == kind && (m.pos[0] - f64::from(at.x) - 0.5).abs() <= 48.5 && (m.pos[1] - f64::from(at.y) - 0.5).abs() <= 8.5 && (m.pos[2] - f64::from(at.z) - 0.5).abs() <= 48.5).count();
+        if homes <= 4 || cats >= 5 {
+            return;
+        }
+        let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag(kind)) else { return };
+        let uuid = level.next_uuid();
+        place(&mut tag, [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5], 0.0, 0.0, uuid);
+        // `Cat.finalizeSpawn`: the variants' spawn conditions, the black
+        // cat only under a full moon away from huts.
+        const COATS: [&str; 10] = ["tabby", "black", "red", "siamese", "british_shorthair", "calico", "persian", "ragdoll", "white", "jellie"];
+        let count = if full_moon { COATS.len() + 1 } else { COATS.len() };
+        let pick = level.random().next_i32_bound(count as i32) as usize;
+        let coat = COATS.get(pick).copied().unwrap_or("all_black");
+        set(&mut tag, "variant", Tag::String(format!("minecraft:{coat}")));
+        level.add_entity(tag);
+    }
+
+    /// `VillageSiege.tick`: at midnight in the Overworld one night in ten
+    /// is a siege night. Then, while it is dark and monsters may come, the
+    /// first player in a village (not where sieges never come) has a spot
+    /// picked 32 blocks off, and twenty zombies come there one every three
+    /// ticks, each in the village and dark enough, on the surface.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_siege(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, players: &[super::tick::SpawnPlayer], pois: &[VillagePoi], spawn_enemies: bool, day_time: Option<i64>, state: &mut SiegeState) {
+        if level.sky_darken() < 4 || !spawn_enemies {
+            state.tonight = false;
+            state.set_up = false;
+            return;
+        }
+        if day_time.is_some_and(|t| t.rem_euclid(24000) == 18000) {
+            state.tonight = level.random().next_i32_bound(10) == 0;
+        }
+        if !state.tonight {
+            return;
+        }
+        if !state.set_up {
+            if !self.set_up_siege(level, context, players, pois, state) {
+                return;
+            }
+            state.set_up = true;
+        }
+        if state.next_spawn > 0 {
+            state.next_spawn -= 1;
+            return;
+        }
+        state.next_spawn = 2;
+        if state.zombies <= 0 {
+            state.tonight = false;
+            return;
+        }
+        state.zombies -= 1;
+        let Some(at) = self.siege_spawn_pos(level, context, pois, state.spawn) else { return };
+        let kind = "minecraft:zombie";
+        let Some(mut tag) = self.registries.entities.as_ref().and_then(|c| c.default_tag(kind)) else { return };
+        let uuid = level.next_uuid();
+        let yaw = level.random().next_f32() * 360.0;
+        place(&mut tag, [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5], yaw, 0.0, uuid);
+        let difficulty = Self::difficulty_at(level, context, at);
+        let tag = self.finalize_monster(level, context, kind, tag, at, difficulty, &mut MonsterGroup::None, false);
+        level.add_entity(tag);
+    }
+
+    /// `tryToSetupSiege`.
+    fn set_up_siege(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, players: &[super::tick::SpawnPlayer], pois: &[VillagePoi], state: &mut SiegeState) -> bool {
+        for player in players.iter().filter(|p| !p.spectator) {
+            let center = BlockPos::new(player.pos[0].floor() as i32, player.pos[1].floor() as i32, player.pos[2].floor() as i32);
+            let biome = level.biome(center);
+            let never = self.registries.biome_tags.id("minecraft:without_zombie_sieges").is_some_and(|t| self.registries.biome_in_tag(biome, t));
+            if !close_to_village(pois, center, 1) || never {
+                continue;
+            }
+            for _ in 0..10 {
+                let angle = level.random().next_f32() * std::f32::consts::TAU;
+                let spot = BlockPos::new(center.x + (angle.cos() * 32.0).floor() as i32, center.y, center.z + (angle.sin() * 32.0).floor() as i32);
+                if self.siege_spawn_pos(level, context, pois, spot).is_some() {
+                    state.spawn = spot;
+                    state.next_spawn = 0;
+                    state.zombies = 20;
+                    break;
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// `findRandomSpawnPos`: ten tries within eight blocks, on the
+    /// surface, in the village, where a zombie may come
+    /// (`checkMonsterSpawnRules`).
+    fn siege_spawn_pos(&self, level: &mut dyn SpawnLevel, context: &mut SpawnContext, pois: &[VillagePoi], around: BlockPos) -> Option<BlockPos> {
+        let kind = "minecraft:zombie";
+        let info = type_info(kind)?;
+        for _ in 0..10 {
+            let x = around.x + level.random().next_i32_bound(16) - 8;
+            let z = around.z + level.random().next_i32_bound(16) - 8;
+            let y = level.height(minecraftoss_core::chunk::HeightmapKind::WorldSurface, x, z);
+            let at = BlockPos::new(x, y, z);
+            if close_to_village(pois, at, 1) && context.difficulty != 0 && self.dark_enough(level, context, at) && self.mob_spawn_rules(level, kind, &info, at) {
+                return Some(at);
+            }
+        }
+        None
+    }
+
     /// `WanderingTraderSpawner.tick`: once a minute the day's wait runs
     /// down; each day there is a chance (25%, rising by 25 to 75% each day
     /// without one) that a trader comes, one try in ten, near a random
@@ -1488,4 +1625,41 @@ fn spawn_enchantments(registries: &minecraftoss_core::Registries) -> Option<&'st
             Some((enchantments, source))
         })
         .as_ref()
+}
+
+/// A village point of interest about the players (`#village`: beds, job
+/// sites, bells), and whether it is a bed slept in (`HOME`, occupied).
+#[derive(Clone, Copy, Debug)]
+pub struct VillagePoi {
+    pub pos: [i32; 3],
+    pub occupied_home: bool,
+}
+
+/// `VillageSiege`'s state.
+#[derive(Clone, Copy, Debug)]
+pub struct SiegeState {
+    set_up: bool,
+    /// `SIEGE_TONIGHT` (else `SIEGE_DONE`).
+    tonight: bool,
+    zombies: i32,
+    next_spawn: i32,
+    spawn: BlockPos,
+}
+
+impl Default for SiegeState {
+    fn default() -> Self {
+        Self { set_up: false, tonight: false, zombies: 0, next_spawn: 0, spawn: BlockPos::new(0, 0, 0) }
+    }
+}
+
+fn dist_sqr(a: [i32; 3], b: BlockPos) -> f64 {
+    let d = [f64::from(a[0] - b.x), f64::from(a[1] - b.y), f64::from(a[2] - b.z)];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+/// `isCloseToVillage(pos, sections)`: a village point within that many
+/// sections on every axis.
+pub fn close_to_village(pois: &[VillagePoi], pos: BlockPos, sections: i32) -> bool {
+    let s = (pos.x >> 4, pos.y >> 4, pos.z >> 4);
+    pois.iter().any(|p| ((p.pos[0] >> 4) - s.0).abs() <= sections && ((p.pos[1] >> 4) - s.1).abs() <= sections && ((p.pos[2] >> 4) - s.2).abs() <= sections)
 }

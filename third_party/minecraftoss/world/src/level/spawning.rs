@@ -41,6 +41,13 @@ pub struct NaturalSpawning {
     /// `PatrolSpawner.nextTick`.
     patrol_next_tick: i32,
     pub trader: crate::natural_spawner::tick::TraderSpawnState,
+    /// `CatSpawner.nextTick` and `VillageSiege`'s state.
+    cat_next_tick: i32,
+    siege: crate::natural_spawner::spawning::SiegeState,
+    /// The village points about the players, and whether the moon is full
+    /// (the server's, for the cats and the sieges).
+    pub village_pois: Vec<crate::natural_spawner::spawning::VillagePoi>,
+    pub full_moon: bool,
 }
 
 impl NaturalSpawning {
@@ -56,6 +63,10 @@ impl NaturalSpawning {
             phantom_next_tick: 0,
             patrol_next_tick: 0,
             trader: Default::default(),
+            cat_next_tick: 0,
+            siege: Default::default(),
+            village_pois: Vec::new(),
+            full_moon: false,
             respawn: None,
             simulation: HashSet::new(),
             report: TickReport::default(),
@@ -194,6 +205,9 @@ impl Level<'_> {
         let spawn_enemies = natural.spawn_mobs && natural.spawn_monsters;
         spawns.tick_phantoms(self, &mut context, &players, spawn_enemies, &mut natural.phantom_next_tick);
         spawns.tick_patrols(self, &mut context, &players, spawn_enemies, &mut natural.patrol_next_tick);
+        spawns.tick_cats(self, &players, &natural.village_pois, &census, natural.full_moon, &in_loaded, &mut natural.cat_next_tick);
+        let day_time = (self.dimension.as_deref() == Some("minecraft:overworld")).then(|| self.overworld_clock());
+        spawns.tick_siege(self, &mut context, &players, &natural.village_pois, spawn_enemies, day_time, &mut natural.siege);
         spawns.tick_trader(self, &players, &mut natural.trader);
         natural.players = players;
         natural.census = census;
