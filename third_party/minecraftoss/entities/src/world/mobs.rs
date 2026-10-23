@@ -101,6 +101,7 @@ pub struct MobEntity {
     pub creaking: super::creakings::CreakingState,
     pub wither: super::withers::WitherState,
     pub allay: super::allays::AllayState,
+    pub copper: super::copper_golems::CopperGolemState,
     pub no_ai: bool,
     pub tick_count: i32,
     pub ambient_sound_time: i32,
@@ -668,6 +669,7 @@ impl EntityWorld {
             creaking: Default::default(),
             wither: Default::default(),
             allay: Default::default(),
+            copper: Default::default(),
             armadillo: Default::default(),
             parrot: Default::default(),
             panda: Default::default(),
@@ -800,6 +802,7 @@ impl EntityWorld {
             e.creaking_prepare(&*world, players, &views, kept);
             e.wither_motion();
             e.allay_prepare(allay_deposit, &allay_items);
+            e.copper_prepare(&*world, game_time, leashed);
             if kind == Kind::Bee && e.health > 0.0 {
                 let raining = world.raining();
                 e.bee_prepare(&hives, bees_stay_in, raining, &zones);
@@ -1095,6 +1098,10 @@ impl EntityWorld {
         }
         if kind == Kind::Allay {
             self.allay_step(id, world);
+        }
+        if kind == Kind::CopperGolem {
+            let statue = self.mob_mut(id).is_some_and(|e| e.copper_weathering(&*world, game_time));
+            self.copper_step(id, world, statue);
         }
         if kind == Kind::Parrot {
             self.parrot_step(id);

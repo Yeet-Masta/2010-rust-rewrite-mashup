@@ -134,7 +134,7 @@ impl Level<'_> {
 
     /// `ChestBlock.isChestBlockedAt`: a redstone conductor above, or a cat
     /// sitting in the block's space above.
-    fn chest_blocked(&self, pos: BlockPos) -> bool {
+    pub(super) fn chest_blocked(&self, pos: BlockPos) -> bool {
         let above = self.block(pos.above());
         if self.registries().blocks.is(above, minecraftoss_core::block::flags::REDSTONE_CONDUCTOR) {
             return true;

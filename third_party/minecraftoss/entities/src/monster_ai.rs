@@ -608,6 +608,8 @@ pub struct MonsterGoalContext {
     pub creaking: crate::world::CreakingCtx,
     /// An allay's deliveries (`world/allays`).
     pub allay: crate::world::AllayCtx,
+    /// A copper golem's rest between rounds (`world/copper_golems`).
+    pub copper: crate::world::CopperCtx,
     /// A panda's nature and doings (`world/pandas`).
     pub panda: crate::world::PandaCtx,
     /// A breeze's pose (`world/breezes`).
@@ -1037,6 +1039,7 @@ impl MonsterAi {
                 hoglin: Default::default(),
                 creaking: Default::default(),
                 allay: Default::default(),
+                copper: Default::default(),
                 panda: Default::default(),
                 breeze: Default::default(),
                 patrol: Default::default(),

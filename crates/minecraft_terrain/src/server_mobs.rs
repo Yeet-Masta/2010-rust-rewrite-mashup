@@ -151,6 +151,10 @@ impl MobWorld<'_> {
     }
 }
 
+fn container_target(t: minecraftoss_world::level::transport::TransportTarget) -> minecraftoss_player::ContainerTarget {
+    minecraftoss_player::ContainerTarget { pos: t.pos, copper: t.copper, chest: t.chest, connected: t.connected, empty: t.empty, items: t.items, locked: t.locked, blocked: t.blocked, in_use: t.in_use }
+}
+
 fn world_item(id: i32, pos: [f64; 3], stack: &minecraftoss_core::item::ItemStack, pickup_delay: i32) -> minecraftoss_player::WorldItem {
     minecraftoss_player::WorldItem { id, position: DVec3::from_array(pos), item: stack.id.clone(), count: stack.count, components: stack.components.as_ref().and_then(crate::stacks::components_json), pickup_delay }
 }
@@ -241,6 +245,36 @@ impl PlayerWorld for MobWorld<'_> {
         let state = level.block(pos);
         level.level_event(2001, pos, i32::from(state.0));
         level.destroy_block_drops(pos, true, update::LIMIT);
+    }
+
+    fn transport_targets(&self, center: (i32, i32, i32), horizontal: i32, vertical: i32) -> Vec<minecraftoss_player::ContainerTarget> {
+        self.level.borrow().transport_targets(center, horizontal, vertical).into_iter().map(container_target).collect()
+    }
+
+    fn transport_target(&self, pos: (i32, i32, i32)) -> Option<minecraftoss_player::ContainerTarget> {
+        self.level.borrow().transport_target_at(pos).map(container_target)
+    }
+
+    fn transport_take(&mut self, pos: (i32, i32, i32)) -> Option<minecraftoss_player::inventory::ItemStack> {
+        let level = &mut *self.level.borrow_mut();
+        let stack = level.transport_take(pos)?;
+        crate::stacks::to_player(&stack, |id| level.registries().items.max_stack(id))
+    }
+
+    fn transport_put(&mut self, pos: (i32, i32, i32), stack: minecraftoss_player::inventory::ItemStack) -> minecraftoss_player::inventory::ItemStack {
+        let level = &mut *self.level.borrow_mut();
+        let left = level.transport_put(pos, crate::stacks::to_level(&stack));
+        crate::stacks::to_player(&left, |id| level.registries().items.max_stack(id)).unwrap_or_else(|| minecraftoss_player::inventory::ItemStack::new("minecraft:air", 0))
+    }
+
+    fn open_container(&mut self, (x, y, z): (i32, i32, i32), open: bool) {
+        let pos = minecraftoss_core::BlockPos::new(x, y, z);
+        let mut level = self.level.borrow_mut();
+        if open {
+            level.start_open(pos, 3.0);
+        } else {
+            level.stop_open(pos);
+        }
     }
 
     fn break_effect(&mut self, (x, y, z): (i32, i32, i32), block: &PlayerBlock) {
@@ -1085,6 +1119,22 @@ fn spawn_saved_mob(world: &mut EntityWorld, tag: &Tag) -> Option<u64> {
                 entity.variant = variant;
                 entity.variant_key = Some(key);
             }
+            if kind == minecraftoss_entities::species::Kind::CopperGolem {
+                // `CopperGolem.readAdditionalSaveData`, and the load in its
+                // hand with its count.
+                use minecraftoss_entities::world::WEATHER_STATES;
+                let weather = WEATHER_STATES.iter().position(|w| *w == entity.variant.as_str()).unwrap_or(0);
+                entity.copper.weather = weather as u8;
+                entity.variant = WEATHER_STATES[weather].to_owned();
+                entity.variant_key = Some(("weather_state", false));
+                entity.copper.next_weathering = tag.get("next_weather_age").and_then(Tag::as_i64).unwrap_or(-1);
+                entity.copper.carried = tag.get("equipment").and_then(|e| e.get("mainhand")).and_then(|i| {
+                    let id = i.get("id").and_then(Tag::as_str)?;
+                    let count = i.get("count").and_then(Tag::as_i64).unwrap_or(1);
+                    let components = i.get("components").and_then(crate::stacks::components_json);
+                    Some(minecraftoss_player::inventory::ItemStack { id: id.to_owned(), count: count.clamp(1, 99) as u8, max: 64, components })
+                });
+            }
             if let Some(range) = attribute_value(tag, "minecraft:follow_range") {
                 entity.ai.state.follow_range = range;
             }
@@ -1396,8 +1446,14 @@ pub fn mob_tags(world: &EntityWorld, keep: impl Fn(DVec3) -> bool, originals: &s
                 equipment.insert(slot.to_owned(), Tag::Compound(stack));
             }
         }
+        if let Some(stack) = e.copper.carried.as_ref().filter(|_| e.kind == minecraftoss_entities::species::Kind::CopperGolem) {
+            equipment.insert("mainhand".to_owned(), stack_tag(stack));
+        }
         if !equipment.is_empty() {
             fields.push(("equipment", Tag::Compound(equipment)));
+        }
+        if e.kind == minecraftoss_entities::species::Kind::CopperGolem {
+            fields.push(("next_weather_age", Tag::Long(e.copper.next_weathering)));
         }
         if e.kind == minecraftoss_entities::species::Kind::Pufferfish {
             fields.push(("PuffState", Tag::Int(e.puff)));

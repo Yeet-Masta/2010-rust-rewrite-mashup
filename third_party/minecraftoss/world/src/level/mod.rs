@@ -11,6 +11,7 @@
 pub mod container;
 pub mod creaking_heart;
 pub mod jukebox;
+pub mod transport;
 pub mod dispenser;
 pub mod drops;
 pub mod entity;

@@ -81,6 +81,24 @@ impl Block {
         self.properties.get(name).map(String::as_str)
     }
 }
+/// A chest a copper golem may carry items to or from
+/// (`TransportItemsBetweenContainers.TransportItemTarget`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ContainerTarget {
+    pub pos: Pos,
+    /// In `#copper_chests`, or a chest or trapped chest.
+    pub copper: bool,
+    pub chest: bool,
+    /// Its other half, for a double chest.
+    pub connected: Option<Pos>,
+    pub empty: bool,
+    pub items: Vec<String>,
+    pub locked: bool,
+    pub blocked: bool,
+    /// Someone has it open.
+    pub in_use: bool,
+}
+
 /// An item entity as mobs see it (`ItemEntity`): where it is, its stack and
 /// whether it can be picked up yet.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +143,24 @@ pub trait World {
     /// `levelEvent(2001, pos, Block.getId(block))`: a block's break
     /// particles and sound; worlds without level events show nothing.
     fn break_effect(&mut self, _pos: Pos, _block: &Block) {}
+    /// The chests within `horizontal` blocks across and `vertical` up and
+    /// down of `center`, and one chest; worlds without chests have none.
+    fn transport_targets(&self, _center: Pos, _horizontal: i32, _vertical: i32) -> Vec<ContainerTarget> {
+        Vec::new()
+    }
+    fn transport_target(&self, _pos: Pos) -> Option<ContainerTarget> {
+        None
+    }
+    /// Up to sixteen of a chest's first stack, taken out.
+    fn transport_take(&mut self, _pos: Pos) -> Option<inventory::ItemStack> {
+        None
+    }
+    /// A stack put into a chest; what did not fit.
+    fn transport_put(&mut self, _pos: Pos, stack: inventory::ItemStack) -> inventory::ItemStack {
+        stack
+    }
+    /// A mob opens or closes a chest (`startOpen`, `stopOpen`).
+    fn open_container(&mut self, _pos: Pos, _open: bool) {}
     /// `scheduleTick(pos, block, delay)` for the block at `pos`; worlds
     /// without block ticks drop it.
     fn schedule_block_tick(&mut self, _pos: Pos, _delay: i32) {}

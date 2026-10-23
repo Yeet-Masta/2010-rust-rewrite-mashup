@@ -158,6 +158,35 @@ pub fn interact(world: &mut EntityWorld, hit: MobHit, actor: &mut Actor) -> MobO
         outcome.sounds.extend(world.take_sounds().into_iter().map(|s| MobSound { event: s.event, position: s.position, volume: s.volume, pitch: s.pitch, category: s.category }));
         return outcome;
     }
+    // `CopperGolem.mobInteract`: its load to an empty hand, wax, or a
+    // scrape of wax or weathering.
+    if let MobHit::Mob(id) = hit {
+        use minecraftoss_entities::world::CopperUse;
+        let player_at = world.player_position(0).unwrap_or_default();
+        match world.copper_golem_interact(id, held.as_deref(), player_at) {
+            Some(CopperUse::Spent) => {
+                if !infinite {
+                    minecraftoss_entities::animal::consume_one(actor.inventory, selected);
+                }
+                outcome.inventory_changed = true;
+                outcome.handled = true;
+                return outcome;
+            }
+            Some(CopperUse::Worn) => {
+                if !infinite {
+                    actor.inventory.wear_tool(selected, 1);
+                }
+                outcome.inventory_changed = true;
+                outcome.handled = true;
+                return outcome;
+            }
+            Some(CopperUse::Took) => {
+                outcome.handled = true;
+                return outcome;
+            }
+            None => {}
+        }
+    }
     // `Allay.mobInteract`: one of the held item given, or its item handed
     // back to an empty hand.
     if let MobHit::Mob(id) = hit {

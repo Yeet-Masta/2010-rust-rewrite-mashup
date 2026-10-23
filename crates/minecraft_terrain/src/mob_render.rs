@@ -755,9 +755,23 @@ fn animate(posed: &mut Posed, e: &MobEntity, m: &MobPose) {
             }
         }
         Kind::CopperGolem => {
+            use minecraftoss_entities::world::GolemAction;
             posed.look("head", m.head_yaw, m.head_pitch);
-            walk_keyframes(posed, "CopperGolemAnimation.COPPER_GOLEM_WALK", m, 2.0, 2.5);
-            if speed < 0.01 {
+            // `CopperGolemModel.setupAnim`: it walks with arms out while it
+            // carries something, and each visit to a chest has its motion.
+            let walk = if e.hand.is_some() { "CopperGolemAnimation.COPPER_GOLEM_WALK_ITEM" } else { "CopperGolemAnimation.COPPER_GOLEM_WALK" };
+            walk_keyframes(posed, walk, m, 2.0, 2.5);
+            let action = match e.copper.action {
+                GolemAction::GettingItem => Some("CopperGolemAnimation.COPPER_GOLEM_CHEST_INTERACTION_NOITEM_GET"),
+                GolemAction::GettingNoItem => Some("CopperGolemAnimation.COPPER_GOLEM_CHEST_INTERACTION_NOITEM_NOGET"),
+                GolemAction::DroppingItem => Some("CopperGolemAnimation.COPPER_GOLEM_CHEST_INTERACTION_ITEM_DROP"),
+                GolemAction::DroppingNoItem => Some("CopperGolemAnimation.COPPER_GOLEM_CHEST_INTERACTION_ITEM_NODROP"),
+                GolemAction::Idle => None,
+            };
+            if let Some(a) = action.and_then(entity_model::animation) {
+                let since = ((e.tick_count - e.copper.action_start) as f32 + age.fract()).max(0.0) * 50.0;
+                a.apply(posed, since, 1.0);
+            } else if speed < 0.01 {
                 idle_keyframes(posed, "CopperGolemAnimation.COPPER_GOLEM_IDLE", age);
             }
         }
