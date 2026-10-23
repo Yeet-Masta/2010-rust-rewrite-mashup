@@ -43,10 +43,14 @@ pub struct Breaker {
     pub creative: bool,
 }
 
+pub use minecraftoss_world::level::vibrations::VibrationTrail;
+
 pub struct ServerSim {
     pub(crate) level: Level<'static>,
     /// The player's `TIME_SINCE_REST`, as the client counts it.
     pub(crate) time_since_rest: i32,
+    /// The player's last feet, `moveDist` and `nextStep`, for its steps.
+    player_walk: Option<([f64; 3], f64, f64)>,
     states: Arc<BlockStates>,
     /// Mobs, ticked after the level each tick.
     pub(crate) mobs: minecraftoss_entities::world::EntityWorld,
@@ -200,6 +204,7 @@ impl ServerSim {
         Self {
             level,
             time_since_rest: 0,
+            player_walk: None,
             states,
             mobs,
             mob_tables,
@@ -854,6 +859,40 @@ impl ServerSim {
             }
             _ => self.player_edit_block(pos, block, edit),
         }
+        // `BlockItem.place` and `destroyBlock`'s game events, from the
+        // player.
+        let now = self.level.block(at);
+        if now != old {
+            let centre = [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5];
+            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), ..Default::default() };
+            match edit {
+                PlayerEdit::Place => self.level.game_event("block_place", centre, source, Some(now)),
+                PlayerEdit::Break => self.level.game_event("block_destroy", centre, source, Some(old)),
+            }
+        }
+    }
+
+    /// `Entity.move`'s steps for the player, heard as vibrations: a step
+    /// each block it walks over something, none while it rides.
+    fn player_steps(&mut self, feet: [f64; 3]) {
+        let careful = self.mobs.player_sneaking(0);
+        let riding = self.mobs.player_vehicle().is_some();
+        let Some((last, walked, next)) = self.player_walk.replace((feet, 0.0, 0.0)) else { return };
+        let moved = ((feet[0] - last[0]).powi(2) + (feet[1] - last[1]).powi(2) + (feet[2] - last[2]).powi(2)).sqrt();
+        // A jump or a teleport is no step.
+        if riding || moved > 2.0 {
+            self.player_walk = Some((feet, walked, next));
+            return;
+        }
+        let walked = walked + moved * 0.6;
+        let below = self.level.block(minecraftoss_core::BlockPos::new(feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32));
+        let mut next = next;
+        if walked > next && !self.level.registries().blocks.is_air(below) {
+            next = walked.floor() + 1.0;
+            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), careful, dampens: false };
+            self.level.game_event("step", feet, source, None);
+        }
+        self.player_walk = Some((feet, walked, next));
     }
 
     /// A player's edit to `block` (`None` for air) at a position.
@@ -1266,6 +1305,8 @@ pub struct Output {
     /// Where the player got off its mount (sneaking, or thrown), for its
     /// client to stand it there.
     pub dismounted: Option<[f64; 3]>,
+    /// Vibrations on their way to a sculk sensor, for their particles.
+    pub vibrations: Vec<minecraftoss_world::level::vibrations::VibrationTrail>,
     /// Blasts, creepers' and TNT's (`ClientboundExplodePacket`).
     pub explosions: Vec<minecraftoss_world::level::explosion::ExplosionView>,
     /// Sounds mobs made this tick.
@@ -1794,6 +1835,15 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // happiness), for the client's particles.
                     out.entity_events.extend(sim.mobs.take_entity_events());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
+                    // The mobs' game events reach the level's listeners.
+                    for e in sim.mobs.take_game_events() {
+                        let source = minecraftoss_world::level::vibrations::EventSource { entity: e.source, ..Default::default() };
+                        sim.level.game_event(e.event, e.position.to_array(), source, None);
+                    }
+                    if let Some(&feet) = input.players.first() {
+                        sim.player_steps(feet);
+                    }
+                    out.vibrations.extend(std::mem::take(&mut sim.level.vibration_trails));
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);
@@ -2337,6 +2387,46 @@ mod tests {
         server.take_spawned();
         let withers = server.mobs.mobs().iter().filter(|e| e.kind == minecraftoss_entities::species::Kind::Wither).count();
         assert_eq!(withers, 2, "a second wither came");
+    }
+
+    /// A sculk sensor hears a block placed nearby, a tick a block later
+    /// turns active with power by the distance, then cools down.
+    #[test]
+    fn sculk_sensors_hear_blocks_placed() {
+        let Ok(paths) = DataPaths::discover() else { return };
+        let Ok(registries) = Registries::load(&paths) else { return };
+        let registries = Arc::new(registries);
+        let worldgen = Arc::new(WorldGen::new(Arc::new(TerrainGenerator::overworld(registries.clone(), 1234).unwrap())).unwrap());
+        let states = Arc::new(BlockStates::new(registries.clone(), 1234, -64, 384).unwrap());
+        let mut map = ChunkMap::with_worldgen(worldgen.clone(), 6, 8);
+        let mut server = ServerSim::new(worldgen, states, "minecraft:overworld");
+        for x in 19..=21 {
+            for z in 127..=129 {
+                server.load_chunk(&map.load_now(ChunkPos::new(x, z)));
+            }
+        }
+        server.set_simulation_area((20, 128), 2);
+        let (x, y, z) = (325, 200, 2050);
+        let stone = Block::new("minecraft:stone");
+        server.player_edit_block((x, y - 1, z), Some(&stone), PlayerEdit::Place);
+        server.player_edit_block((x, y, z), Some(&Block::new("minecraft:sculk_sensor")), PlayerEdit::Place);
+        for _ in 0..3 {
+            server.tick();
+        }
+        server.player_edit_block_by((x + 4, y, z), Some(&stone), PlayerEdit::Place, None);
+        let phase = |server: &ServerSim| server.level.registries().blocks.property(server.level.block(minecraftoss_core::BlockPos::new(x, y, z)), "sculk_sensor_phase").map(str::to_owned);
+        let mut active_at = None;
+        for t in 0..20 {
+            server.tick();
+            if active_at.is_none() && phase(&server).as_deref() == Some("active") {
+                active_at = Some(t);
+            }
+        }
+        assert!(active_at.is_some(), "the sensor went active ({:?})", phase(&server));
+        for _ in 0..60 {
+            server.tick();
+        }
+        assert_eq!(phase(&server).as_deref(), Some("inactive"), "it went quiet again");
     }
 
     /// A summoned wolf wanders about, and comes back from its saved tag

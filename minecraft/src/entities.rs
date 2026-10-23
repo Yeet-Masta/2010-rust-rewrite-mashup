@@ -130,6 +130,8 @@ pub struct Entities {
     /// A carrot on a stick used, for the next riding input.
     pub ride_boost: bool,
     pub dismounted: Option<DVec3>,
+    /// Vibrations set off, for their particles.
+    pub vibrations: Vec<minecraft_terrain::server::VibrationTrail>,
     poof: PoofParticles,
     portal: PortalParticles,
     items: ItemVisuals,
@@ -221,6 +223,7 @@ impl Entities {
             world: EntityWorld::default(),
             ride: Default::default(),
             ride_boost: false,
+            vibrations: Vec::new(),
             dismounted: None,
             client: ClientMobs::default(),
             player_rope: None,
@@ -1164,6 +1167,7 @@ impl Entities {
             if let Some(moving) = output.moving_blocks {
                 self.moving_blocks = moving;
             }
+            self.vibrations.extend(output.vibrations.iter().copied());
             if let Some(at) = output.dismounted {
                 self.dismounted = Some(DVec3::from_array(at));
             }

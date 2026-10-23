@@ -634,6 +634,9 @@ impl Game {
             .entities
             .tick(world_dt, self.world.day.ticks as i64, bright, &mut view);
         self.hurts = view.hurts;
+        for v in std::mem::take(&mut self.entities.vibrations) {
+            self.particles.vibration(DVec3::from_array(v.from), DVec3::from_array(v.to), v.ticks);
+        }
         self.time_since_rest = view.time_since_rest;
         self.handle_events(events, input.use_item);
         // Forgotten chunks whose last changes from the server are in may

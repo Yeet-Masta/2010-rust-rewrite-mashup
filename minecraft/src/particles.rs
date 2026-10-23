@@ -653,6 +653,17 @@ impl Particles {
         }
     }
 
+    /// `VibrationSignalParticleProvider`: a vibration from `from` reaching
+    /// `to` in `ticks`.
+    pub fn vibration(&mut self, from: DVec3, to: DVec3, ticks: i32) {
+        let sprite = self.sprites.get("vibration").first();
+        let mut p = Particle::at(Kind::Vibration { to }, from, sprite, &mut self.random);
+        p.lifetime = ticks.max(1);
+        p.quad_size = 0.3;
+        p.has_physics = false;
+        self.add(p);
+    }
+
     pub fn add(&mut self, particle: Particle) {
         self.adding.push(particle);
     }

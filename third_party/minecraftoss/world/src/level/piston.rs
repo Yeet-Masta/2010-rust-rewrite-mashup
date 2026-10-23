@@ -661,6 +661,8 @@ impl Level<'_> {
                     self.creaking_heart_tick(pos);
                 } else if self.is_a(state, "JukeboxBlock") {
                     self.jukebox_tick(pos);
+                } else if self.sensor_kind(state).is_some() {
+                    self.sculk_sensor_tick(pos);
                 }
             }
             i += 1;

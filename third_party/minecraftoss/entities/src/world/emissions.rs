@@ -65,6 +65,8 @@ pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut Legac
                 (None, Some((event, volume, pitch))) => voices.push((Voice::Step(event, volume, pitch), at)),
                 (None, None) => {}
             }
+            // `Entity.move`: each step is heard (`GameEvent.STEP`).
+            voices.push((Voice::Game("step"), at));
             // `playAmethystStepSound`, at most once a second.
             if crystal && tick_count >= body.last_crystal_sound_tick + 20 {
                 let fade = 0.997_f64.powf(f64::from(tick_count - body.last_crystal_sound_tick)) as f32;
@@ -78,6 +80,7 @@ pub(crate) fn play_movement(body: &mut Body, tick_count: i32, random: &mut Legac
         Some(Emission::Swim(volume)) => {
             let (a, b) = (random.next_float(), random.next_float());
             voices.push((Voice::Event(sounds.swim, volume, 1.0 + (a - b) * 0.4), at));
+            voices.push((Voice::Game("swim"), at));
         }
         None => {}
     }
@@ -91,6 +94,7 @@ fn splash(body: &mut Body, random: &mut LegacyRandom, voices: &mut Vec<(Voice, D
     let event = if volume < 0.25 { sounds.splash } else { "entity.generic.splash" };
     let (a, b) = (random.next_float(), random.next_float());
     voices.push((Voice::Event(event, volume, 1.0 + (a - b) * 0.4), body.position));
+    voices.push((Voice::Game("splash"), body.position));
     let limit = 1.0_f32 + body.width * 20.0_f32;
     let count = (0..).take_while(|&i| (i as f32) < limit).count();
     for _ in 0..count {

@@ -754,6 +754,19 @@ pub enum Voice {
     Event(&'static str, f32, f32),
     /// A block's step sound at a volume and pitch.
     Step(String, f32, f32),
+    /// A game event the mob sets off where it is (`Entity.gameEvent`),
+    /// for the vibrations; no sound of its own.
+    Game(&'static str),
+}
+
+/// A game event an entity set off, for the level's listeners.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameEventOut {
+    /// The event's name without its namespace (`step`).
+    pub event: &'static str,
+    pub position: DVec3,
+    /// The entity that set it off.
+    pub source: Option<u64>,
 }
 
 /// A UUID for an entity whose own is not known (vanilla draws fresh ones
@@ -803,9 +816,13 @@ fn hurt_voice(random: &mut LegacyRandom, died: bool, baby: bool) -> Voice {
 
 /// A mob's voiced sounds as named events: its sound family, volume
 /// (`getSoundVolume`) and category.
-fn resolve_voices(out: &mut Vec<MobSound>, voices: &mut Vec<(Voice, DVec3)>, family: &str, volume: f32, category: &'static str) {
+fn resolve_voices(out: &mut Vec<MobSound>, events: &mut Vec<GameEventOut>, id: u64, voices: &mut Vec<(Voice, DVec3)>, family: &str, volume: f32, category: &'static str) {
     for (voice, position) in voices.drain(..) {
         let (event, volume, pitch) = match voice {
+            Voice::Game(event) => {
+                events.push(GameEventOut { event, position, source: Some(id) });
+                continue;
+            }
             Voice::Ambient(pitch) => (format!("entity.{family}.ambient"), volume, pitch),
             Voice::Hurt(pitch) => (format!("entity.{family}.hurt"), volume, pitch),
             Voice::Death(pitch) => (format!("entity.{family}.death"), volume, pitch),
@@ -2568,6 +2585,7 @@ pub struct EntityWorld {
     player_vehicle: Option<EntityKey>,
     /// `CustomName`s, by entity.
     custom_names: HashMap<u64, String>,
+    game_events: Vec<GameEventOut>,
     ride_input: RideInput,
     dismounted: Option<DVec3>,
     /// The level's creaking hearts and the protector each keeps, and the
@@ -2675,6 +2693,7 @@ impl Default for EntityWorld {
             hive_entries: Vec::new(),
             player_vehicle: None,
             custom_names: HashMap::new(),
+            game_events: Vec::new(),
             ride_input: RideInput::default(),
             dismounted: None,
             creaking_hearts: Vec::new(),
@@ -4181,47 +4200,54 @@ impl EntityWorld {
     }
 
     /// The sounds mobs made since the last call, in world order by kind.
+    /// The game events the entities set off since the last call (their
+    /// voices go first, with `take_sounds`).
+    pub fn take_game_events(&mut self) -> Vec<GameEventOut> {
+        std::mem::take(&mut self.game_events)
+    }
+
     pub fn take_sounds(&mut self) -> Vec<MobSound> {
         let mut out = std::mem::take(&mut self.sounds);
+        let mut events = Vec::new();
         for e in &mut self.zombies {
             let family = e.zombie.kind.sound_family();
-            resolve_voices(&mut out, &mut e.voices, family, 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, family, 1.0, "hostile_volume");
         }
         for e in &mut self.skeletons {
-            resolve_voices(&mut out, &mut e.voices, e.skeleton.kind.sound_family(), 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, e.skeleton.kind.sound_family(), 1.0, "hostile_volume");
         }
         for e in &mut self.creepers {
-            resolve_voices(&mut out, &mut e.voices, "creeper", 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "creeper", 1.0, "hostile_volume");
         }
         for e in &mut self.slimes {
-            resolve_voices(&mut out, &mut e.voices, "slime", 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "slime", 1.0, "hostile_volume");
         }
         for e in &mut self.endermen {
-            resolve_voices(&mut out, &mut e.voices, "enderman", 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "enderman", 1.0, "hostile_volume");
         }
         for e in &mut self.witches {
-            resolve_voices(&mut out, &mut e.voices, "witch", 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "witch", 1.0, "hostile_volume");
         }
         for e in &mut self.spiders {
-            resolve_voices(&mut out, &mut e.voices, "spider", 1.0, "hostile_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "spider", 1.0, "hostile_volume");
         }
         for e in &mut self.mobs {
             let s = e.kind.species();
             let family = s.sound_family(e.baby());
-            resolve_voices(&mut out, &mut e.voices, family, s.sound_volume(), s.sound_category());
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, family, s.sound_volume(), s.sound_category());
         }
         for e in &mut self.villagers {
-            resolve_voices(&mut out, &mut e.voices, "villager", 1.0, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "villager", 1.0, "friendly_volume");
         }
         for e in &mut self.iron_golems {
-            resolve_voices(&mut out, &mut e.voices, "iron_golem", 1.0, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "iron_golem", 1.0, "friendly_volume");
         }
         for e in &mut self.wolves {
-            resolve_voices(&mut out, &mut e.voices, "wolf", crate::wolf::SOUND_VOLUME, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "wolf", crate::wolf::SOUND_VOLUME, "friendly_volume");
         }
         for e in &mut self.cows {
             if let Some(horse) = &e.horse {
-                resolve_voices(&mut out, &mut e.voices, horse.kind.sound_family(e.cow.age.baby()), crate::horse::SOUND_VOLUME, "neutral_volume");
+                resolve_voices(&mut out, &mut events, e.id, &mut e.voices, horse.kind.sound_family(e.cow.age.baby()), crate::horse::SOUND_VOLUME, "neutral_volume");
                 continue;
             }
             // Mooshrooms keep `AbstractCow`'s classic sound set.
@@ -4233,10 +4259,10 @@ impl EntityWorld {
                 "cow"
             };
             // `Cow.getSoundVolume`.
-            resolve_voices(&mut out, &mut e.voices, family, 0.4, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, family, 0.4, "friendly_volume");
         }
         for e in &mut self.sheep {
-            resolve_voices(&mut out, &mut e.voices, "sheep", 1.0, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "sheep", 1.0, "friendly_volume");
         }
         for e in &mut self.pigs {
             // `Pig.getSoundSet`: a baby's own sounds whatever its variant.
@@ -4246,7 +4272,7 @@ impl EntityWorld {
                 crate::pig::PigSoundVariant::Mini => "pig_mini",
                 crate::pig::PigSoundVariant::Big => "pig_big",
             };
-            resolve_voices(&mut out, &mut e.voices, family, 1.0, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, family, 1.0, "friendly_volume");
         }
         for e in &mut self.chickens {
             // `Chicken.getSoundSet`: a baby's own sounds whatever its variant.
@@ -4255,11 +4281,12 @@ impl EntityWorld {
                 crate::chicken::ChickenSoundVariant::Classic => "chicken",
                 crate::chicken::ChickenSoundVariant::Picky => "chicken_picky",
             };
-            resolve_voices(&mut out, &mut e.voices, family, 1.0, "friendly_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, family, 1.0, "friendly_volume");
         }
         for e in &mut self.bats {
-            resolve_voices(&mut out, &mut e.voices, "bat", 0.1, "ambient_volume");
+            resolve_voices(&mut out, &mut events, e.id, &mut e.voices, "bat", 0.1, "ambient_volume");
         }
+        self.game_events.extend(events);
         out
     }
 
@@ -4686,6 +4713,7 @@ impl EntityWorld {
             hive_entries: Vec::new(),
             player_vehicle: self.player_vehicle,
             custom_names: self.custom_names.clone(),
+            game_events: Vec::new(),
             ride_input: RideInput::default(),
             dismounted: None,
             creaking_hearts: self.creaking_hearts.clone(),

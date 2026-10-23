@@ -11,6 +11,7 @@
 pub mod container;
 pub mod creaking_heart;
 pub mod jukebox;
+pub mod vibrations;
 pub mod transport;
 pub mod dispenser;
 pub mod drops;
@@ -187,6 +188,10 @@ pub struct Level<'a> {
     pub songs: Vec<jukebox::JukeboxSong>,
     jukeboxes: HashMap<BlockPos, Option<jukebox::SongPlayer>>,
     pub jukebox_events: Vec<jukebox::JukeboxEvent>,
+    /// The vibration listeners' states, and the vibrations set off since
+    /// the client last took them.
+    vibration_listeners: HashMap<BlockPos, vibrations::VibrationListener>,
+    pub vibration_trails: Vec<vibrations::VibrationTrail>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -328,6 +333,8 @@ impl<'a> Level<'a> {
             songs: jukebox::load_songs(&lib.registries),
             jukeboxes: HashMap::new(),
             jukebox_events: Vec::new(),
+            vibration_listeners: HashMap::new(),
+            vibration_trails: Vec::new(),
             unsupported: Vec::new(),
             pending_thunder: Vec::new(),
             lightning_hits: Vec::new(),
@@ -1032,6 +1039,8 @@ impl<'a> Level<'a> {
             self.sniffer_egg_tick(state, pos);
         } else if self.is_a(state, "CreakingHeartBlock") {
             self.creaking_heart_block_tick(state, pos);
+        } else if self.sensor_kind(state).is_some() {
+            self.sculk_sensor_block_tick(state, pos);
         } else if self.is_a(state, "ComposterBlock") {
             // `ComposterBlock.tick`: a composter at 7 is ready (8); its
             // sound is the client's.

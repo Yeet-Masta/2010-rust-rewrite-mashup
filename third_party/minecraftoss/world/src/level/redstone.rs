@@ -325,6 +325,7 @@ impl Level<'_> {
             Some(Kind::TrappedChest) => self.opener_count(pos).clamp(0, 15),
             // `JukeboxBlock.ownSignal`: 15 while it plays.
             _ if self.is_a(state, "JukeboxBlock") && self.jukebox_playing(pos) => 15,
+            _ if self.sensor_kind(state).is_some() => self.sensor_signal(state, Direction::Up),
             _ => 0,
         }
     }
@@ -379,6 +380,7 @@ impl Level<'_> {
                     0
                 }
             }
+            _ if self.sensor_kind(state).is_some() => self.sensor_signal(state, direction),
             _ => self.own_signal(state, pos),
         }
     }
@@ -404,6 +406,14 @@ impl Level<'_> {
             Some(Kind::PressurePlate) => {
                 if direction == Direction::Up {
                     self.plate_signal(state)
+                } else {
+                    0
+                }
+            }
+            // `SculkSensorBlock.getDirectSignal`: strong only upward.
+            _ if self.sensor_kind(state).is_some() => {
+                if direction == Direction::Up {
+                    self.sensor_signal(state, direction)
                 } else {
                     0
                 }
@@ -521,6 +531,9 @@ impl Level<'_> {
         if self.is_a(state, "JukeboxBlock") {
             return Some(self.jukebox_signal(pos));
         }
+        if self.sensor_kind(state).is_some() {
+            return Some(self.sensor_output(state, pos));
+        }
         self.state_analog_output(state)
     }
 
@@ -588,7 +601,7 @@ impl Level<'_> {
     }
 
     pub(super) fn has_analog_output(&self, state: BlockStateId) -> bool {
-        self.store_of(state).is_some() || self.is_a(state, "CreakingHeartBlock") || self.is_a(state, "JukeboxBlock") || self.state_analog_output(state).is_some()
+        self.store_of(state).is_some() || self.is_a(state, "CreakingHeartBlock") || self.is_a(state, "JukeboxBlock") || self.sensor_kind(state).is_some() || self.state_analog_output(state).is_some()
     }
 
     // ---- block hooks --------------------------------------------------------

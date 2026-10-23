@@ -102,7 +102,7 @@ impl Level<'_> {
         })
     }
 
-    fn in_block_tag(&self, state: BlockStateId, tag: &str) -> bool {
+    pub(super) fn in_block_tag(&self, state: BlockStateId, tag: &str) -> bool {
         self.lib.registries.block_tags.require(tag).is_ok_and(|t| self.lib.registries.block_in_tag(state, t))
     }
 

@@ -334,6 +334,8 @@ pub enum Kind {
     Firefly,
     /// `CampfireSmokeParticle`.
     CampfireSmoke,
+    /// `VibrationSignalParticle`: on its way to a listener, a tick a block.
+    Vibration { to: DVec3 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1547,7 +1549,7 @@ fn full_block(light: Light) -> Light {
 pub fn light(p: &Particle, world: &World, partial: f32) -> Light {
     let progress = (p.age as f32 + partial) / p.lifetime.max(1) as f32;
     match &p.kind {
-        Kind::Flash { .. } | Kind::Fading { .. } | Kind::Ink { .. } => FULL_BRIGHT,
+        Kind::Flash { .. } | Kind::Fading { .. } | Kind::Ink { .. } | Kind::Vibration { .. } => FULL_BRIGHT,
         Kind::Flame | Kind::Glow { .. } => emission(p.world_light(world), progress),
         Kind::EmissiveRising { glowing: true, .. }
         | Kind::Drip { glowing: true, .. }
@@ -1835,6 +1837,18 @@ pub fn tick(p: &mut Particle, engine: &mut Particles, world: &World) {
                     p.set_pos(DVec3::new(p.pos.x, y, p.pos.z));
                 }
             }
+        }
+        Kind::Vibration { to } => {
+            p.previous = p.pos;
+            let age = p.age;
+            p.age += 1;
+            if age >= p.lifetime {
+                p.removed = true;
+                return;
+            }
+            // A share of what is left of the way, each tick.
+            let remaining = (p.lifetime - p.age).max(1);
+            p.pos = p.pos.lerp(to, 1.0 / f64::from(remaining));
         }
         Kind::Portal { start } => {
             p.previous = p.pos;

@@ -722,6 +722,7 @@ impl Level<'_> {
             || self.is_a(state, "BeehiveBlock")
             || self.is_a(state, "CreakingHeartBlock")
             || self.is_a(state, "JukeboxBlock")
+            || self.sensor_kind(state).is_some()
             || self.redstone_kind(state) == Some(Kind::MovingPiston)
             || self.redstone_kind(state) == Some(Kind::DaylightDetector) && self.sky.as_ref().is_some_and(|s| s.has_sky_light)
     }
