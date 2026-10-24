@@ -12,6 +12,13 @@
 //!   frequency (1 a step, 15 an explosion); a calibrated one heeds only the
 //!   frequency fed into its back. Active for 30 ticks (10), then 10 of
 //!   cooldown.
+//! - A sculk shrieker hears a sensor click within 8 blocks when a player
+//!   set it off (or steps on it), and shrieks for 90 ticks. One that can
+//!   summon first warns: the nearby players' warning level rises (at most
+//!   once in 10 seconds, none with a warden about), and when the shriek
+//!   ends a warden answers from afar, or at level 4 climbs out of the
+//!   ground near it; either way darkness falls on the players within 40
+//!   blocks. The level falls back by one every 10 minutes.
 use super::Level;
 use minecraftoss_core::pos::Direction;
 use minecraftoss_core::random::RandomSource;
@@ -49,6 +56,9 @@ fn quiet_when_careful(event: &str) -> bool {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EventSource {
     pub entity: Option<u64>,
+    /// The player it traces to (`SculkShriekerBlockEntity.tryGetPlayer`):
+    /// the player itself, or the one riding or that threw it.
+    pub player: Option<u64>,
     /// `isSteppingCarefully` (sneaking).
     pub careful: bool,
     /// `dampensVibrations` (a wool item, a warden).
@@ -62,6 +72,30 @@ pub struct Vibration {
     pub distance: f32,
     pub origin: [f64; 3],
     pub source: Option<u64>,
+    pub player: Option<u64>,
+}
+
+/// A player's `WardenSpawnTracker`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WardenTracker {
+    pub ticks_since_last_warning: i32,
+    pub warning_level: i32,
+    pub cooldown_ticks: i32,
+}
+
+impl WardenTracker {
+    /// `tick`: a level lost every 10 minutes, the cooldown running down.
+    pub fn tick(&mut self) {
+        if self.ticks_since_last_warning >= 12000 {
+            self.warning_level = (self.warning_level - 1).clamp(0, 4);
+            self.ticks_since_last_warning = 0;
+        } else {
+            self.ticks_since_last_warning += 1;
+        }
+        if self.cooldown_ticks > 0 {
+            self.cooldown_ticks -= 1;
+        }
+    }
 }
 
 /// A listener's state (`VibrationSystem.Data` with its selector).
@@ -155,8 +189,10 @@ impl Level<'_> {
     /// takes it as a candidate (`Listener.handleGameEvent`).
     pub fn game_event(&mut self, event: &'static str, at: [f64; 3], source: EventSource, affected: Option<BlockStateId>) {
         let frequency = frequency(event);
+        // A shrieker hears only a sensor's click (`#shrieker_can_listen`).
+        let click = event == "sculk_sensor_tendrils_clicking";
         // `User.isValidVibration`.
-        if frequency == 0 || source.dampens || source.careful && quiet_when_careful(event) {
+        if frequency == 0 && !click || source.dampens || source.careful && quiet_when_careful(event) {
             return;
         }
         if affected.is_some_and(|s| self.in_block_tag(s, "minecraft:dampens_vibrations")) {
@@ -179,6 +215,21 @@ impl Level<'_> {
         }
         for pos in heard {
             let state = self.block(pos);
+            if click {
+                // `SculkShriekerBlockEntity.VibrationUser`: 8 blocks, not
+                // while shrieking, only for a player's doing.
+                if self.name(state) != "minecraft:sculk_shrieker" || self.flag(state, "shrieking") || source.player.is_none() {
+                    continue;
+                }
+                let dest = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+                let distance_sq = (dest[0] - at[0]).powi(2) + (dest[1] - at[1]).powi(2) + (dest[2] - at[2]).powi(2);
+                if distance_sq > 64.0 || self.vibration_listeners.get(&pos).is_some_and(|l| l.current.is_some()) || self.occluded(at, dest) {
+                    continue;
+                }
+                let vibration = Vibration { event, distance: distance_sq.sqrt() as f32, origin: at, source: source.entity, player: source.player };
+                self.add_candidate(pos, vibration);
+                continue;
+            }
             let Some((radius, _, calibrated)) = self.sensor_kind(state) else { continue };
             let dest = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
             let (dx, dy, dz) = (dest[0] - at[0], dest[1] - at[1], dest[2] - at[2]);
@@ -208,19 +259,23 @@ impl Level<'_> {
             if self.occluded(at, dest) {
                 continue;
             }
-            // `VibrationSelector.addCandidate`: within a tick, the nearest,
-            // then the louder.
-            let vibration = Vibration { event, distance: distance_sq.sqrt() as f32, origin: at, source: source.entity };
-            let now = self.game_time;
-            let listener = self.vibration_listeners.entry(pos).or_default();
-            let replace = match &listener.candidate {
-                None => true,
-                Some((old, tick)) if *tick == now => vibration.distance < old.distance || vibration.distance == old.distance && frequency > self::frequency(old.event),
-                Some(_) => false,
-            };
-            if replace {
-                listener.candidate = Some((vibration, now));
-            }
+            let vibration = Vibration { event, distance: distance_sq.sqrt() as f32, origin: at, source: source.entity, player: source.player };
+            self.add_candidate(pos, vibration);
+        }
+    }
+
+    /// `VibrationSelector.addCandidate`: within a tick, the nearest, then
+    /// the louder.
+    fn add_candidate(&mut self, pos: BlockPos, vibration: Vibration) {
+        let now = self.game_time;
+        let listener = self.vibration_listeners.entry(pos).or_default();
+        let replace = match &listener.candidate {
+            None => true,
+            Some((old, tick)) if *tick == now => vibration.distance < old.distance || vibration.distance == old.distance && frequency(vibration.event) > frequency(old.event),
+            Some(_) => false,
+        };
+        if replace {
+            listener.candidate = Some((vibration, now));
         }
     }
 
@@ -255,6 +310,10 @@ impl Level<'_> {
         let (dx, dy, dz) = (f64::from(origin.x - pos.x), f64::from(origin.y - pos.y), f64::from(origin.z - pos.z));
         let distance = (dx * dx + dy * dy + dz * dz).sqrt() as f32;
         let state = self.block(pos);
+        if self.name(state) == "minecraft:sculk_shrieker" {
+            self.try_shriek(pos, vibration.player);
+            return;
+        }
         let Some((radius, active_ticks, _)) = self.sensor_kind(state) else { return };
         if self.sensor_phase(state) != "inactive" {
             return;
@@ -265,17 +324,17 @@ impl Level<'_> {
         }
         // `getRedstoneStrengthForDistance`.
         let power = (15 - (15.0 / f64::from(radius) * f64::from(distance)).floor() as i32).max(1);
-        self.sensor_activate(state, pos, power, active_ticks, vibration.source);
+        self.sensor_activate(state, pos, power, active_ticks, (vibration.source, vibration.player));
     }
 
     /// `SculkSensorBlock.activate`.
-    fn sensor_activate(&mut self, state: BlockStateId, pos: BlockPos, power: i32, active_ticks: i32, source: Option<u64>) {
+    fn sensor_activate(&mut self, state: BlockStateId, pos: BlockPos, power: i32, active_ticks: i32, source: (Option<u64>, Option<u64>)) {
         let blocks = &self.registries().blocks;
         let active = blocks.with_property(state, "sculk_sensor_phase", "active").and_then(|s| blocks.with_property(s, "power", &power.to_string())).unwrap_or(state);
         self.set_block_and_update(pos, active);
         self.schedule_block_tick(pos, active, active_ticks);
         self.sensor_update_neighbours(pos, active);
-        self.game_event("sculk_sensor_tendrils_clicking", [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5], EventSource { entity: source, ..Default::default() }, None);
+        self.game_event("sculk_sensor_tendrils_clicking", [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5], EventSource { entity: source.0, player: source.1, ..Default::default() }, None);
         if !self.flag(state, "waterlogged") {
             let pitch = self.random.next_f32() * 0.2 + 0.8;
             self.play_sound("block.sculk_sensor.clicking", [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5], 1.0, pitch);
@@ -329,5 +388,147 @@ impl Level<'_> {
             return 0;
         }
         self.registries().blocks.property(state, "power").and_then(|p| p.parse().ok()).unwrap_or(0)
+    }
+
+    fn shrieker_warning(&self, pos: BlockPos) -> i32 {
+        self.block_entity(pos).and_then(|t| t.get("warning_level")).and_then(minecraftoss_core::nbt::Tag::as_i64).unwrap_or(0) as i32
+    }
+
+    fn set_shrieker_warning(&mut self, pos: BlockPos, level: i32) {
+        if self.shrieker_warning(pos) == level {
+            return;
+        }
+        if let Some(minecraftoss_core::nbt::Tag::Compound(map)) = self.block_entity_mut(pos) {
+            map.insert("warning_level".to_owned(), minecraftoss_core::nbt::Tag::Int(level));
+        }
+    }
+
+    /// `canRespond`: a shrieker that can summon, out of peaceful (the
+    /// `spawn_wardens` rule always holds here).
+    fn shrieker_can_respond(&self, state: BlockStateId) -> bool {
+        self.flag(state, "can_summon") && self.difficulty != 0
+    }
+
+    /// `SculkShriekerBlock.stepOn`: a player stepping on it.
+    pub fn shrieker_stepped_on(&mut self, pos: BlockPos, player: u64) {
+        if self.name(self.block(pos)) == "minecraft:sculk_shrieker" {
+            self.try_shriek(pos, Some(player));
+        }
+    }
+
+    /// `tryShriek`: a summoning one first warns, and shrieks only if it
+    /// could.
+    fn try_shriek(&mut self, pos: BlockPos, player: Option<u64>) {
+        let Some(player) = player else { return };
+        let state = self.block(pos);
+        if self.flag(state, "shrieking") {
+            return;
+        }
+        self.set_shrieker_warning(pos, 0);
+        if !self.shrieker_can_respond(state) || self.try_warn(pos, player) {
+            // `shriek`.
+            let shrieking = self.registries().blocks.with_property(state, "shrieking", "true").unwrap_or(state);
+            self.set_block(pos, shrieking, 2, 512);
+            self.schedule_block_tick(pos, shrieking, 90);
+            self.level_event(3007, pos, 0);
+            let centre = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+            self.game_event("shriek", centre, EventSource { entity: Some(player), player: Some(player), ..Default::default() }, None);
+        }
+    }
+
+    /// `WardenSpawnTracker.tryWarn` for the players about it.
+    fn try_warn(&mut self, pos: BlockPos, player: u64) -> bool {
+        let centre = [f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5];
+        if self.wardens.iter().any(|w| (0..3).all(|i| (w[i] - centre[i]).abs() <= 24.0)) {
+            return false;
+        }
+        let tracker = self.warden_trackers.entry(player).or_default();
+        if tracker.cooldown_ticks > 0 {
+            return false;
+        }
+        tracker.ticks_since_last_warning = 0;
+        tracker.cooldown_ticks = 200;
+        tracker.warning_level = (tracker.warning_level + 1).clamp(0, 4);
+        let level = tracker.warning_level;
+        self.set_shrieker_warning(pos, level);
+        true
+    }
+
+    /// `SculkShriekerBlock.tick`: the shriek ends, and is answered.
+    pub(super) fn sculk_shrieker_block_tick(&mut self, state: BlockStateId, pos: BlockPos) {
+        if !self.flag(state, "shrieking") {
+            return;
+        }
+        let quiet = self.registries().blocks.with_property(state, "shrieking", "false").unwrap_or(state);
+        self.set_block_and_update(pos, quiet);
+        self.shrieker_respond(quiet, pos);
+    }
+
+    /// `tryRespond`: at level 4 a warden comes up near it, else one
+    /// answers from 10 blocks off; darkness falls about it.
+    pub(super) fn shrieker_respond(&mut self, state: BlockStateId, pos: BlockPos) {
+        let level = self.shrieker_warning(pos);
+        if !self.shrieker_can_respond(state) || level <= 0 {
+            return;
+        }
+        if !(level >= 4 && self.summon_warden(pos)) {
+            let sound = match level {
+                1 => "entity.warden.nearby_close",
+                2 => "entity.warden.nearby_closer",
+                3 => "entity.warden.nearby_closest",
+                _ => "entity.warden.listening_angry",
+            };
+            let mut offset = || f64::from(self.random.next_i32_bound(21) - 10);
+            let at = [f64::from(pos.x) + offset(), f64::from(pos.y) + offset(), f64::from(pos.z) + offset()];
+            self.play_sound(sound, at, 5.0, 1.0);
+        }
+        self.darkness_pulses.push([f64::from(pos.x) + 0.5, f64::from(pos.y) + 0.5, f64::from(pos.z) + 0.5]);
+    }
+
+    /// `SpawnUtil.trySpawnMob(WARDEN, TRIGGERED, pos, 20, 5, 6,
+    /// ON_TOP_OF_COLLIDER)`: on top of something solid with room for it,
+    /// climbing out of the ground (`Warden.finalizeSpawn`).
+    fn summon_warden(&mut self, pos: BlockPos) -> bool {
+        for _ in 0..20 {
+            let dx = self.random.next_i32_bound(11) - 5;
+            let dz = self.random.next_i32_bound(11) - 5;
+            let mut at = BlockPos::new(pos.x + dx, pos.y + 6, pos.z + dz);
+            let mut above = self.block(at);
+            let mut found = false;
+            for _ in -6..=6 {
+                at = at.below();
+                let current = self.block(at);
+                let top_free = self.block_collision_shape(above, at.above()).is_none();
+                let full = self.registries().blocks.is_face_sturdy(current, Direction::Up, minecraftoss_core::SupportType::Full);
+                if top_free && full {
+                    at = at.above();
+                    found = true;
+                    break;
+                }
+                above = current;
+            }
+            if !found {
+                continue;
+            }
+            // Room for its 0.9 by 2.9 box.
+            let clear = (at.y..at.y + 3).all(|y| {
+                let c = BlockPos::new(at.x, y, at.z);
+                self.block_collision_shape(self.block(c), c).is_none()
+            });
+            if !clear {
+                continue;
+            }
+            let feet = [f64::from(at.x) + 0.5, f64::from(at.y), f64::from(at.z) + 0.5];
+            let yaw = minecraftoss_core::entity_data::wrap_degrees(self.random.next_f32() * 360.0);
+            use minecraftoss_core::nbt::Tag;
+            let memory = |ttl: i64| Tag::Compound([("value".to_owned(), Tag::Compound(Default::default())), ("ttl".to_owned(), Tag::Long(ttl))].into_iter().collect());
+            let memories = Tag::Compound([("minecraft:is_emerging".to_owned(), memory(134)), ("minecraft:dig_cooldown".to_owned(), memory(1200))].into_iter().collect());
+            let brain = Tag::Compound([("memories".to_owned(), memories)].into_iter().collect());
+            let tag = self.built_mob_tag("minecraft:warden", feet, yaw, vec![("Brain", brain)]);
+            self.spawned.push(tag);
+            self.play_sound("entity.warden.agitated", feet, 5.0, 1.0);
+            return true;
+        }
+        false
     }
 }

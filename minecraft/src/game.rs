@@ -951,6 +951,15 @@ impl Game {
             self.sounds.stop_record(pos);
             return;
         }
+        // 3007: a sculk shrieker's shriek (unless under water).
+        if id == 3007 {
+            let wet = self.world.block(pos).is_some_and(|b| b.properties.get("waterlogged").is_some_and(|w| w == "true"));
+            if !wet {
+                let pitch = 0.6 + self.sounds.random() * 0.4;
+                self.play("minecraft:block.sculk_shrieker.shriek", Some(at), 2.0, pitch);
+            }
+            return;
+        }
         // `globalLevelEvent` 1023: the wither's arrival, heard by everyone
         // two blocks from the camera toward it.
         if id == 1023 {

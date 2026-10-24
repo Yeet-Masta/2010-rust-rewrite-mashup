@@ -185,6 +185,11 @@ impl Level<'_> {
             self.jukebox_removed(pos, old);
             return Vec::new();
         }
+        // `SculkShriekerBlockEntity.preRemoveSideEffects`: broken while it
+        // shrieks, it is answered all the same.
+        if self.name(old) == "minecraft:sculk_shrieker" && self.flag(old, "shrieking") {
+            self.shrieker_respond(old, pos);
+        }
         match self.store_of(old) {
             Some(super::container::Store::ShulkerBox) => Vec::new(),
             Some(super::container::Store::Furnace) => {

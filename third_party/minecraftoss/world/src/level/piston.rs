@@ -661,7 +661,7 @@ impl Level<'_> {
                     self.creaking_heart_tick(pos);
                 } else if self.is_a(state, "JukeboxBlock") {
                     self.jukebox_tick(pos);
-                } else if self.sensor_kind(state).is_some() {
+                } else if self.sensor_kind(state).is_some() || self.name(state) == "minecraft:sculk_shrieker" {
                     self.sculk_sensor_tick(pos);
                 }
             }

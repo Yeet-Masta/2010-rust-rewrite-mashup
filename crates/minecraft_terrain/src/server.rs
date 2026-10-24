@@ -864,7 +864,7 @@ impl ServerSim {
         let now = self.level.block(at);
         if now != old {
             let centre = [f64::from(pos.0) + 0.5, f64::from(pos.1) + 0.5, f64::from(pos.2) + 0.5];
-            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), ..Default::default() };
+            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), player: Some(0), ..Default::default() };
             match edit {
                 PlayerEdit::Place => self.level.game_event("block_place", centre, source, Some(now)),
                 PlayerEdit::Break => self.level.game_event("block_destroy", centre, source, Some(old)),
@@ -889,7 +889,7 @@ impl ServerSim {
         let mut next = next;
         if walked > next && !self.level.registries().blocks.is_air(below) {
             next = walked.floor() + 1.0;
-            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), careful, dampens: false };
+            let source = minecraftoss_world::level::vibrations::EventSource { entity: Some(0), player: Some(0), careful, dampens: false };
             self.level.game_event("step", feet, source, None);
         }
         self.player_walk = Some((feet, walked, next));
@@ -1835,15 +1835,31 @@ fn server_loop(mut sim: ServerSim, commands: std::sync::mpsc::Receiver<Command>,
                     // happiness), for the client's particles.
                     out.entity_events.extend(sim.mobs.take_entity_events());
                     out.mob_sounds.extend(sim.mobs.take_sounds());
-                    // The mobs' game events reach the level's listeners.
+                    // The mobs' game events reach the level's listeners; the
+                    // mount the player rides counts as the player's doing.
+                    let vehicle = sim.mobs.player_vehicle().map(|v| v.id());
                     for e in sim.mobs.take_game_events() {
-                        let source = minecraftoss_world::level::vibrations::EventSource { entity: e.source, ..Default::default() };
+                        let player = (e.source.is_some() && e.source == vehicle).then_some(0);
+                        let source = minecraftoss_world::level::vibrations::EventSource { entity: e.source, player, ..Default::default() };
                         sim.level.game_event(e.event, e.position.to_array(), source, None);
                     }
                     if let Some(&feet) = input.players.first() {
                         sim.player_steps(feet);
+                        // `SculkShriekerBlock.stepOn`.
+                        let below = minecraftoss_core::BlockPos::new(feet[0].floor() as i32, (feet[1] - 0.2).floor() as i32, feet[2].floor() as i32);
+                        sim.level.shrieker_stepped_on(below, 0);
                     }
                     out.vibrations.extend(std::mem::take(&mut sim.level.vibration_trails));
+                    // Where the wardens are, for the shriekers' warnings.
+                    sim.level.wardens = sim.mobs.mobs().iter().filter(|e| e.kind == minecraftoss_entities::species::Kind::Warden && e.health > 0.0).map(|e| e.body.position.to_array()).collect();
+                    // `Warden.applyDarknessAround`: 13 seconds of darkness to
+                    // the players within 40 blocks (`addEffectToPlayersAround`).
+                    for at in std::mem::take(&mut sim.level.darkness_pulses) {
+                        for p in input.mob_players.iter().filter(|p| p.alive && p.attackable && p.position.distance_squared(glam::DVec3::from_array(at)) < 40.0 * 40.0) {
+                            let darkness = minecraftoss_player::effects::EffectInstance::new(minecraftoss_player::effects::MobEffect::Darkness, 260, 0);
+                            out.player_splashes.push((p.id, minecraftoss_entities::world::PlayerSplash { effects: vec![darkness], instant: Vec::new(), extinguish: false, at: glam::DVec3::from_array(at) }));
+                        }
+                    }
                     sim.level.last_tick_phases[5] += mobs_started.elapsed().as_secs_f64() * 1000.0;
                     out.mobs = Some(Box::new(sim.tracked_mobs(input.tracking.0, input.tracking.1)));
                     let pickup_feet = input.pickup.as_ref().map(|(feet, _, _)| *feet);

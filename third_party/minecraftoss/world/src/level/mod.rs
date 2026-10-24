@@ -192,6 +192,11 @@ pub struct Level<'a> {
     /// the client last took them.
     vibration_listeners: HashMap<BlockPos, vibrations::VibrationListener>,
     pub vibration_trails: Vec<vibrations::VibrationTrail>,
+    /// The players' warden warning levels, where wardens are (as the
+    /// entities last were), and the shrieks' darkness to spread.
+    pub warden_trackers: HashMap<u64, vibrations::WardenTracker>,
+    pub wardens: Vec<[f64; 3]>,
+    pub darkness_pulses: Vec<[f64; 3]>,
     /// Behaviours that ran but are not simulated yet.
     pub unsupported: Vec<String>,
     /// Time, weather and sky light, once `set_dimension` has run.
@@ -335,6 +340,9 @@ impl<'a> Level<'a> {
             jukebox_events: Vec::new(),
             vibration_listeners: HashMap::new(),
             vibration_trails: Vec::new(),
+            warden_trackers: HashMap::new(),
+            wardens: Vec::new(),
+            darkness_pulses: Vec::new(),
             unsupported: Vec::new(),
             pending_thunder: Vec::new(),
             lightning_hits: Vec::new(),
@@ -986,6 +994,9 @@ impl<'a> Level<'a> {
         self.advance_weather_cycle();
         self.update_sky_brightness();
         self.game_time += 1;
+        for tracker in self.warden_trackers.values_mut() {
+            tracker.tick();
+        }
         self.handling_tick = true;
         self.block_ticks.begin(self.game_time, MAX_TICKS);
         while let Some(tick) = self.block_ticks.next() {
@@ -1041,6 +1052,8 @@ impl<'a> Level<'a> {
             self.creaking_heart_block_tick(state, pos);
         } else if self.sensor_kind(state).is_some() {
             self.sculk_sensor_block_tick(state, pos);
+        } else if self.name(state) == "minecraft:sculk_shrieker" {
+            self.sculk_shrieker_block_tick(state, pos);
         } else if self.is_a(state, "ComposterBlock") {
             // `ComposterBlock.tick`: a composter at 7 is ready (8); its
             // sound is the client's.
